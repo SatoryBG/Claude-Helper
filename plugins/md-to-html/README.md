@@ -131,6 +131,7 @@ md-to-html/
 
 ## Changelog
 
+- **1.0.1** - author name corrected to Ivailo Tanusheff.
 - **1.0.0** - first release as a plugin:
   - report and tech styles;
   - components: badges, task statuses, scores, KPI cards, boxes, columns, gantt, SVG figures, filterable tables;

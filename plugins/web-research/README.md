@@ -72,4 +72,5 @@ web-research/
 
 ## Changelog
 
+- **1.0.1** - author name corrected to Ivailo Tanusheff.
 - **1.0.0** - first release: researcher agent, rules injected at session start, optional enforcement.

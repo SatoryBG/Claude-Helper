@@ -1,8 +1,8 @@
 {
   "name": "web-research",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Token-efficient web research: searches run in a cheap Haiku subagent with explicit limits, so page contents never reach the main conversation.",
-  "author": { "name": "Ivailo Tanushev" },
+  "author": { "name": "Ivailo Tanusheff" },
   "keywords": ["web", "search", "research", "tokens", "subagent"],
   "userConfig": {
     "enforce": {
