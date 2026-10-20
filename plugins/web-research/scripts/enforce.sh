@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook for WebSearch/WebFetch. Only active when the plugin option "enforce" is on.
+# PreToolUse hook for WebSearch/WebFetch and the plugin's browser tools. Only active when the plugin option "enforce" is on.
 # Calls from a subagent (hook input has agent_id) are always allowed; calls from the main
 # conversation are denied with a reason that tells Claude to delegate to the researcher.
 case "${CLAUDE_PLUGIN_OPTION_ENFORCE:-false}" in true|1|yes) ;; *) exit 0 ;; esac
@@ -15,5 +15,5 @@ fi
 [[ -n "$agent" ]] && exit 0
 
 cat <<'JSON'
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"web-research: direct WebSearch/WebFetch is disabled in the main conversation. Delegate to the web-research:researcher agent with the concrete question and limits (max searches, max opened pages, answer length in words)."}}
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"web-research: direct web tools are disabled in the main conversation. Delegate to web-research:researcher (or web-research:browser-researcher for pages that need a real browser) with the concrete question and limits."}}
 JSON

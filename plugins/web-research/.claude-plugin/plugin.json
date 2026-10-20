@@ -1,14 +1,30 @@
 {
   "name": "web-research",
-  "version": "1.0.1",
-  "description": "Token-efficient web research: searches run in a cheap Haiku subagent with explicit limits, so page contents never reach the main conversation.",
-  "author": { "name": "Ivailo Tanusheff" },
-  "keywords": ["web", "search", "research", "tokens", "subagent"],
+  "version": "1.1.0",
+  "description": "Token-efficient web research: searches run in cheap Haiku subagents with explicit limits - a fast WebSearch/WebFetch researcher and a real-browser researcher (Playwright) for JavaScript-heavy or interactive pages - so raw page content never reaches the main conversation.",
+  "author": {
+    "name": "Ivailo Tanusheff"
+  },
+  "keywords": [
+    "web",
+    "search",
+    "research",
+    "tokens",
+    "subagent",
+    "browser",
+    "playwright"
+  ],
   "userConfig": {
     "enforce": {
       "type": "boolean",
       "title": "Block direct web tools in the main conversation",
       "description": "When on, WebSearch and WebFetch called from the main conversation are blocked with a message to delegate to web-research:researcher. Subagents are never blocked.",
+      "default": false
+    },
+    "browser_headed": {
+      "type": "boolean",
+      "title": "Show the browser window",
+      "description": "When on, the browser-researcher runs Chromium in a visible window instead of headless - use it to log in to a site once; the profile is kept for later sessions.",
       "default": false
     }
   }

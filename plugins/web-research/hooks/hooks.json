@@ -9,7 +9,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "WebSearch|WebFetch",
+        "matcher": "WebSearch|WebFetch|mcp__plugin_web-research_playwright__.*",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/enforce.sh\"", "timeout": 10 }
         ]

@@ -16,8 +16,8 @@
     {
       "name": "web-research",
       "source": "./plugins/web-research",
-      "description": "Token-efficient web research: searches run in a cheap Haiku subagent with explicit limits, so page contents never reach the main conversation.",
-      "version": "1.0.1"
+      "description": "Token-efficient web research: searches run in cheap Haiku subagents with explicit limits - a fast WebSearch/WebFetch researcher and a real-browser researcher (Playwright) for JavaScript-heavy or interactive pages - so raw page content never reaches the main conversation.",
+      "version": "1.1.0"
     }
   ]
 }
