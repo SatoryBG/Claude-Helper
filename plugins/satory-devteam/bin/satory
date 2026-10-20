@@ -1,0 +1,961 @@
+#!/usr/bin/env python3
+"""satory - mechanical helper for the satory agent team.
+
+Every subcommand prints exactly one JSON object on stdout. The satory-build
+workflow calls it for everything that has to be deterministic rather than an
+agent's opinion: plan state, guards on who may touch which files, build/test
+gates, checkpoints, the append-only journal, merge/push and local deploys.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+TRAILER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+CMD_TIMEOUT = 45 * 60
+HEALTH_TIMEOUT = 120
+PROTECTED = [".satory/**", "docs/JOURNAL.md"]
+DOCS_ALLOWED = ["docs/**", "**/*.md"]
+STATUSES = ("todo", "in_progress", "blocked", "done")
+OWNERS = ("dev", "devops")
+VERDICT_MARK = {"pass": "✓", "approve": "✓", "ok": "✓", "done": "✓",
+                "fail": "✗", "changes_requested": "✗", "gate-fail": "✗",
+                "blocked": "⛔", "unblocked": "↻", "release": "🚀"}
+SATORY_HOME = Path(__file__).resolve().parent.parent
+
+
+class SatoryError(Exception):
+    pass
+
+
+def emit(obj: dict) -> None:
+    print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+
+def now(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    return dt.datetime.now().strftime(fmt)
+
+
+def load_json(path: Path, default=None):
+    if not path.exists():
+        if default is None:
+            raise SatoryError(f"missing {path}")
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def matches(path: str, globs: list[str]) -> bool:
+    p = PurePosixPath(path)
+    return any(p.full_match(g) for g in globs)
+
+
+def as_list(value) -> list[str]:
+    if not value:
+        return []
+    return [value] if isinstance(value, str) else list(value)
+
+
+# ---------------------------------------------------------------- project ---
+
+class Project:
+    def __init__(self, root: Path):
+        self.root = root
+        self.dir = root / ".satory"
+        self.run = self.dir / "run"
+        self.logs = self.run / "logs"
+        self.config = load_json(self.dir / "project.json")
+        self.state_path = self.run / "state.json"
+        self.state = load_json(self.state_path, {"tasks": {}, "deploy": {}})
+        self.pending = self.run / "journal.pending.md"
+
+    @classmethod
+    def find(cls, start: str | None) -> "Project":
+        here = Path(start or os.getcwd()).resolve()
+        for d in (here, *here.parents):
+            if (d / ".satory" / "project.json").exists():
+                return cls(d)
+        raise SatoryError(f"no .satory/project.json in {here} or its parents")
+
+    # state / plan
+    def save_state(self) -> None:
+        write_json(self.state_path, self.state)
+
+    def plan(self) -> dict:
+        return load_json(self.dir / "plan.json", {"milestones": [], "tasks": []})
+
+    def save_plan(self, plan: dict) -> None:
+        write_json(self.dir / "plan.json", plan)
+
+    def task(self, plan: dict, tid: str) -> dict:
+        for t in plan["tasks"]:
+            if t["id"] == tid:
+                return t
+        raise SatoryError(f"unknown task {tid}")
+
+    def task_state(self, tid: str) -> dict:
+        st = self.state["tasks"].get(tid)
+        if not st:
+            raise SatoryError(f"task {tid} is not started (run: task start {tid})")
+        return st
+
+    # config
+    @property
+    def main(self) -> str:
+        return self.config.get("main_branch", "main")
+
+    @property
+    def test_globs(self) -> list[str]:
+        return self.config.get("paths", {}).get("tests", [])
+
+    def commands(self, name: str) -> list[str]:
+        return as_list(self.config.get("commands", {}).get(name))
+
+    def env(self, tid: str = "", rnd: int = 0) -> dict:
+        env = dict(os.environ)
+        env.update({"SATORY_PROJECT_ROOT": str(self.root), "SATORY_TASK": tid,
+                    "SATORY_ROUND": str(rnd)})
+        staging = self.config.get("deploy", {}).get("environments", {}).get("staging")
+        if staging:
+            env["SATORY_BASE_URL"] = staging["url"]
+        return env
+
+    # git
+    def git(self, *args: str, check: bool = True) -> str:
+        r = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        if check and r.returncode != 0:
+            raise SatoryError(f"git {' '.join(args)}: {(r.stderr or r.stdout).strip()}")
+        return r.stdout.strip() if check else r
+
+    def git_ok(self, *args: str) -> bool:
+        return subprocess.run(["git", *args], cwd=self.root, capture_output=True).returncode == 0
+
+    def branch_exists(self, branch: str) -> bool:
+        return self.git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+
+    def current_branch(self) -> str:
+        return self.git("rev-parse", "--abbrev-ref", "HEAD")
+
+    def dirty(self) -> bool:
+        return bool(self.git("status", "--porcelain"))
+
+    def rel(self, path: Path) -> str:
+        return str(path.relative_to(self.root))
+
+
+def changed_files(p: Project, ref: str) -> dict[str, str]:
+    """Paths that differ between `ref` and the working tree → M/A/D."""
+    files: dict[str, str] = {}
+    for line in p.git("diff", "--name-status", "--no-renames", ref).splitlines():
+        if line:
+            status, path = line.split("\t", 1)
+            files[path] = status[0]
+    for path in p.git("ls-files", "--others", "--exclude-standard").splitlines():
+        if path:
+            files[path] = "A"
+    return files
+
+
+def restore(p: Project, ref: str, path: str, status: str) -> None:
+    if status == "A" and not p.git_ok("cat-file", "-e", f"{ref}:{path}"):
+        f = p.root / path
+        if f.is_dir():
+            shutil.rmtree(f)
+        elif f.exists() or f.is_symlink():
+            f.unlink()
+        p.git("rm", "-q", "--cached", "--ignore-unmatch", "--", path)
+    else:
+        p.git("checkout", ref, "--", path)
+
+
+def checkpoint(p: Project, tid: str, label: str) -> str:
+    p.git("add", "-A")
+    p.git("commit", "-q", "--allow-empty", "--no-verify", "-m", f"wip({tid}): {label}")
+    return p.git("rev-parse", "HEAD")
+
+
+# ------------------------------------------------------- commands & gates ---
+
+def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
+    if not cmds:
+        return {"ok": True, "skipped": True}
+    log.parent.mkdir(parents=True, exist_ok=True)
+    code = 0
+    with open(log, "w", encoding="utf-8") as f:
+        for cmd in cmds:
+            f.write(f"$ {cmd}\n")
+            f.flush()
+            try:
+                code = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root,
+                                      stdout=f, stderr=subprocess.STDOUT, env=env,
+                                      timeout=CMD_TIMEOUT).returncode
+            except subprocess.TimeoutExpired:
+                f.write(f"\n[satory] timeout after {CMD_TIMEOUT}s\n")
+                code = 124
+            f.write(f"\n[satory] exit {code}\n")
+            if code != 0:
+                break
+    return {"ok": code == 0, "exit": code, "log": p.rel(log)}
+
+
+def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
+    return run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}.log", p.env(tid, rnd))
+
+
+def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]:
+    cmds = p.commands("test_list")
+    if not cmds:
+        return False, set()
+    names: set[str] = set()
+    for cmd in cmds:
+        r = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root, capture_output=True,
+                           text=True, env=p.env(tid, rnd), timeout=CMD_TIMEOUT)
+        if r.returncode != 0:
+            return False, set()
+        names.update(line.strip() for line in r.stdout.splitlines() if line.strip())
+    return True, names
+
+
+# ---------------------------------------------------------------- journal ---
+
+def journal_pending(p: Project, tid: str, stage: str, rnd: int | None, verdict: str, note: str) -> None:
+    """Entries go to a gitignored file while a task runs and are flushed into
+    docs/JOURNAL.md on main, so they survive even when a task branch is abandoned."""
+    mark = VERDICT_MARK.get(verdict, "•")
+    where = f" · round {rnd}" if rnd else ""
+    entry = f"\n### {now()} · {tid}{where} · {stage} · {mark} {verdict}\n\n{note.strip() or '-'}\n"
+    p.pending.parent.mkdir(parents=True, exist_ok=True)
+    with open(p.pending, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+
+def journal_flush(p: Project) -> None:
+    """Append pending entries to docs/JOURNAL.md (call only on the main branch)."""
+    if not p.pending.exists():
+        return
+    text = p.pending.read_text(encoding="utf-8")
+    journal = p.root / "docs" / "JOURNAL.md"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    with open(journal, "a", encoding="utf-8") as f:
+        f.write(text)
+    p.pending.unlink()
+
+
+def join_note(note: str, lines: list[str]) -> str:
+    return "\n\n".join(part for part in (note.strip(), "\n".join(lines).strip()) if part)
+
+
+def read_note(args) -> str:
+    return sys.stdin.read() if getattr(args, "note_stdin", False) else ""
+
+
+# ------------------------------------------------------------------- plan ---
+
+def merged_status(p: Project, t: dict) -> str:
+    status = t.get("status", "todo")
+    if status == "todo" and t["id"] in p.state["tasks"]:
+        return "in_progress"
+    return status
+
+
+def validate_plan(plan: dict) -> list[str]:
+    errors = []
+    ids = [t.get("id") for t in plan.get("tasks", [])]
+    if len(ids) != len(set(ids)):
+        errors.append("duplicate task ids")
+    known = set(ids)
+    milestones = {m["id"] for m in plan.get("milestones", [])}
+    for t in plan.get("tasks", []):
+        tid = t.get("id", "?")
+        for field in ("id", "title", "owner", "description", "acceptance"):
+            if not t.get(field):
+                errors.append(f"{tid}: missing {field}")
+        if t.get("owner") not in OWNERS:
+            errors.append(f"{tid}: owner must be one of {OWNERS}")
+        if "ui" in t and not isinstance(t["ui"], bool):
+            errors.append(f"{tid}: ui must be true or false")
+        if t.get("status", "todo") not in STATUSES:
+            errors.append(f"{tid}: bad status {t.get('status')}")
+        if milestones and t.get("milestone") not in milestones:
+            errors.append(f"{tid}: unknown milestone {t.get('milestone')}")
+        for dep in t.get("depends_on", []):
+            if dep not in known:
+                errors.append(f"{tid}: unknown dependency {dep}")
+    deps = {t["id"]: t.get("depends_on", []) for t in plan.get("tasks", []) if "id" in t}
+    visiting, done = set(), set()
+
+    def visit(n):
+        if n in done:
+            return
+        if n in visiting:
+            errors.append(f"dependency cycle through {n}")
+            return
+        visiting.add(n)
+        for d in deps.get(n, []):
+            if d in deps:
+                visit(d)
+        visiting.discard(n)
+        done.add(n)
+
+    for n in deps:
+        visit(n)
+    return errors
+
+
+STATUS_LABEL = {"todo": "to do", "in_progress": "in progress", "blocked": "⛔ blocked", "done": "✓ done"}
+
+
+def render_plan(p: Project, plan: dict) -> None:
+    lines = [f"# Plan - {p.config.get('name', p.root.name)}", "",
+             "> Generated from `.satory/plan.json` by `satory plan render` - do not edit by hand.", ""]
+    milestones = plan.get("milestones") or [{"id": None, "title": "Tasks"}]
+    for m in milestones:
+        tasks = [t for t in plan["tasks"] if m["id"] is None or t.get("milestone") == m["id"]]
+        lines += [f"## {m['id'] + ' - ' if m['id'] else ''}{m['title']}", "",
+                  "| ID | Task | Owner | Depends on | Status |", "|---|---|---|---|---|"]
+        for t in tasks:
+            lines.append(f"| {t['id']} | {t['title']} | {t['owner']} | "
+                         f"{', '.join(t.get('depends_on', [])) or '-'} | {STATUS_LABEL[merged_status(p, t)]} |")
+        lines.append("")
+    lines += ["## Details", ""]
+    for t in plan["tasks"]:
+        lines += [f"### {t['id']} - {t['title']}", "", t["description"], "",
+                  f"Requirements: {', '.join(t.get('requirements', [])) or '-'}", "", "Acceptance criteria:"]
+        lines += [f"- {ac}" for ac in t["acceptance"]]
+        if t.get("blocked_reason"):
+            lines += ["", f"**Blocked:** {t['blocked_reason']}"]
+        lines.append("")
+    (p.root / "docs").mkdir(exist_ok=True)
+    (p.root / "docs" / "PLAN.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+CLAR_START, CLAR_END = "<!-- satory:clarifications -->", "<!-- /satory:clarifications -->"
+
+
+def clarifications_block(t: dict) -> str:
+    items = t.get("clarifications", [])
+    body = "\n".join(f"- {c['date']}: {c['text']}" for c in items) or "_none_"
+    return f"{CLAR_START}\n{body}\n{CLAR_END}"
+
+
+def write_task_file(p: Project, t: dict) -> Path:
+    path = p.root / "docs" / "tasks" / f"{t['id']}.md"
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        if CLAR_START in text and CLAR_END in text:
+            head, rest = text.split(CLAR_START, 1)
+            tail = rest.split(CLAR_END, 1)[1]
+            path.write_text(head + clarifications_block(t) + tail, encoding="utf-8")
+        return path
+    template = (SATORY_HOME / "templates" / "task.md").read_text(encoding="utf-8")
+    text = (template.replace("{{id}}", t["id"]).replace("{{title}}", t["title"])
+            .replace("{{milestone}}", t.get("milestone") or "-").replace("{{owner}}", t["owner"])
+            .replace("{{requirements}}", ", ".join(t.get("requirements", [])) or "-")
+            .replace("{{depends_on}}", ", ".join(t.get("depends_on", [])) or "-")
+            .replace("{{description}}", t["description"])
+            .replace("{{acceptance}}", "\n".join(f"- [ ] {ac}" for ac in t["acceptance"]))
+            .replace("{{clarifications}}", clarifications_block(t)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+# ----------------------------------------------------------------- deploy ---
+
+def wait_health(url: str) -> bool:
+    deadline = time.time() + HEALTH_TIMEOUT
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                if 200 <= r.status < 400:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(3)
+    return False
+
+
+def deploy(p: Project, env_name: str, image: str | None = None, label: str = "") -> dict:
+    d = p.config.get("deploy") or {}
+    e = d.get("environments", {}).get(env_name)
+    if not e:
+        return {"ok": True, "skipped": True}
+    sha = p.git("rev-parse", "--short=12", "HEAD")
+    log = p.logs / f"deploy-{env_name}-{label or sha}.log"
+    if image is None:
+        image = f"{d['image']}:{sha}"
+        env = dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=env_name)
+        built = run_cmds(p, as_list(d.get("build")), log.with_suffix(".build.log"), env)
+        if not built["ok"]:
+            return {"ok": False, "stage": "build", "log": built["log"]}
+    env = dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=env_name)
+    up = run_cmds(p, as_list(e["up"]), log, env)
+    if not up["ok"]:
+        return {"ok": False, "stage": "up", "log": up["log"], "image": image}
+    health_url = e["url"].rstrip("/") + e.get("health", "")
+    healthy = wait_health(health_url)
+    previous = p.state.setdefault("deploy", {}).get(env_name, {})
+    p.state["deploy"][env_name] = {"image": image, "sha": sha, "at": now(), "healthy": healthy,
+                                   "previous": previous.get("image") if previous.get("image") != image
+                                   else previous.get("previous")}
+    p.save_state()
+    return {"ok": healthy, "stage": "health" if not healthy else "done", "url": e["url"],
+            "health_url": health_url, "image": image, "log": up["log"]}
+
+
+# --------------------------------------------------------------- commands ---
+
+def cmd_init(a) -> None:
+    root = Path(a.dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if not (root / ".git").exists():
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    has_commits = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=root,
+                                 capture_output=True).returncode == 0
+    if not has_commits:  # empty clone: make sure the first commit lands on main
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=root, check=True)
+    branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root, capture_output=True,
+                            text=True).stdout.strip() if has_commits else "main"
+    for sub in ("docs/tasks", "docs/adr", ".satory/run/logs", ".claude"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    tpl = SATORY_HOME / "templates"
+    if not (root / ".satory" / "project.json").exists():
+        cfg = json.loads((tpl / "project.json").read_text(encoding="utf-8"))
+        cfg["name"] = a.name
+        cfg["main_branch"] = branch or "main"
+        write_json(root / ".satory" / "project.json", cfg)
+    if not (root / ".satory" / "plan.json").exists():
+        write_json(root / ".satory" / "plan.json", {"milestones": [], "tasks": []})
+    for name, target in (("JOURNAL.md", "docs/JOURNAL.md"), ("CHANGELOG.md", "CHANGELOG.md")):
+        if not (root / target).exists():
+            shutil.copy(tpl / name, root / target)
+    gitignore = root / ".gitignore"
+    lines = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
+    wanted = [".satory/run/", "__pycache__/", "bin/", "obj/", "node_modules/", "test-results/",
+              "playwright-report/", "*.secrets.env", ".env"]
+    missing = [w for w in wanted if w not in lines]
+    if missing:
+        gitignore.write_text("\n".join([*lines, *missing]) + "\n", encoding="utf-8")
+    settings_path = root / ".claude" / "settings.json"
+    settings = load_json(settings_path, {})
+    deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+    for rule in ("Read(./docs/JOURNAL.md)", "Read(./.satory/run/journal.pending.md)"):
+        if rule not in deny:
+            deny.append(rule)
+    write_json(settings_path, settings)
+    if a.git_name:
+        subprocess.run(["git", "config", "user.name", a.git_name], cwd=root, check=True)
+    if a.git_email:
+        subprocess.run(["git", "config", "user.email", a.git_email], cwd=root, check=True)
+    ident = subprocess.run(["git", "config", "user.email"], cwd=root, capture_output=True, text=True)
+    emit({"ok": True, "root": str(root), "git_identity": bool(ident.stdout.strip())})
+
+
+def cmd_workflow(p: Project, a) -> None:
+    """Copy the kit's workflow script into the project, where the Workflow tool may run it from."""
+    src = SATORY_HOME / "workflow" / "satory-build.js"
+    dst = p.run / "satory-build.js"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dst)
+    emit({"ok": True, "script": str(dst), "root": str(p.root)})
+
+
+def cmd_where(p: Project, a) -> None:
+    emit({"ok": True, "root": str(p.root), "name": p.config.get("name"), "branch": p.current_branch()})
+
+
+def cmd_plan(p: Project, a) -> None:
+    plan = p.plan()
+    if a.action == "validate":
+        errors = validate_plan(plan)
+        emit({"ok": not errors, "errors": errors, "tasks": len(plan["tasks"])})
+    elif a.action == "render":
+        render_plan(p, plan)
+        emit({"ok": True, "path": "docs/PLAN.md"})
+    else:
+        errors = validate_plan(plan)
+        emit({"ok": not errors, "errors": errors, "root": str(p.root), "name": p.config.get("name"),
+              "max_rounds": p.config.get("max_rounds", 7),
+              "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
+              "ui_review": bool(p.config.get("ui", {}).get("review")),
+              "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
+                         "milestone": t.get("milestone"), "depends_on": t.get("depends_on", []), "ui": t.get("ui"),
+                         "status": merged_status(p, t)} for t in plan["tasks"]]})
+
+
+def cmd_task_start(p: Project, a) -> None:
+    tid, branch = a.task, f"satory/{a.task}"
+    plan = p.plan()
+    t = p.task(plan, tid)
+    st = p.state["tasks"].get(tid)
+    resumed = False
+    if st and p.branch_exists(branch):
+        if p.current_branch() != branch:
+            if p.dirty():
+                raise SatoryError("working tree is dirty; commit or stash before starting a task")
+            p.git("checkout", "-q", branch)
+        elif p.dirty():
+            st["checkpoint"] = checkpoint(p, tid, "resume (uncommitted work)")
+        main_head = p.git("rev-parse", p.main)
+        if p.git("merge-base", p.main, branch) != main_head:
+            r = p.git("rebase", "-q", p.main, check=False)
+            if r.returncode != 0:
+                p.git("rebase", "--abort", check=False)
+                p.git("branch", "-m", branch, f"{branch}-stale-{now('%Y%m%d%H%M%S')}")
+                p.git("checkout", "-q", p.main)
+                st = None
+        if st:
+            st["base"] = main_head
+            write_task_file(p, t)
+            st["checkpoint"] = checkpoint(p, tid, "resume")
+            resumed = True
+    if not resumed:
+        if p.current_branch() != p.main:
+            if p.dirty():
+                raise SatoryError("working tree is dirty; commit or stash before starting a task")
+            p.git("checkout", "-q", p.main)
+        if p.dirty():
+            raise SatoryError(f"{p.main} has uncommitted changes; commit them before starting a task")
+        if p.branch_exists(branch):
+            p.git("branch", "-m", branch, f"{branch}-stale-{now('%Y%m%d%H%M%S')}")
+        base = p.git("rev-parse", "HEAD")
+        p.git("checkout", "-q", "-b", branch)
+        listed, names = test_names(p, tid)
+        write_task_file(p, t)
+        st = {"branch": branch, "base": base, "rounds": (st or {}).get("rounds", 0),
+              "known_tests": sorted(names), "test_list_ok": listed, "started": now()}
+        st["checkpoint"] = checkpoint(p, tid, "start")
+    p.state["tasks"][tid] = st
+    p.save_state()
+    emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
+          "rounds_used": st["rounds"], "resumed": resumed, "task_file": f"docs/tasks/{tid}.md",
+          "known_tests": len(st["known_tests"])})
+
+
+def guard(p: Project, ref: str, allowed) -> list[str]:
+    violations = []
+    for path, status in sorted(changed_files(p, ref).items()):
+        reason = allowed(path, status)
+        if reason:
+            restore(p, ref, path, status)
+            violations.append(f"{path}: {reason} - reverted")
+    return violations
+
+
+def cmd_step(p: Project, a) -> None:
+    tid, rnd = a.task, a.round
+    st = p.task_state(tid)
+    ck, base = st["checkpoint"], st["base"]
+    note = read_note(a)
+    tests = p.test_globs
+
+    if a.step == "after-dev":
+        def allowed(path, status):
+            if matches(path, PROTECTED):
+                if a.owner == "devops" and path == ".satory/project.json":
+                    return None
+                return "protected file"
+            if matches(path, tests):
+                if a.owner == "devops" and not p.git_ok("cat-file", "-e", f"{base}:{path}"):
+                    return None  # bootstrap may create test infrastructure, never change existing tests
+                return "tests belong to QA"
+            return None
+        violations = guard(p, ck, allowed)
+        gates = {g: gate(p, tid, rnd, g) for g in ("build", "lint")}
+        ok = all(g["ok"] for g in gates.values())
+        st["rounds"] = rnd
+        st["checkpoint"] = checkpoint(p, tid, f"{a.owner} r{rnd}")
+        extra = [f"- Violation: {v}" for v in violations]
+        extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
+                  for k, g in gates.items()]
+        journal_pending(p, tid, a.owner, rnd, "ok" if ok else "gate-fail", join_note(note, extra))
+        p.save_state()
+        emit({"ok": ok, "violations": violations, "gates": gates, "checkpoint": st["checkpoint"]})
+
+    elif a.step == "pre-qa":
+        res = deploy(p, "staging", label=f"{tid}-r{rnd}")
+        emit(res)
+
+    elif a.step == "after-qa":
+        task_file = f"docs/tasks/{tid}.md"
+
+        def allowed(path, status):
+            if path == task_file or (matches(path, tests) and not matches(path, PROTECTED)):
+                return None
+            return "QA may change only tests and its own section of the task file"
+        # soft: files QA must not touch at all - reverted, QA's tests are kept
+        violations = guard(p, ck, allowed)
+        # hard: append-only rule for tests - offending files go back to the pre-QA state and QA must redo
+        rules = []
+        for path, status in sorted(changed_files(p, ck).items()):
+            if not matches(path, tests) or not p.git_ok("cat-file", "-e", f"{ck}:{path}"):
+                continue
+            in_base = p.git_ok("cat-file", "-e", f"{base}:{path}")
+            if status == "D":
+                rules.append(f"{path}: deleted test file - restored")
+            elif in_base:
+                numstat = p.git("diff", "--numstat", base, "--", path).split()
+                if not numstat or numstat[1] in ("0", "-"):
+                    continue
+                rules.append(f"{path}: changed/deleted lines in a test file from an earlier task "
+                             "(only additions are allowed) - the file was restored to its pre-QA state")
+            else:
+                continue  # QA's own test file from this task: corrections allowed, names are checked below
+            restore(p, ck, path, status)
+        listed, names = test_names(p, tid, rnd)
+        known = set(st.get("known_tests", []))
+        missing = sorted(known - names) if listed else []
+        if missing:
+            rules.append(f"{len(missing)} existing tests are missing (deleted or renamed): "
+                         f"{', '.join(missing[:20])}")
+        if rules:
+            journal_pending(p, tid, "qa", rnd, "fail",
+                            join_note(note, [f"- Violation: {v}" for v in violations + rules]
+                                      + ["- QA has to redo its work."]))
+            emit({"ok": False, "qa_violation": True, "violations": violations + rules,
+                  "tests": {"listed": listed, "count": len(names), "missing": missing[:50]}})
+            return
+        if listed:
+            st["known_tests"] = sorted(known | names)
+        gates = {g: gate(p, tid, rnd, g) for g in ("test", "e2e")}
+        gates_ok = all(g["ok"] for g in gates.values())
+        st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
+        extra = [f"- Violation: {v}" for v in violations]
+        extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
+        extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
+                  for k, g in gates.items()]
+        verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
+        journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
+        p.save_state()
+        emit({"ok": gates_ok, "qa_violation": False, "violations": violations,
+              "tests": {"listed": listed, "count": len(names), "missing": []},
+              "gates": gates, "checkpoint": st["checkpoint"]})
+
+    elif a.step == "security-scan":
+        scans = []
+        for i, cmd in enumerate(p.commands("security")):
+            log = p.logs / f"{tid}-r{rnd}-security-{i + 1}.log"
+            res = run_cmds(p, [cmd], log, p.env(tid, rnd))
+            res["cmd"] = cmd
+            if res.get("exit") == 127:
+                res["missing_tool"] = True
+            scans.append(res)
+        # scanners must not leave changes behind
+        guard(p, ck, lambda path, status: "scanner artifact")
+        emit({"ok": all(s["ok"] or s.get("missing_tool") for s in scans), "scans": scans})
+
+    elif a.step == "docs-check":
+        changed = changed_files(p, ck)
+        changelog = p.root / "CHANGELOG.md"
+        has_entry = ("CHANGELOG.md" in changed and changelog.exists()
+                     and tid in changelog.read_text(encoding="utf-8"))
+        emit({"ok": has_entry, "changelog": has_entry, "changed": sorted(changed)})
+
+    elif a.step == "readonly":
+        changed = changed_files(p, ck)
+        if changed:
+            p.git("reset", "-q", "--hard", ck)
+            p.git("clean", "-fdq")
+        extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
+        journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
+        emit({"ok": True, "reverted": sorted(changed)})
+
+    else:
+        raise SatoryError(f"unknown step {a.step}")
+
+
+def cmd_task_finish(p: Project, a) -> None:
+    tid = a.task
+    st = p.task_state(tid)
+    plan = p.plan()
+    t = p.task(plan, tid)
+    note = read_note(a)
+    violations = guard(p, st["checkpoint"], lambda path, status: None
+                       if matches(path, DOCS_ALLOWED) and not matches(path, PROTECTED)
+                       else "the technical writer may change only documentation")
+    checkpoint(p, tid, "docs")
+    branch = st["branch"]
+    p.git("checkout", "-q", p.main)
+    r = p.git("merge", "--squash", branch, check=False)
+    if r.returncode != 0:
+        p.git("reset", "-q", "--hard", "HEAD")
+        p.git("checkout", "-q", branch)
+        raise SatoryError(f"squash merge of {branch} failed: {(r.stderr or r.stdout).strip()}")
+    t["status"], t["rounds"], t["finished"] = "done", st["rounds"], now()
+    t.pop("blocked_reason", None)
+    p.save_plan(plan)
+    extra = [f"- Violation: {v}" for v in violations]
+    journal_pending(p, tid, "docs", st["rounds"], "done",
+                    join_note(note, extra + [f"- Task finished after {st['rounds']} round(s)."]))
+    journal_flush(p)
+    del p.state["tasks"][tid]
+    render_plan(p, plan)
+    p.git("add", "-A")
+    kind = "build" if t["owner"] == "devops" else "feat"
+    p.git("commit", "-q", "-m",
+          f"{kind}({tid}): {t['title']}\n\nRounds: {st['rounds']} · details: docs/tasks/{tid}.md\n\n{TRAILER}")
+    commit = p.git("rev-parse", "HEAD")
+    p.git("branch", "-D", branch)
+    p.save_state()
+    pushed, push_error = False, None
+    if p.git_ok("remote", "get-url", "origin"):
+        r = p.git("push", "-q", "origin", p.main, check=False)
+        pushed = r.returncode == 0
+        push_error = None if pushed else (r.stderr or r.stdout).strip()[-500:]
+    staging = deploy(p, "staging", label=f"main-{commit[:12]}")
+    if not staging.get("skipped"):
+        p.state.setdefault("deploy", {})["main_image"] = staging.get("image")
+        p.state["deploy"]["main_sha"] = commit
+        p.save_state()
+    emit({"ok": True, "commit": commit, "violations": violations, "pushed": pushed,
+          "push_error": push_error, "staging": staging})
+
+
+def cmd_task_block(p: Project, a) -> None:
+    tid = a.task
+    st = p.task_state(tid)
+    reason = read_note(a).strip() or "no reason given"
+    plan = p.plan()
+    t = p.task(plan, tid)
+    if p.current_branch() == st["branch"]:
+        st["checkpoint"] = checkpoint(p, tid, "blocked")
+        p.git("checkout", "-q", p.main)
+    t["status"], t["blocked_reason"], t["rounds"] = "blocked", reason, st["rounds"]
+    p.save_plan(plan)
+    journal_pending(p, tid, "orchestrator", st["rounds"], "blocked", reason)
+    journal_flush(p)
+    render_plan(p, plan)
+    p.git("add", "-A")
+    p.git("commit", "-q", "-m", f"chore(plan): {tid} is blocked\n\n{TRAILER}")
+    p.save_state()
+    emit({"ok": True, "task": tid, "branch_kept": st["branch"]})
+
+
+def cmd_task_unblock(p: Project, a) -> None:
+    tid = a.task
+    answer = read_note(a).strip()
+    if p.current_branch() != p.main or p.dirty():
+        raise SatoryError(f"run unblock on a clean {p.main}")
+    plan = p.plan()
+    t = p.task(plan, tid)
+    if answer:
+        t.setdefault("clarifications", []).append({"date": now("%Y-%m-%d"), "text": answer})
+    t["status"] = "todo"
+    t.pop("blocked_reason", None)
+    p.save_plan(plan)
+    if tid in p.state["tasks"]:
+        p.state["tasks"][tid]["rounds"] = 0
+        p.save_state()
+    journal_pending(p, tid, "user", None, "unblocked", answer or "Unblocked without a clarification.")
+    journal_flush(p)
+    render_plan(p, plan)
+    p.git("add", "-A")
+    p.git("commit", "-q", "-m", f"chore(plan): {tid} is unblocked\n\n{TRAILER}")
+    emit({"ok": True, "task": tid})
+
+
+def cmd_deploy(p: Project, a) -> None:
+    image = a.image
+    if a.env == "prod" and not image:
+        image = p.state.get("deploy", {}).get("main_image")
+    emit(deploy(p, a.env, image=image, label="manual"))
+
+
+def cmd_release(p: Project, a) -> None:
+    version = a.version.lstrip("v")
+    if p.current_branch() != p.main or p.dirty():
+        raise SatoryError(f"release needs a clean {p.main}")
+    if p.state["tasks"]:
+        raise SatoryError(f"tasks in progress: {', '.join(p.state['tasks'])}")
+    dep = p.state.get("deploy", {})
+    image, built_sha = dep.get("main_image"), dep.get("main_sha")
+    code_changed = True
+    if image and built_sha and p.git_ok("cat-file", "-e", built_sha):
+        changed = p.git("diff", "--name-only", built_sha, "HEAD").splitlines()
+        code_changed = any(not matches(f, DOCS_ALLOWED + [".satory/**"]) for f in changed)
+    changelog = p.root / "CHANGELOG.md"
+    if changelog.exists():
+        text = changelog.read_text(encoding="utf-8")
+        marker = "## [Unreleased]"
+        if marker in text:
+            text = text.replace(marker, f"{marker}\n\n## [{version}] - {now('%Y-%m-%d')}", 1)
+            changelog.write_text(text, encoding="utf-8")
+    journal_pending(p, f"v{version}", "release", None, "release",
+                    f"Released to production: v{version}" + (f" (image {image})" if image and not code_changed else ""))
+    journal_flush(p)
+    p.git("add", "-A")
+    p.git("commit", "-q", "-m", f"chore(release): v{version}\n\n{TRAILER}")
+    p.git("tag", "-a", f"v{version}", "-m", f"v{version}")
+    if code_changed:
+        staging = deploy(p, "staging", label=f"release-{version}")
+        if not staging.get("ok") and not staging.get("skipped"):
+            emit({"ok": False, "stage": "staging", "staging": staging})
+            return
+        image = staging.get("image")
+    prod = deploy(p, "prod", image=image, label=f"v{version}")
+    pushed = None
+    if p.git_ok("remote", "get-url", "origin"):
+        pushed = p.git("push", "-q", "--follow-tags", "origin", p.main, check=False).returncode == 0
+    emit({"ok": prod.get("ok", False) or prod.get("skipped", False), "version": version, "prod": prod,
+          "pushed": pushed})
+
+
+def cmd_status(p: Project, a) -> None:
+    plan = p.plan()
+    counts = {s: 0 for s in STATUSES}
+    for t in plan["tasks"]:
+        counts[merged_status(p, t)] += 1
+    emit({"ok": True, "name": p.config.get("name"), "branch": p.current_branch(), "counts": counts,
+          "blocked": [{"id": t["id"], "title": t["title"], "reason": t.get("blocked_reason")}
+                      for t in plan["tasks"] if t.get("status") == "blocked"],
+          "in_progress": list(p.state["tasks"]), "deploy": p.state.get("deploy", {}),
+          "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
+
+
+def cmd_doctor(a) -> None:
+    def run(cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if not shutil.which(cmd[0]):
+            return None
+        return subprocess.run(cmd, capture_output=True, text=True, cwd=a.project or os.getcwd())
+
+    def version(cmd: list[str]) -> str | None:
+        r = run(cmd)
+        return (r.stdout or r.stderr).strip().splitlines()[0] if r and r.returncode == 0 else None
+
+    tools = {"git": ["git", "--version"], "python3": ["python3", "--version"], "docker": ["docker", "--version"],
+             "docker compose": ["docker", "compose", "version"], "node": ["node", "--version"],
+             "npx": ["npx", "--version"], "gh": ["gh", "--version"], "dotnet": ["dotnet", "--version"],
+             "semgrep": ["semgrep", "--version"], "gitleaks": ["gitleaks", "version"]}
+    found = {name: version(cmd) for name, cmd in tools.items()}
+    setup = "run /satory-devteam:setup"
+    problems, notes = [], []
+
+    def problem(what: str, fix: str) -> None:
+        problems.append({"what": what, "fix": fix})
+
+    for name in ("git", "docker", "docker compose", "node", "npx", "gh"):
+        if not found[name]:
+            problem(f"{name} is missing", setup)
+    for name in ("semgrep", "gitleaks"):
+        if not found[name]:
+            notes.append(f"scanner {name} is missing - the security checks will skip it ({setup})")
+    if not found["dotnet"]:
+        notes.append(".NET SDK is missing - needed only for .NET projects")
+
+    ident = {k: (run(["git", "config", f"user.{k}"]) or subprocess.CompletedProcess([], 1, "", "")).stdout.strip()
+             for k in ("name", "email")}
+    if not (ident["name"] and ident["email"]):
+        problem("no git identity (user.name / user.email)",
+                'git config --global user.name "Name" && git config --global user.email "email"')
+
+    docker_ok = None
+    if found["docker"]:
+        r = run(["docker", "info", "--format", "{{.ServerVersion}}"])
+        docker_ok = bool(r and r.returncode == 0)
+        if not docker_ok:
+            problem("Docker is installed, but the daemon does not respond",
+                    "sudo systemctl enable --now docker (on WSL: systemd=true in /etc/wsl.conf)")
+
+    browsers = sorted(str(p.name) for p in (Path.home() / ".cache" / "ms-playwright").glob("chromium*"))
+    if not browsers:
+        problem("Playwright Chromium is not installed", "npx -y playwright install --with-deps chromium")
+
+    github = {"logged_in": False, "account": None, "scopes": [], "git_credentials": False}
+    if found["gh"]:
+        r = run(["gh", "auth", "status", "-h", "github.com"])
+        out = (r.stdout + r.stderr) if r else ""
+        github["logged_in"] = bool(r and r.returncode == 0)
+        for line in out.splitlines():
+            if "account" in line and "Logged in" in line:
+                github["account"] = line.split("account", 1)[1].split()[0]
+            if "Token scopes:" in line:
+                github["scopes"] = [x.strip(" '") for x in line.split(":", 1)[1].split(",") if x.strip(" '")]
+        helper = run(["git", "config", "--global", "--get-all", "credential.https://github.com.helper"])
+        github["git_credentials"] = bool(helper and "gh" in helper.stdout)
+        if not github["logged_in"]:
+            problem("not logged in to GitHub", "! gh auth login -h github.com -p https -w -s workflow   (then: gh auth setup-git)")
+        else:
+            missing = [s for s in ("repo", "workflow") if s not in github["scopes"]]
+            if missing:
+                problem(f"the GitHub token lacks the {', '.join(missing)} scope (needed to push CI files)",
+                        f"! gh auth refresh -h github.com -s {','.join(missing)}")
+            if not github["git_credentials"]:
+                problem("git does not use the gh credentials", "gh auth setup-git")
+
+    emit({"ok": not problems, "problems": problems, "notes": notes, "tools": found,
+          "git_identity": ident if ident["email"] else None, "docker_running": docker_ok,
+          "playwright_browsers": browsers, "github": github, "python": sys.version.split()[0]})
+
+
+# ------------------------------------------------------------------- main ---
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="satory")
+    ap.add_argument("--project", help="project root (default: search upward from cwd)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("init")
+    s.add_argument("--dir", required=True)
+    s.add_argument("--name", required=True)
+    s.add_argument("--git-name")
+    s.add_argument("--git-email")
+    sub.add_parser("doctor")
+    sub.add_parser("where")
+    sub.add_parser("workflow")
+    sub.add_parser("status")
+    s = sub.add_parser("plan")
+    s.add_argument("action", choices=["json", "validate", "render"])
+
+    s = sub.add_parser("task")
+    s.add_argument("action", choices=["start", "finish", "block", "unblock"])
+    s.add_argument("task")
+    s.add_argument("--note-stdin", action="store_true")
+
+    s = sub.add_parser("step")
+    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "docs-check", "readonly"])
+    s.add_argument("task")
+    s.add_argument("--round", type=int, required=True)
+    s.add_argument("--owner", choices=OWNERS, default="dev")
+    s.add_argument("--stage", default="reviewer")
+    s.add_argument("--verdict")
+    s.add_argument("--note-stdin", action="store_true")
+
+    s = sub.add_parser("deploy")
+    s.add_argument("env", choices=["staging", "prod"])
+    s.add_argument("--image")
+    s = sub.add_parser("release")
+    s.add_argument("--version", required=True)
+
+    a = ap.parse_args()
+    try:
+        if a.cmd == "init":
+            return cmd_init(a)
+        if a.cmd == "doctor":
+            return cmd_doctor(a)
+        p = Project.find(a.project)
+        handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
+                    "deploy": cmd_deploy, "release": cmd_release}
+        if a.cmd == "task":
+            return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
+                    "unblock": cmd_task_unblock}[a.action](p, a)
+        return handlers[a.cmd](p, a)
+    except SatoryError as e:
+        emit({"ok": False, "error": str(e)})
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

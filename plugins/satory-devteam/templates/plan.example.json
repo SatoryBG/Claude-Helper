@@ -1,0 +1,55 @@
+{
+  "milestones": [
+    { "id": "M1", "title": "Skeleton, CI and UI foundation" },
+    { "id": "M2", "title": "Core functionality" }
+  ],
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Project skeleton, test infrastructure, Docker and CI",
+      "milestone": "M1",
+      "owner": "devops",
+      "ui": false,
+      "depends_on": [],
+      "requirements": [],
+      "description": "Create the solution according to ARCHITECTURE.md: projects, test project, e2e/ with Playwright and @axe-core/playwright, Dockerfile, deploy/compose.yml + staging.env/prod.env, a /health endpoint, a GitHub Actions workflow (build, test, security). Every command in .satory/project.json must pass.",
+      "acceptance": [
+        "All commands from .satory/project.json (build, lint, test, e2e, test_list) exit with code 0",
+        "`satory deploy staging` starts the app and /health answers 200",
+        ".github/workflows/ci.yml runs the build, test and security checks"
+      ],
+      "status": "todo"
+    },
+    {
+      "id": "T-002",
+      "title": "UI foundation: theme, app shell and shared components",
+      "milestone": "M1",
+      "owner": "dev",
+      "ui": true,
+      "depends_on": ["T-001"],
+      "requirements": ["NFR-003", "NFR-004"],
+      "description": "Implement docs/UI.md: the component library and theme with the design tokens, the app shell (header, navigation, content area), the shared components (buttons, form field with validation message, table, empty state, loading indicator, error message, confirmation dialog) and a home page that uses the shell. Keep the 'Components' section of docs/UI.md in sync with the code.",
+      "acceptance": [
+        "The home page renders inside the app shell at 375, 768 and 1280 px width without horizontal scrolling",
+        "axe reports no serious or critical violations on the home page",
+        "Navigation works with the keyboard alone and every focused element is visibly highlighted"
+      ],
+      "status": "todo"
+    },
+    {
+      "id": "T-003",
+      "title": "Create a task",
+      "milestone": "M2",
+      "owner": "dev",
+      "ui": true,
+      "depends_on": ["T-002"],
+      "requirements": ["R-001"],
+      "description": "A form and POST /api/tasks to create a task with a title and a due date, built from the shared components in docs/UI.md.",
+      "acceptance": [
+        "AC-001.1: A task with a valid title is saved and shown in the list",
+        "AC-001.2: An empty title returns 400 and an error message next to the field in the form"
+      ],
+      "status": "todo"
+    }
+  ]
+}

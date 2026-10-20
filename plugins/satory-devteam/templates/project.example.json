@@ -1,0 +1,56 @@
+{
+  "name": "todo",
+  "language": "en",
+  "stack": ".NET 9, ASP.NET Core Razor Pages, EF Core + SQLite, xUnit, Playwright (TypeScript)",
+  "main_branch": "main",
+  "max_rounds": 7,
+  "paths": {
+    "tests": [
+      "tests/**",
+      "e2e/**"
+    ]
+  },
+  "ui": {
+    "review": true
+  },
+  "commands": {
+    "build": [
+      "dotnet build --nologo -warnaserror"
+    ],
+    "lint": [
+      "dotnet format --verify-no-changes"
+    ],
+    "test": [
+      "dotnet test --nologo"
+    ],
+    "e2e": [
+      "cd e2e && npx playwright test --reporter=line"
+    ],
+    "test_list": [
+      "dotnet test --nologo --list-tests | sed -n '/The following Tests are available:/,$p' | tail -n +2 | sed 's/^ *//'",
+      "cd e2e && npx playwright test --list --reporter=list | grep -E '›' | sed 's/^ *//'"
+    ],
+    "security": [
+      "gitleaks detect --no-banner --redact --report-path .satory/run/gitleaks.json",
+      "semgrep scan --config auto --error --quiet",
+      "dotnet list package --vulnerable --include-transitive | tee /dev/stderr | (! grep -qiE 'critical|high')",
+      "cd e2e && npm audit --audit-level=high"
+    ]
+  },
+  "deploy": {
+    "image": "todo",
+    "build": "docker build -t \"$SATORY_IMAGE\" .",
+    "environments": {
+      "staging": {
+        "url": "http://localhost:8081",
+        "health": "/health",
+        "up": "docker compose -p todo-staging -f deploy/compose.yml --env-file deploy/staging.env up -d --remove-orphans"
+      },
+      "prod": {
+        "url": "http://localhost:8080",
+        "health": "/health",
+        "up": "docker compose -p todo-prod -f deploy/compose.yml --env-file deploy/prod.env up -d --remove-orphans"
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "",
+  "language": "en",
+  "stack": "",
+  "main_branch": "main",
+  "max_rounds": 7,
+  "paths": {
+    "tests": []
+  },
+  "ui": {
+    "review": false
+  },
+  "commands": {
+    "build": [],
+    "lint": [],
+    "test": [],
+    "e2e": [],
+    "test_list": [],
+    "security": []
+  },
+  "deploy": {}
+}

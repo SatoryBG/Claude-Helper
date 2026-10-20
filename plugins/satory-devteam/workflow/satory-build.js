@@ -1,0 +1,535 @@
+export const meta = {
+  name: 'satory-build',
+  description: 'Satory: runs the tasks from .satory/plan.json autonomously - Dev → Reviewer → QA → UI → Security → Docs → commit/push, with a limited number of rounds per task',
+  whenToUse: 'Started by /satory-devteam:build after the SPEC and the plan are approved. Optional arguments: project=<path> milestone=<M2> max=<number of tasks> rounds=<rounds>',
+  phases: [
+    { title: 'Prepare', detail: 'reads and validates the plan' },
+    { title: 'Dev', detail: 'implementation + build/lint' },
+    { title: 'Review', detail: 'code review against the SPEC and the mini-spec' },
+    { title: 'QA', detail: 'staging, new tests, the whole test suite' },
+    { title: 'UI', detail: 'browser review against docs/UI.md: viewports, accessibility, consistency' },
+    { title: 'Security', detail: 'scanners + audit' },
+    { title: 'Docs', detail: 'documentation, merge, push, staging' },
+  ],
+}
+
+// ------------------------------------------------------------------ config --
+
+function parseArgs(raw) {
+  if (raw && typeof raw === 'object') return raw
+  const out = {}
+  for (const tok of String(raw || '').split(/\s+/).filter(Boolean)) {
+    const i = tok.indexOf('=')
+    if (i > 0) out[tok.slice(0, i)] = tok.slice(i + 1)
+    else if (tok.includes('/')) out.project = tok
+    else if (/^M\d+$/i.test(tok)) out.milestone = tok
+  }
+  return out
+}
+
+const A = parseArgs(args)
+const MODELS = {
+  dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet',
+  runner: 'haiku',
+  ...(A.models || {}),
+}
+const MAX_TASKS = Number(A.max || A.maxTasks || 1000)
+const MILESTONE = A.milestone || null
+const QA_ATTEMPTS = 3
+const q = s => "'" + String(s).replace(/'/g, `'\\''`) + "'"
+// python3 explicitly: the executable bit does not survive commits from Windows (core.filemode=false)
+const BIN = A.bin ? `python3 ${q(A.bin)}` : 'satory'
+const AGENTS_DIR = A.agentsDir || null  // for the role-file fallback
+let PROJECT = A.project || null
+let MAX_ROUNDS = 7
+let UI_REVIEW = false
+
+// ----------------------------------------------------------------- schemas --
+
+const RUN_SCHEMA = {
+  type: 'object',
+  properties: { exit_code: { type: 'integer' }, stdout: { type: 'string' } },
+  required: ['exit_code', 'stdout'],
+}
+const DEV_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string', description: 'What you did in this round (2-6 sentences)' },
+    changes: { type: 'array', items: { type: 'string' }, description: 'Short list of the changes' },
+    mini_spec_updated: { type: 'boolean' },
+    disputes: {
+      type: 'array',
+      items: { type: 'object', properties: { test: { type: 'string' }, reason: { type: 'string' } }, required: ['test', 'reason'] },
+    },
+    blocked_question: { type: 'string', description: 'Empty, unless the task cannot continue without a business decision by the user' },
+  },
+  required: ['summary', 'changes', 'mini_spec_updated', 'disputes', 'blocked_question'],
+}
+const REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['approve', 'changes_requested'] },
+    summary: { type: 'string' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+          file: { type: 'string' }, line: { type: 'integer' }, issue: { type: 'string' }, fix: { type: 'string' },
+        },
+        required: ['severity', 'file', 'issue', 'fix'],
+      },
+    },
+  },
+  required: ['verdict', 'summary', 'findings'],
+}
+const QA_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail'] },
+    summary: { type: 'string' },
+    mini_spec_complete: { type: 'boolean' },
+    tests_added: { type: 'array', items: { type: 'string' } },
+    failures: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { test: { type: 'string' }, expected: { type: 'string' }, actual: { type: 'string' }, repro: { type: 'string' } },
+        required: ['test', 'expected', 'actual'],
+      },
+    },
+    findings: {
+      type: 'array',
+      description: 'Defects from the exploratory testing or an incomplete mini-spec',
+      items: {
+        type: 'object',
+        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, description: { type: 'string' }, repro: { type: 'string' } },
+        required: ['severity', 'description'],
+      },
+    },
+  },
+  required: ['verdict', 'summary', 'mini_spec_complete', 'tests_added', 'failures', 'findings'],
+}
+const UI_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail'] },
+    summary: { type: 'string' },
+    pages_checked: { type: 'array', items: { type: 'string' }, description: 'Routes and states that were checked' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+          page: { type: 'string' }, viewport: { type: 'string' }, screenshot: { type: 'string' },
+          issue: { type: 'string' }, fix: { type: 'string' },
+        },
+        required: ['severity', 'page', 'issue', 'fix'],
+      },
+    },
+  },
+  required: ['verdict', 'summary', 'pages_checked', 'findings'],
+}
+const SEC_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail'] },
+    summary: { type: 'string' },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+          category: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
+          issue: { type: 'string' }, attack: { type: 'string' }, fix: { type: 'string' },
+        },
+        required: ['severity', 'category', 'file', 'issue', 'fix'],
+      },
+    },
+  },
+  required: ['verdict', 'summary', 'findings'],
+}
+const DOCS_SCHEMA = {
+  type: 'object',
+  properties: { summary: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } },
+  required: ['summary', 'files'],
+}
+
+// ------------------------------------------------------------------ helpers --
+
+const bullets = items => items.map(x => `- ${x}`).join('\n')
+const where = f => (f.line ? `${f.file}:${f.line}` : f.file)
+const at = f => [f.page, f.viewport].filter(Boolean).join(' @ ')
+
+// Plugin agents are registered as `satory-devteam:<role>` when a Claude session starts. If they are missing
+// (plugin installed mid-session), fall back to a default agent that reads its role from the agent file.
+let ROLE_FILES = A.roleFiles === true
+async function spawn(role, prompt, opts) {
+  if (!ROLE_FILES) {
+    try {
+      return await agent(prompt, { ...opts, agentType: `satory-devteam:${role}` })
+    } catch (e) {
+      if (!/not found/i.test(String(e && e.message)) || !AGENTS_DIR) throw e
+      ROLE_FILES = true
+      log(`The satory-devteam:* agents are not loaded in this session - roles are read from ${AGENTS_DIR} (restart Claude to load them normally).`)
+    }
+  }
+  if (role === 'runner') return agent(prompt, opts)
+  return agent(`First read the whole file ${AGENTS_DIR}/${role}.md (without the YAML front matter) - it is your role and your rules; follow them strictly.\n\n${prompt}`, opts)
+}
+
+async function sh(cmd, { phase, label, note } = {}) {
+  let full = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
+  if (note !== undefined) {
+    const body = String(note).replace(/^SATORY_EOF$/gm, 'SATORY_EOF_')
+    full += ` --note-stdin <<'SATORY_EOF'\n${body}\nSATORY_EOF`
+  }
+  const prompt = `Run exactly this bash command once and return its exit code and stdout verbatim:\n\n\`\`\`bash\n${full}\n\`\`\``
+  const opts = { phase, label: `satory ${label || cmd}`, model: MODELS.runner, schema: RUN_SCHEMA }
+  let r = await spawn('runner', prompt, opts)
+  if (!r) r = await spawn('runner', prompt, opts) // only when the runner itself died
+  if (!r) throw new Error(`satory ${cmd}: the runner returned no result`)
+  const text = String(r.stdout)
+  const start = text.indexOf('{'), end = text.lastIndexOf('}')
+  try {
+    return JSON.parse(text.slice(start, end + 1))
+  } catch (e) {
+    throw new Error(`satory ${cmd}: unparsable output (exit ${r.exit_code}): ${text.slice(0, 300)}`)
+  }
+}
+
+function must(res, what) {
+  if (res && res.error) throw new Error(`${what}: ${res.error}`)
+  return res
+}
+
+function gateLines(gates) {
+  return Object.entries(gates || {})
+    .filter(([, g]) => !g.ok)
+    .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}`)
+}
+
+function context(t, start) {
+  return [
+    `Project: ${PROJECT}`,
+    `Task: ${t.id} - ${t.title} (owner: ${t.owner})`,
+    `Task file: docs/tasks/${t.id}.md`,
+    `Git branch: ${start.branch}; task base: ${start.base}`,
+    `satory CLI: ${BIN}`,
+  ].join('\n')
+}
+
+// A task gets a UI review when the project has one enabled, staging runs, and the task touches the UI.
+// `ui` in the plan decides; without it, devops tasks are skipped and dev tasks are reviewed.
+const needsUi = (t, staging) => UI_REVIEW && !staging.skipped && (typeof t.ui === 'boolean' ? t.ui : t.owner !== 'devops')
+
+// ------------------------------------------------------------------ prompts --
+
+function devPrompt(ctx, round, feedback) {
+  return `${ctx}
+Round: ${round} of at most ${MAX_ROUNDS}.
+
+${feedback ? `The task was sent back to you. Address EVERY point of the feedback.\n\n## Feedback\n${feedback}` : 'Implement the task.'}
+
+Reminder: tests belong to QA (do not touch them), the mini-spec in the task file must be up to date,
+build/lint/test must pass. Do not commit.`
+}
+
+function reviewPrompt(ctx, round, base, reviewedAt, prevReview, dev) {
+  const prev = prevReview && prevReview.findings.length
+    ? `\n## Previous findings - check that they were addressed\n${bullets(prevReview.findings.map(f => `[${f.severity}] ${where(f)}: ${f.issue}`))}`
+    : ''
+  const disputes = dev.disputes.length
+    ? `\n## Dev disputes tests\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
+  return `${ctx}
+Round: ${round}.
+
+Full scope of the task: \`git diff ${base}..HEAD\`${reviewedAt ? `\nChanges since the previous review: \`git diff ${reviewedAt}..HEAD\`` : ''}
+
+## Dev reports
+${dev.summary}
+${bullets(dev.changes)}${prev}${disputes}`
+}
+
+function qaPrompt(ctx, round, base, staging, dev, retryNote) {
+  const env = staging.skipped
+    ? 'The project has no staging environment (not a web app or no deploy) - no e2e and no browser exploration.'
+    : `The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).`
+  const disputes = dev.disputes.length
+    ? `\n## Dev disputes these tests (judge them by the SPEC)\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
+  return `${ctx}
+Round: ${round}.
+${env}
+
+Scope of the changes: \`git diff ${base}..HEAD\`
+Dev reports: ${dev.summary}${disputes}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+}
+
+function uiPrompt(ctx, round, base, staging, dev, prevUi) {
+  const prev = prevUi && prevUi.findings.length
+    ? `\n\n## Previous findings - check that they were fixed\n${bullets(prevUi.findings.map(f => `[${f.severity}] ${at(f)}: ${f.issue}`))}`
+    : ''
+  return `${ctx}
+Round: ${round}.
+The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).
+
+Scope of the changes: \`git diff ${base}..HEAD\`
+Dev reports: ${dev.summary}${prev}`
+}
+
+function secPrompt(ctx, round, base, scan) {
+  const scans = (scan.scans || []).map(s =>
+    `\`${s.cmd}\` → ${s.missing_tool ? 'TOOL IS MISSING' : s.ok ? 'OK' : `problems found (exit ${s.exit})`} - log: ${s.log}`)
+  return `${ctx}
+Round: ${round}.
+
+Scope of the audit: \`git diff ${base}..HEAD\` (plus the affected context).
+
+## Automatic scanners
+${scans.length ? bullets(scans) : '- none configured (commands.security in .satory/project.json)'}`
+}
+
+function docsPrompt(ctx, t, base, retryNote) {
+  return `${ctx}
+
+The task passed the Reviewer, QA, the UI review and Security. Sources: \`git diff ${base}..HEAD\`, the mini-spec and
+"QA: coverage" in the task file. Do (mandatory):
+1. CHANGELOG.md - an entry for ${t.id} under \`## [Unreleased]\` in the right subsection (### Added / Changed / Fixed / Security).
+   This is ALWAYS done, for every task - "no changes needed" is not a valid result.
+2. README.md - if it is missing, create it (what the project is, how to run and use it); if the task changes something
+   a user or developer needs to know, reflect it.
+3. docs/ - for a new or changed API/behaviour, update or create the matching document (e.g. docs/API.md).
+4. In the task file, tick [x] the acceptance criteria that are covered by tests.
+Write in the language set by \`language\` in .satory/project.json.${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+}
+
+// ------------------------------------------------------- journal notes --
+
+const devNote = (who, d) => `${d.summary}\n\n${bullets(d.changes)}` +
+  (d.disputes.length ? `\n\nTest disputes:\n${bullets(d.disputes.map(x => `${x.test}: ${x.reason}`))}` : '') +
+  (d.mini_spec_updated ? '' : `\n\n(${who} did not update the mini-spec)`)
+const reviewNote = r => `${r.summary}` +
+  (r.findings.length ? `\n\n${bullets(r.findings.map(f => `[${f.severity}] ${where(f)}: ${f.issue} → ${f.fix}`))}` : '')
+const qaNote = r => `${r.summary}` +
+  (r.tests_added.length ? `\n\nTests added:\n${bullets(r.tests_added)}` : '') +
+  (r.failures.length ? `\n\nFailures:\n${bullets(r.failures.map(f => `${f.test}: expected ${f.expected}, actual ${f.actual}`))}` : '') +
+  (r.findings.length ? `\n\nFindings:\n${bullets(r.findings.map(f => `[${f.severity}] ${f.description}`))}` : '')
+const uiNote = r => `${r.summary}` +
+  (r.pages_checked.length ? `\n\nChecked: ${r.pages_checked.join(', ')}` : '') +
+  (r.findings.length ? `\n\n${bullets(r.findings.map(f => `[${f.severity}] ${at(f)}: ${f.issue} → ${f.fix}`))}` : '')
+const secNote = r => `${r.summary}` +
+  (r.findings.length ? `\n\n${bullets(r.findings.map(f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}`))}` : '')
+
+// --------------------------------------------------------------- feedback --
+
+function reviewFeedback(r) {
+  const blocking = r.findings.filter(f => f.severity === 'blocker' || f.severity === 'major')
+  const rest = r.findings.filter(f => !blocking.includes(f))
+  return `### Code review: changes requested\n${r.summary}\n\nRequired:\n` +
+    bullets(blocking.map(f => `[${f.severity}] ${where(f)}: ${f.issue}\n  → ${f.fix}`)) +
+    (rest.length ? `\n\nOptional:\n${bullets(rest.map(f => `[${f.severity}] ${where(f)}: ${f.issue}`))}` : '')
+}
+
+function qaFeedback(r, after) {
+  const parts = [`### QA: failed\n${r.summary}`]
+  if (!r.mini_spec_complete) parts.push('The mini-spec is incomplete or inaccurate - complete it so it can be tested.')
+  if (r.failures.length) parts.push('Failing tests (do NOT change them - change the code; if a test is wrong, dispute it in the task file):\n' +
+    bullets(r.failures.map(f => `${f.test}: expected ${f.expected}; actual ${f.actual}${f.repro ? `; reproduce: ${f.repro}` : ''}`)))
+  if (r.findings.length) parts.push('Defects:\n' + bullets(r.findings.map(f => `[${f.severity}] ${f.description}${f.repro ? ` (${f.repro})` : ''}`)))
+  const gates = gateLines(after.gates)
+  if (gates.length) parts.push('Automatic checks (the whole test suite):\n' + bullets(gates))
+  return parts.join('\n\n')
+}
+
+function uiFeedback(r, blocking) {
+  const rest = r.findings.filter(f => !blocking.includes(f))
+  return `### UI review: changes requested\n${r.summary}\n\nRequired (see docs/UI.md):\n` +
+    bullets(blocking.map(f => `[${f.severity}] ${at(f)}: ${f.issue}${f.screenshot ? ` (screenshot: ${f.screenshot})` : ''}\n  → ${f.fix}`)) +
+    (rest.length ? `\n\nOptional:\n${bullets(rest.map(f => `[${f.severity}] ${at(f)}: ${f.issue}`))}` : '')
+}
+
+function secFeedback(r, blocking) {
+  return `### Security: vulnerabilities found\n${r.summary}\n\n` +
+    bullets(blocking.map(f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}${f.attack ? `\n  attack: ${f.attack}` : ''}\n  → ${f.fix}`))
+}
+
+// --------------------------------------------------------------- one task --
+
+async function block(t, round, reason) {
+  must(await sh(`task block ${t.id}`, { phase: 'Docs', label: `block ${t.id}`, note: reason }), `block ${t.id}`)
+  log(`⛔ ${t.id} is blocked: ${reason.split('\n')[0]}`)
+  return { id: t.id, title: t.title, status: 'blocked', rounds: round, reason }
+}
+
+async function runTask(t) {
+  const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
+  const ctx = context(t, start)
+  const role = t.owner === 'devops' ? 'devops' : 'dev'
+  let round = start.rounds_used || 0
+  let feedback = start.resumed
+    ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.'
+    : ''
+  let reviewedAt = null, prevReview = null, prevUi = null, lastStage = ''
+
+  while (round < MAX_ROUNDS) {
+    round++
+    const tag = `${t.id} r${round}`
+
+    // ---- Dev ----------------------------------------------------------
+    const dev = await spawn(role, devPrompt(ctx, round, feedback),
+      { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
+    if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
+    if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
+    const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
+      { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev) }), `after-dev ${tag}`)
+    if (!ad.ok) {
+      lastStage = 'build/lint'
+      feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
+      continue
+    }
+    const devViolations = ad.violations.length
+      ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
+
+    // ---- Review -------------------------------------------------------
+    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev),
+      { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
+    if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
+    const revBlocking = rev.findings.some(f => f.severity === 'blocker' || f.severity === 'major')
+    const revVerdict = revBlocking ? 'changes_requested' : 'approve'
+    must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revVerdict}`,
+      { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
+    reviewedAt = ad.checkpoint
+    prevReview = rev
+    if (revBlocking) {
+      lastStage = 'review'
+      feedback = reviewFeedback(rev) + devViolations
+      continue
+    }
+
+    // ---- QA -----------------------------------------------------------
+    const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}` }), `staging ${tag}`)
+    if (!staging.ok) {
+      lastStage = 'staging'
+      feedback = `### The app does not start on staging\nStage: ${staging.stage}. Log: ${staging.log}` +
+        (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
+      continue
+    }
+    let qa = null, aq = null, retryNote = ''
+    for (let attempt = 1; ; attempt++) {
+      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote),
+        { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
+      if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
+      aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict}`,
+        { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa) }), `after-qa ${tag}`)
+      if (!aq.qa_violation) break
+      if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
+      retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
+        `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones.`
+    }
+    const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete
+    if (qaFailed) {
+      lastStage = 'qa'
+      feedback = qaFeedback(qa, aq)
+      continue
+    }
+
+    // ---- UI -----------------------------------------------------------
+    if (needsUi(t, staging)) {
+      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, prevUi),
+        { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
+      if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
+      const uiBlocking = ui.findings.filter(f => f.severity === 'blocker' || f.severity === 'major')
+      must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiBlocking.length ? 'fail' : 'pass'}`,
+        { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`)
+      prevUi = ui
+      if (uiBlocking.length) {
+        lastStage = 'ui'
+        feedback = uiFeedback(ui, uiBlocking)
+        continue
+      }
+    }
+
+    // ---- Security -----------------------------------------------------
+    const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}` }), `scan ${tag}`)
+    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan),
+      { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
+    if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
+    const secBlocking = sec.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity))
+    must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secBlocking.length ? 'fail' : 'pass'}`,
+      { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`)
+    if (secBlocking.length) {
+      lastStage = 'security'
+      feedback = secFeedback(sec, secBlocking)
+      continue
+    }
+
+    // ---- Docs + finish -------------------------------------------------
+    let docs = null, docsCheck = null, docsNote = ''
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      docs = await spawn('docs', docsPrompt(ctx, t, start.base, docsNote),
+        { phase: 'Docs', label: `docs ${t.id}${attempt > 1 ? ' attempt 2' : ''}`, model: MODELS.docs, schema: DOCS_SCHEMA })
+      docsCheck = must(await sh(`step docs-check ${t.id} --round ${round}`, { phase: 'Docs', label: `check docs ${t.id}` }), `docs-check ${t.id}`)
+      if (docsCheck.ok) break
+      docsNote = `The previous attempt did not add an entry for ${t.id} to CHANGELOG.md under [Unreleased]. This is mandatory - add it.`
+    }
+    const docsSummary = docs ? `${docs.summary}\n\n${bullets(docs.files)}` : 'The technical writer returned no result.'
+    const fin = must(await sh(`task finish ${t.id}`,
+      { phase: 'Docs', label: `merge+push ${t.id}`,
+        note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
+    `finish ${t.id}`)
+    log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
+    return { id: t.id, title: t.title, status: 'done', rounds: round, commit: fin.commit, pushed: fin.pushed,
+             push_error: fin.push_error, staging: fin.staging }
+  }
+  return block(t, round, `All ${MAX_ROUNDS} rounds used; last sent back by: ${lastStage}.\n\nLast feedback to Dev:\n${feedback}`)
+}
+
+// ------------------------------------------------------------------- main --
+
+function pickNext(plan, attempted) {
+  const status = Object.fromEntries(plan.tasks.map(t => [t.id, t.status]))
+  const ready = plan.tasks.filter(t =>
+    (t.status === 'todo' || t.status === 'in_progress') && !attempted.has(t.id) &&
+    (!MILESTONE || t.milestone === MILESTONE) &&
+    t.depends_on.every(d => status[d] === 'done'))
+  return ready.find(t => t.status === 'in_progress') || ready[0] || null
+}
+
+phase('Prepare')
+let plan = await sh('plan json', { phase: 'Prepare', label: 'plan' })
+if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
+if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${bullets(plan.errors)}`)
+PROJECT = plan.root
+MAX_ROUNDS = Number(A.rounds || plan.max_rounds || 7)
+UI_REVIEW = plan.ui_review === true
+log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
+
+const results = []
+const attempted = new Set()
+let stopped = null
+while (results.length < MAX_TASKS) {
+  const t = pickNext(plan, attempted)
+  if (!t) break
+  attempted.add(t.id)
+  log(`▶ ${t.id} - ${t.title}`)
+  try {
+    results.push(await runTask(t))
+  } catch (e) {
+    stopped = `${t.id}: ${e.message}`
+    log(`Stopping: ${stopped}`)
+    break
+  }
+  plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
+}
+
+const left = plan.tasks.filter(t => t.status !== 'done' && (!MILESTONE || t.milestone === MILESTONE))
+return {
+  project: PROJECT,
+  done: results.filter(r => r.status === 'done'),
+  blocked: results.filter(r => r.status === 'blocked'),
+  stopped_on_error: stopped,
+  remaining: left.map(t => ({ id: t.id, title: t.title, status: t.status, waits_for: t.depends_on.filter(d => plan.tasks.find(x => x.id === d).status !== 'done') })),
+}

@@ -1,0 +1,2 @@
+# LF everywhere: bash and python scripts break with CRLF (Git for Windows defaults to autocrlf=true)
+* text=auto eol=lf
