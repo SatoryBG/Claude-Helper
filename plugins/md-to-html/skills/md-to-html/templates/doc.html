@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="$lang$">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="md-to-html / pandoc">
+$if(date)$<meta name="dcterms.date" content="$date$">$endif$
+<title>$pagetitle$</title>
+$for(header-includes)$
+$header-includes$
+$endfor$
+</head>
+<body class="style-$style$$if(wide)$ wide$endif$" data-l-all="$ui.filter_all$" data-l-search="$ui.filter_search$" data-l-shown="$ui.filter_shown$" data-l-copy="$ui.copy$" data-l-copied="$ui.copied$" data-l-copy-failed="$ui.copy_failed$">
+<div class="page">
+$if(toc)$
+<nav class="toc" aria-label="$ui.toc$">
+<div class="toc-title">$ui.toc$</div>
+$table-of-contents$
+</nav>
+$endif$
+<main>
+$if(title)$
+<header class="doc-header">
+$if(doctype)$<div class="doc-kind">$doctype$</div>$endif$
+<h1 class="doc-title">$title$</h1>
+$if(subtitle)$<p class="doc-subtitle">$subtitle$</p>$endif$
+<div class="doc-meta">
+$if(date)$<span>$date$</span>$endif$
+$for(author)$<span>$author$</span>$endfor$
+$for(tags)$<span class="tag">$tags$</span>$endfor$
+</div>
+</header>
+$endif$
+$body$
+</main>
+</div>
+$if(has_mermaid)$
+<script type="module" data-external="1">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({ startOnLoad: false, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default", fontFamily: getComputedStyle(document.body).fontFamily });
+let i = 0;
+for (const pre of document.querySelectorAll("pre.mermaid")) {
+  try { const { svg } = await mermaid.render("mmd" + i++, pre.textContent); pre.outerHTML = '<div class="mermaid-figure">' + svg + "</div>"; }
+  catch (e) { pre.title = String(e); }
+}
+</script>
+$endif$
+$for(include-after)$
+$include-after$
+$endfor$
+</body>
+</html>

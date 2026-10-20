@@ -1,0 +1,23 @@
+{
+  "toc": "Contents",
+  "source": "Source",
+  "generated": "generated",
+  "callouts": { "note": "Note", "tip": "Tip", "important": "Important", "warning": "Warning", "caution": "Caution" },
+  "filter": { "all": "All", "search": "Search the table...", "shown": "Showing {shown} of {total}" },
+  "copy": { "copy": "Copy", "copied": "Copied", "failed": "Error" },
+  "months": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+  "duration": { "month": "mo", "day": "d" },
+  "keywords": {
+    "critical": ["critical"],
+    "high": ["high"],
+    "medium": ["medium"],
+    "low": ["low"],
+    "info": ["info", "informational", "hygiene"],
+    "total": ["total"],
+    "done": ["done", "completed"],
+    "progress": ["in progress"],
+    "planned": ["planned"],
+    "new": ["new"],
+    "all": ["all", "tasks"]
+  }
+}

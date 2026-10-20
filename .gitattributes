@@ -1,0 +1,7 @@
+# Scripts run under bash (WSL/Linux/macOS/Git Bash) - CRLF line endings break them.
+*.sh   text eol=lf
+*.lua  text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css  text eol=lf

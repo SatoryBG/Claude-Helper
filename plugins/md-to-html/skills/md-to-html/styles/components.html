@@ -1,0 +1,129 @@
+<style>
+/* Components: badges, scores, KPI cards, timeline, filterable tables */
+:root { --crit: #b42318; --high: #c2410c; --med: #a16207; --low: #2457a6; --info: #5d6676; --ok: #1f7a4d;
+  --g1: #2457a6; --g2: #b42318; --g3: #1f7a4d; --g4: #7048b6; --g5: #a16207; }
+@media (prefers-color-scheme: dark) { :root { --crit: #f07a6e; --high: #f59e5b; --med: #e0b84a; --low: #7aa7e8; --info: #9aa3b2; --ok: #5cc28f;
+  --g1: #7aa7e8; --g2: #f07a6e; --g3: #5cc28f; --g4: #b49af0; --g5: #e0b84a; } }
+
+.sev { display: inline-block; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.5;
+  padding: 0 0.55rem; border-radius: 999px; border: 1.5px solid var(--c); color: var(--c); white-space: nowrap; }
+.sev-critical { --c: var(--crit); } .sev-high { --c: var(--high); } .sev-medium { --c: var(--med); } .sev-low { --c: var(--low); } .sev-info { --c: var(--info); }
+/* Task statuses: soft tinted background + dark text, modeled on Atlassian lozenges (green/blue/grey/purple) */
+:root { --st-done: #216e4e; --st-done-bg: #dcfff1; --st-progress: #0055cc; --st-progress-bg: #e9f2ff;
+  --st-planned: #44546f; --st-planned-bg: #edeef1; --st-new: #5e4db2; --st-new-bg: #f3f0ff; }
+@media (prefers-color-scheme: dark) { :root { --st-done: #7ee2b8; --st-done-bg: #253735; --st-progress: #85b8ff; --st-progress-bg: #263140;
+  --st-planned: #9fadbc; --st-planned-bg: #2a2f36; --st-new: #b8acf6; --st-new-bg: #2e2f3f; } }
+.sev-done, .sev-progress, .sev-planned, .sev-new { border-color: transparent; border-radius: 4px; background: var(--b); }
+.sev-done { --c: var(--st-done); --b: var(--st-done-bg); } .sev-progress { --c: var(--st-progress); --b: var(--st-progress-bg); }
+.sev-planned { --c: var(--st-planned); --b: var(--st-planned-bg); } .sev-new { --c: var(--st-new); --b: var(--st-new-bg); }
+td:has(> .sev:only-child), td:has(> .sev-group:only-child) { text-align: center; }
+.sev-group { white-space: nowrap; } .sev-group > .sev + .sev { margin-left: 0.3rem; }
+
+.score { display: inline-flex; align-items: center; justify-content: center; min-width: 1.45rem; height: 1.45rem; padding: 0 0.35rem;
+  border-radius: 999px; background: var(--c, var(--info)); color: #fff; font-size: 0.75rem; font-weight: 700; }
+.score-0, .score-1 { --c: var(--crit); } .score-2 { --c: var(--med); } .score-3 { --c: var(--low); } .score-4, .score-5 { --c: var(--ok); }
+td:has(> .score:only-child) { text-align: center; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.8rem; margin: 0 0 1.2rem; }
+.kpi { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; box-shadow: 0 1px 2px rgb(0 0 0 / 0.04); }
+.kpi-value { font-size: 2rem; font-weight: 700; line-height: 1.1; color: var(--c); }
+.kpi-label { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 0.3rem; }
+.kpi-critical { --c: var(--crit); } .kpi-high { --c: var(--high); } .kpi-medium { --c: var(--med); } .kpi-low { --c: var(--low); }
+.kpi-info { --c: var(--info); } .kpi-total { --c: var(--ok); } .kpi-accent { --c: var(--accent); }
+.kpi-done { --c: var(--st-done); } .kpi-progress { --c: var(--st-progress); } .kpi-planned { --c: var(--st-planned); } .kpi-new { --c: var(--st-new); }
+.kpi-all { --c: var(--text); }
+
+figure { margin: 0 0 1.4rem; text-align: center; }
+figure img, .svg-figure svg { max-width: 100%; height: auto; }
+.svg-figure { display: block; font-family: var(--font); }
+figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; }
+
+.gantt { --gl: 34%; --gd: 2.6rem; text-align: left; border: 1px solid var(--border); border-radius: 10px; padding: 1rem; overflow-x: auto; }
+.gantt figcaption { font-weight: 700; color: var(--text); font-size: 0.95rem; margin: 0 0 0.6rem; }
+.g-body { position: relative; min-width: 640px; }
+.g-grid { position: absolute; top: 0; bottom: 0; left: var(--gl); right: var(--gd); pointer-events: none; }
+.g-grid i { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--border); }
+.g-row { display: grid; grid-template-columns: var(--gl) 1fr var(--gd); align-items: center; min-height: 1.55rem; position: relative; }
+.g-row:not(.g-axis):hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.g-label { font-size: 0.8rem; padding-right: 0.8rem; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; }
+.g-track { position: relative; height: 1.55rem; }
+.g-row:not(.g-axis) .g-track::before { content: ""; position: absolute; left: 0; right: 0; top: 0.32rem; height: 0.9rem; border-radius: 4px; background: color-mix(in srgb, var(--surface) 70%, var(--border)); opacity: 0.45; }
+.g-dur { font-size: 0.72rem; color: var(--muted); text-align: right; }
+.g-axis .g-track span { position: absolute; top: 0.2rem; font-size: 0.72rem; color: var(--muted); padding-left: 0.25rem; white-space: nowrap; }
+.g-section { font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+  padding: 0.5rem 0 0.2rem; border-top: 1px solid var(--border); margin-top: 0.3rem; position: relative; }
+.g-section[class*="g-c"] { color: var(--gc); }
+.g-bar { position: absolute; top: 0.32rem; height: 0.9rem; border-radius: 4px; background: var(--gc); }
+.g-c1 { --gc: var(--g1); } .g-c2 { --gc: var(--g2); } .g-c3 { --gc: var(--g3); } .g-c4 { --gc: var(--g4); } .g-c5 { --gc: var(--g5); }
+.g-bar.g-done { opacity: 0.4; } .g-bar.g-crit { --gc: var(--crit); outline: 2px solid var(--crit); outline-offset: 1px; }
+.g-bar.g-active { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--gc); }
+.g-bar.g-milestone { width: 0.9rem !important; transform: rotate(45deg) scale(0.8); border-radius: 2px; }
+.card { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--surface); padding: 0.9rem 1.1rem; margin: 0 0 1rem; }
+.card > :first-child { margin-top: 0; } .card > :last-child { margin-bottom: 0; }
+.card table { background: var(--bg); }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.cols > * { margin: 0; }
+pre.mermaid { background: none; border: 0; text-align: center; }
+.mermaid-figure { text-align: center; margin: 0 0 1.2rem; } .mermaid-figure svg { max-width: 100%; height: auto; }
+
+.filter-bar { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.7rem; font-size: 0.85rem; }
+.filter-bar .f-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin: 0.2rem 0; }
+.filter-bar .f-name { font-weight: 700; margin-right: 0.3rem; }
+.filter-bar button { font: inherit; font-size: 0.8rem; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 999px; padding: 0.1rem 0.7rem; cursor: pointer; }
+.filter-bar button.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.filter-bar input { font: inherit; font-size: 0.85rem; padding: 0.25rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 220px; }
+.filter-bar .f-count { color: var(--muted); font-size: 0.78rem; margin-top: 0.3rem; }
+.filterable th { cursor: pointer; user-select: none; }
+.filterable th[data-dir="asc"]::after { content: " \25B2"; font-size: 0.7em; } .filterable th[data-dir="desc"]::after { content: " \25BC"; font-size: 0.7em; }
+@media print { .filter-bar { display: none; } .gantt { overflow: visible; } }
+</style>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const L = document.body.dataset;
+  const T = { all: L.lAll || "All", search: L.lSearch || "Search the table...",
+              shown: (a, b) => (L.lShown || "Showing {shown} of {total}").replace("{shown}", a).replace("{total}", b) };
+  document.querySelectorAll(".filterable").forEach(box => {
+    const table = box.querySelector("table"); if (!table) return;
+    const heads = [...table.querySelectorAll("thead th")];
+    const rows = [...table.tBodies[0].rows];
+    const cols = (box.dataset.cols || box.getAttribute("cols") || "").split(",").map(n => parseInt(n, 10) - 1).filter(n => n >= 0 && n < heads.length);
+    const state = {}; let query = "";
+    const bar = document.createElement("div"); bar.className = "filter-bar";
+    const count = document.createElement("div"); count.className = "f-count";
+    const apply = () => {
+      let shown = 0;
+      rows.forEach(r => {
+        const ok = cols.every(c => !state[c] || r.cells[c]?.textContent.trim() === state[c]) &&
+          (!query || r.textContent.toLowerCase().includes(query));
+        r.hidden = !ok; if (ok) shown++;
+      });
+      count.textContent = T.shown(shown, rows.length);
+    };
+    cols.forEach(c => {
+      const g = document.createElement("div"); g.className = "f-group";
+      g.innerHTML = `<span class="f-name">${heads[c].textContent}:</span>`;
+      const vals = [...new Set(rows.map(r => r.cells[c]?.textContent.trim()).filter(Boolean))];
+      [[T.all, null], ...vals.map(v => [v, v])].forEach(([label, v]) => {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = label; if (v === null) b.classList.add("on");
+        b.onclick = () => { state[c] = v; g.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); apply(); };
+        g.appendChild(b);
+      });
+      bar.appendChild(g);
+    });
+    const g = document.createElement("div"); g.className = "f-group";
+    const input = document.createElement("input"); input.type = "search"; input.placeholder = T.search;
+    input.oninput = () => { query = input.value.trim().toLowerCase(); apply(); };
+    g.appendChild(input); bar.appendChild(g); bar.appendChild(count);
+    box.insertBefore(bar, box.firstChild);
+    heads.forEach((th, i) => th.addEventListener("click", () => {
+      const dir = th.dataset.dir === "asc" ? "desc" : "asc";
+      heads.forEach(h => delete h.dataset.dir); th.dataset.dir = dir;
+      const key = r => r.cells[i]?.textContent.trim() ?? "";
+      rows.sort((a, b) => { const x = key(a), y = key(b), nx = parseFloat(x), ny = parseFloat(y);
+        const c = (!isNaN(nx) && !isNaN(ny)) ? nx - ny : x.localeCompare(y, "bg"); return dir === "asc" ? c : -c; });
+      rows.forEach(r => table.tBodies[0].appendChild(r));
+    }));
+    apply();
+  });
+});
+</script>
