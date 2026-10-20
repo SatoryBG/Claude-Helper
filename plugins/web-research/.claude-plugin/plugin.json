@@ -1,0 +1,15 @@
+{
+  "name": "web-research",
+  "version": "1.0.0",
+  "description": "Token-efficient web research: searches run in a cheap Haiku subagent with explicit limits, so page contents never reach the main conversation.",
+  "author": { "name": "Ivailo Tanushev" },
+  "keywords": ["web", "search", "research", "tokens", "subagent"],
+  "userConfig": {
+    "enforce": {
+      "type": "boolean",
+      "title": "Block direct web tools in the main conversation",
+      "description": "When on, WebSearch and WebFetch called from the main conversation are blocked with a message to delegate to web-research:researcher. Subagents are never blocked.",
+      "default": false
+    }
+  }
+}
