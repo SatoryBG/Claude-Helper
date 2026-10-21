@@ -41,7 +41,7 @@ const q = s => "'" + String(s).replace(/'/g, `'\\''`) + "'"
 const BIN = A.bin ? `python3 ${q(A.bin)}` : 'satory'
 const AGENTS_DIR = A.agentsDir || null  // for the role-file fallback
 let PROJECT = A.project || null
-let MAX_ROUNDS = 7
+let MAX_ROUNDS = 33
 let UI_REVIEW = false
 
 // ----------------------------------------------------------------- schemas --
@@ -187,7 +187,10 @@ async function sh(cmd, { phase, label, note } = {}) {
     const body = String(note).replace(/^SATORY_EOF$/gm, 'SATORY_EOF_')
     full += ` --note-stdin <<'SATORY_EOF'\n${body}\nSATORY_EOF`
   }
-  const prompt = `Run exactly this bash command once and return its exit code and stdout verbatim:\n\n\`\`\`bash\n${full}\n\`\`\``
+  const prompt = `Run exactly this bash command once and return its exit code and stdout verbatim.\n\n` +
+    `Call the Bash tool with \`timeout: 600000\` (the maximum - the command can take several minutes) and WITHOUT run_in_background. ` +
+    `If the tool still reports that the command moved to a background task, wait for that task's completion notification, then return the exit code and the full content of its output file. Never run the command a second time.\n\n` +
+    `\`\`\`bash\n${full}\n\`\`\``
   const opts = { phase, label: `satory ${label || cmd}`, model: MODELS.runner, schema: RUN_SCHEMA }
   let r = await spawn('runner', prompt, opts)
   if (!r) r = await spawn('runner', prompt, opts) // only when the runner itself died
@@ -503,7 +506,7 @@ let plan = await sh('plan json', { phase: 'Prepare', label: 'plan' })
 if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
 if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${bullets(plan.errors)}`)
 PROJECT = plan.root
-MAX_ROUNDS = Number(A.rounds || plan.max_rounds || 7)
+MAX_ROUNDS = Number(A.rounds || plan.max_rounds || 33)
 UI_REVIEW = plan.ui_review === true
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 

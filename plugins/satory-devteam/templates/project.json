@@ -3,7 +3,7 @@
   "language": "en",
   "stack": "",
   "main_branch": "main",
-  "max_rounds": 7,
+  "max_rounds": 33,
   "paths": {
     "tests": []
   },

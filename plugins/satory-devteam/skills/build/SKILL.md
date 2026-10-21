@@ -1,7 +1,7 @@
 ---
 name: build
 description: Satory build - starts the autonomous process (workflow) over the tasks in the plan: Dev → Reviewer → QA → UI reviewer → Security → Docs → commit/push, up to N rounds per task. The third step after /satory-devteam:architect; run it again to continue.
-argument-hint: "[milestone=M2] [max=<number of tasks>] [rounds=7] [path to the project]"
+argument-hint: "[milestone=M2] [max=<number of tasks>] [rounds=33] [path to the project]"
 disable-model-invocation: true
 ---
 

@@ -8,7 +8,7 @@ specification, the plan and the production release, and everything in between ru
 /satory-devteam:architect ─► ARCHITECTURE.md + UI.md + plan ──► ✋ approval
 /satory-devteam:build ─────► for every task:
                              Dev → Reviewer → QA → UI reviewer → Security → Docs → commit + push → staging
-                             (every send-back starts again from the Reviewer; up to 7 rounds, then escalation)
+                             (every send-back starts again from the Reviewer; up to 33 rounds, then escalation)
 /satory-devteam:release ───► ✋ approval ──► production
 ```
 
@@ -19,7 +19,7 @@ specification, the plan and the production release, and everything in between ru
 | `/satory-devteam:setup` | Prepares the machine: tools, git identity, GitHub login. Once per machine. |
 | `/satory-devteam:analyst <name or GitHub repo> [idea]` | Interview → `docs/SPEC.md`. Clones a given repo, creates a new private repo or works locally only. |
 | `/satory-devteam:architect` | Stack (chosen together with you), architecture, ADRs, UI guide, `.satory/project.json`, task plan. |
-| `/satory-devteam:build [milestone=M2] [max=N] [rounds=7]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
+| `/satory-devteam:build [milestone=M2] [max=N] [rounds=33]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
 | `/satory-devteam:status` | How far the project has got, the blocked tasks and your answers to them. |
 | `/satory-devteam:release [version]` | Production after explicit approval. Production gets the same Docker image that passed staging. |
 
@@ -110,6 +110,10 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.4.2** - the runner that executes the `satory` steps calls Bash with the maximum timeout
+  (600 s) instead of the 120 s default: on a slow file system (e.g. WSL `/mnt/c`) `step after-dev`
+  (build + lint) ran past 120 s, moved to the background and the workflow stopped with
+  "unparsable output". The default limit of rounds per task is now 33 (was 7).
 - **0.4.1** - the CLI works on Python 3.10-3.12 again: the file guards used `PurePath.full_match`
   (Python 3.13+) and crashed in `step after-dev` on Ubuntu 24.04 (Python 3.12). The glob matching is now
   built in and behaves the same on every version; `doctor`, `setup` and the CLI itself report a python3

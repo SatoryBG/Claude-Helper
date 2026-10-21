@@ -3,7 +3,7 @@
   "language": "en",
   "stack": ".NET 9, ASP.NET Core Razor Pages, EF Core + SQLite, xUnit, Playwright (TypeScript)",
   "main_branch": "main",
-  "max_rounds": 7,
+  "max_rounds": 33,
   "paths": {
     "tests": [
       "tests/**",

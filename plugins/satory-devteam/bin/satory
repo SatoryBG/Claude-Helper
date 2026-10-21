@@ -512,7 +512,7 @@ def cmd_plan(p: Project, a) -> None:
     else:
         errors = validate_plan(plan)
         emit({"ok": not errors, "errors": errors, "root": str(p.root), "name": p.config.get("name"),
-              "max_rounds": p.config.get("max_rounds", 7),
+              "max_rounds": p.config.get("max_rounds", 33),
               "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
               "ui_review": bool(p.config.get("ui", {}).get("review")),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
