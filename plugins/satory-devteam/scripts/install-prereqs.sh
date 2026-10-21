@@ -51,6 +51,13 @@ else
   echo "all apt packages are present"
 fi
 
+say "Python"
+if python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+  echo "python3 $(python3 -c 'import platform; print(platform.python_version())')"
+else
+  warn "the satory CLI needs python3 3.10 or newer (Ubuntu 22.04+ and Debian 12+ have it) - upgrade the OS python3"
+fi
+
 say "Docker service"
 if [ -d /run/systemd/system ]; then
   $SUDO systemctl enable --now docker >/dev/null 2>&1 && echo "docker: $(systemctl is-active docker)"

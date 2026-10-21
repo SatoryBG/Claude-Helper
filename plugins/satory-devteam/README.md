@@ -64,7 +64,7 @@ plan skips it.
 | Needs | Why |
 |---|---|
 | git, gh (logged in with the `repo` and `workflow` scopes) | branches, commits, pushes, new repos |
-| python3 | the `satory` CLI |
+| python3 3.10 or newer | the `satory` CLI |
 | Docker + Compose | local staging and prod |
 | Node.js + npm, Playwright Chromium | e2e tests, QA exploration, the UI reviewer |
 | gitleaks, semgrep (optional) | security scans |
@@ -110,6 +110,10 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.4.1** - the CLI works on Python 3.10-3.12 again: the file guards used `PurePath.full_match`
+  (Python 3.13+) and crashed in `step after-dev` on Ubuntu 24.04 (Python 3.12). The glob matching is now
+  built in and behaves the same on every version; `doctor`, `setup` and the CLI itself report a python3
+  older than 3.10.
 - **0.4.0** - English and UI quality:
   - everything (agents, skills, templates, CLI messages, workflow) is in English; each project's
     documentation language is still set by `language` in `.satory/project.json`;

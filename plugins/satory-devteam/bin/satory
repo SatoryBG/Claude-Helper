@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,7 @@ PROTECTED = [".satory/**", "docs/JOURNAL.md"]
 DOCS_ALLOWED = ["docs/**", "**/*.md"]
 STATUSES = ("todo", "in_progress", "blocked", "done")
 OWNERS = ("dev", "devops")
+MIN_PYTHON = (3, 10)
 VERDICT_MARK = {"pass": "✓", "approve": "✓", "ok": "✓", "done": "✓",
                 "fail": "✗", "changes_requested": "✗", "gate-fail": "✗",
                 "blocked": "⛔", "unblocked": "↻", "release": "🚀"}
@@ -58,9 +61,30 @@ def write_json(path: Path, data) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+@functools.lru_cache(maxsize=None)
+def glob_regex(glob: str) -> re.Pattern:
+    """Whole-path glob like PurePath.full_match (Python 3.13+), here so older Pythons behave the same:
+    "**/" spans zero or more segments, a trailing "/**" one or more, "*" and "?" stay inside one segment."""
+    out, i = [], 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif glob.startswith("/**", i) and i + 3 == len(glob):
+            out.append("(?:/[^/]+)+")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        else:
+            out.append({"*": "[^/]*", "?": "[^/]"}.get(glob[i], re.escape(glob[i])))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
 def matches(path: str, globs: list[str]) -> bool:
-    p = PurePosixPath(path)
-    return any(p.full_match(g) for g in globs)
+    p = str(PurePosixPath(path))
+    return any(glob_regex(g).match(p) for g in globs)
 
 
 def as_list(value) -> list[str]:
@@ -849,6 +873,9 @@ def cmd_doctor(a) -> None:
     for name in ("git", "docker", "docker compose", "node", "npx", "gh"):
         if not found[name]:
             problem(f"{name} is missing", setup)
+    if sys.version_info < MIN_PYTHON:
+        problem(f"python3 is {sys.version.split()[0]}, the satory CLI needs {'.'.join(map(str, MIN_PYTHON))} or newer",
+                "install a newer python3 (Ubuntu 22.04+ and Debian 12+ already have one)")
     for name in ("semgrep", "gitleaks"):
         if not found[name]:
             notes.append(f"scanner {name} is missing - the security checks will skip it ({setup})")
@@ -903,6 +930,10 @@ def cmd_doctor(a) -> None:
 # ------------------------------------------------------------------- main ---
 
 def main() -> None:
+    if sys.version_info < MIN_PYTHON:
+        emit({"ok": False, "error": f"python3 {'.'.join(map(str, MIN_PYTHON))} or newer is required "
+                                    f"(this is {sys.version.split()[0]}); run /satory-devteam:setup"})
+        sys.exit(1)
     ap = argparse.ArgumentParser(prog="satory")
     ap.add_argument("--project", help="project root (default: search upward from cwd)")
     sub = ap.add_subparsers(dest="cmd", required=True)
