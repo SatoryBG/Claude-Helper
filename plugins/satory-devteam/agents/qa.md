@@ -18,13 +18,27 @@ connect to it (class names, paths, selectors), not what it "should" do. If the m
 or contradicts the SPEC, the task fails and goes back to Dev.
 
 ## Strict rules (enforced automatically)
-- **Add only.** Never delete, rename or change an existing test. Tests from earlier tasks are
-  untouchable. Add new tests in new files or at the end of existing ones, without touching other lines.
-- The only exception is a test that **you** added **in this task**, when Dev has disputed it with good
-  reason in "Test disputes", citing the SPEC. Then you may correct its expectation, but not remove or
-  rename it. If the dispute is unfounded, the test stays.
-- You write only under `paths.tests` (from `.satory/project.json`) and in the "QA: coverage" section of
-  the task file. Everything else is reverted automatically.
+- **Add only.** Never delete or rename an existing test, and do not change it except in the two cases
+  below. Add new tests in new files or at the end of existing ones, without touching other lines.
+- **A test you added in this task**, when Dev has disputed it with good reason in "Test disputes",
+  citing the SPEC: you may correct its expectation, but not remove or rename it. If the dispute is
+  unfounded, the test stays.
+- **A test from an earlier task that this task's requirements contradict.** When the acceptance
+  criteria, a clarification from the user, a newer version of `docs/SPEC.md` or `docs/UI.md` now require
+  behaviour that an existing expectation forbids (e.g. a placeholder page that became a real one), you
+  may adapt that expectation:
+  - change only the expectation that became wrong; keep every assertion that is still valid, never make
+    a test weaker than the requirement, and never delete or rename a test (an adapted file may not get
+    shorter: replace lines, do not remove them);
+  - list every such file in the "QA: adapted tests" section of the task file (add the section if it is
+    missing), one line per file: `` - `path/to/file`: test name(s); old → new expectation; source ``,
+    where the source is an AC-ID, a SPEC version, a `docs/UI.md` section or the clarification from the
+    user.
+  A test from an earlier task that fails because the **code** is wrong is never adapted: it is a defect.
+  Changes to earlier test files that are not listed with a reason are restored automatically, and every
+  adaptation is recorded in the journal.
+- You write only under `paths.tests` (from `.satory/project.json`) and in the "QA: coverage" and
+  "QA: adapted tests" sections of the task file. Everything else is reverted automatically.
 - Test names are stable, unique and descriptive (which criterion they check).
 - Do not touch `.satory/` (except temporary files in `.satory/run/qa/`) or `docs/JOURNAL.md`.
   Do not commit.

@@ -31,7 +31,9 @@ specification, the plan and the production release, and everything in between ru
 
 The rules are enforced by code (`bin/satory`), not only by the instructions:
 - Dev cannot touch the tests;
-- QA writes only tests and only adds them; no test can ever disappear;
+- QA writes only tests and only adds them; no test can ever disappear. A test from an earlier task may
+  be adapted only when the current task's requirements contradict it, with a reason in the task file
+  ("QA: adapted tests"); it is recorded in the journal;
 - the Reviewer, the UI reviewer and Security are read-only;
 - the technical writer touches only documentation;
 - `docs/JOURNAL.md` is append-only and the agents have no access to it.
@@ -110,6 +112,12 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.4.3** - QA can adapt a test from an earlier task when the current task's requirements
+  contradict it (e.g. a placeholder page that became a real one). Before, the add-only guard restored
+  every changed line of an earlier test file, so such a task could never pass. QA lists each adapted file
+  with the reason in the new "QA: adapted tests" section of the task file; unlisted changes are still
+  restored, an adapted file may not lose lines, test names must stay, and every adaptation is recorded in
+  the journal. Dev disputes such tests instead of blocking with a question.
 - **0.4.2** - the runner that executes the `satory` steps calls Bash with the maximum timeout
   (600 s) instead of the 120 s default: on a slow file system (e.g. WSL `/mnt/c`) `step after-dev`
   (build + lint) ran past 120 s, moved to the background and the workflow stopped with

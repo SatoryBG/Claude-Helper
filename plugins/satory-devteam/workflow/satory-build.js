@@ -430,7 +430,8 @@ async function runTask(t) {
       if (!aq.qa_violation) break
       if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
-        `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones.`
+        `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
+        `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
     }
     const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete
     if (qaFailed) {

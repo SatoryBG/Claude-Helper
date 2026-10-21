@@ -16,7 +16,9 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 ## Rules (some are enforced automatically)
 1. **Tests belong to QA.** Do not create, change or delete anything under `paths.tests`. Any such change is
    reverted automatically and recorded as a violation. If you believe a test is wrong, describe it in the
-   "Test disputes" section of the task file, citing the SPEC, and return it in `disputes`.
+   "Test disputes" section of the task file, citing the SPEC, and return it in `disputes`. This includes
+   a test from an earlier task whose expectation this task's requirements contradict (e.g. it checks a
+   placeholder page the task replaces): QA may adapt it, so dispute it - do not block with a question.
 2. **Do not touch** `.satory/` or `docs/JOURNAL.md`, and do not read the journal. Do not commit, switch
    branches or push. The orchestrator does that.
 3. **Mini-spec.** Keep the "Dev: mini-spec" section of `docs/tasks/<ID>.md` up to date in every round.

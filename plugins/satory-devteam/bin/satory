@@ -375,6 +375,26 @@ def clarifications_block(t: dict) -> str:
     return f"{CLAR_START}\n{body}\n{CLAR_END}"
 
 
+ADAPTED_HEADING = re.compile(r"^##\s+QA: adapted tests\s*$", re.M)
+ADAPTED_ENTRY = re.compile(r"^\s*[-*]\s+`([^`]+)`\s*[:\-–—]\s*(\S.*)$")
+
+
+def adapted_tests(path: Path) -> dict[str, str]:
+    """Test files from earlier tasks that QA declared as adapted, with the reason: the entries
+    "- `path`: reason" of the "QA: adapted tests" section of the task file."""
+    if not path.exists():
+        return {}
+    text = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
+    entries = {}
+    for m in ADAPTED_HEADING.finditer(text):
+        body = re.split(r"^## ", text[m.end():], maxsplit=1, flags=re.M)[0]
+        for line in body.splitlines():
+            e = ADAPTED_ENTRY.match(line)
+            if e:
+                entries[e.group(1).strip()] = e.group(2).strip()
+    return entries
+
+
 def write_task_file(p: Project, t: dict) -> Path:
     path = p.root / "docs" / "tasks" / f"{t['id']}.md"
     if path.exists():
@@ -622,7 +642,11 @@ def cmd_step(p: Project, a) -> None:
             return "QA may change only tests and its own section of the task file"
         # soft: files QA must not touch at all - reverted, QA's tests are kept
         violations = guard(p, ck, allowed)
-        # hard: append-only rule for tests - offending files go back to the pre-QA state and QA must redo
+        # hard: append-only rule for tests - offending files go back to the pre-QA state and QA must redo.
+        # Exception: a test file from an earlier task that QA lists, with a reason, in the
+        # "QA: adapted tests" section of the task file (a change the task's requirements force).
+        adapted = adapted_tests(p.root / task_file)
+        adapted_used = []
         rules = []
         for path, status in sorted(changed_files(p, ck).items()):
             if not matches(path, tests) or not p.git_ok("cat-file", "-e", f"{ck}:{path}"):
@@ -634,8 +658,19 @@ def cmd_step(p: Project, a) -> None:
                 numstat = p.git("diff", "--numstat", base, "--", path).split()
                 if not numstat or numstat[1] in ("0", "-"):
                     continue
+                if path in adapted:
+                    added = int(numstat[0]) if numstat[0].isdigit() else 0
+                    if added >= int(numstat[1]):  # an adaptation replaces lines, it never removes tests
+                        adapted_used.append(f"{path} - {adapted[path]}")
+                        continue
+                    rules.append(f"{path}: listed in \"QA: adapted tests\", but it lost lines ({numstat[1]} deleted, "
+                                 f"{added} added) - an adaptation may only change expectations, never remove "
+                                 "tests or assertions; the file was restored to its pre-QA state")
+                    restore(p, ck, path, status)
+                    continue
                 rules.append(f"{path}: changed/deleted lines in a test file from an earlier task "
-                             "(only additions are allowed) - the file was restored to its pre-QA state")
+                             "(only additions are allowed, unless the file is listed with a reason in "
+                             "\"QA: adapted tests\" of the task file) - the file was restored to its pre-QA state")
             else:
                 continue  # QA's own test file from this task: corrections allowed, names are checked below
             restore(p, ck, path, status)
@@ -658,13 +693,14 @@ def cmd_step(p: Project, a) -> None:
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
+        extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   for k, g in gates.items()]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         p.save_state()
-        emit({"ok": gates_ok, "qa_violation": False, "violations": violations,
+        emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used,
               "tests": {"listed": listed, "count": len(names), "missing": []},
               "gates": gates, "checkpoint": st["checkpoint"]})
 

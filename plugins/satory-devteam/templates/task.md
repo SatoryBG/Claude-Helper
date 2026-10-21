@@ -28,6 +28,13 @@
 
 <!-- Filled in by QA: which test covers which acceptance criterion / point of the mini-spec. -->
 
+## QA: adapted tests
+
+<!-- Filled in by QA only when this task's requirements contradict a test from an EARLIER task.
+     One line per file:  - `path/to/test-file`: test name(s); old → new expectation; source
+     (AC-ID, SPEC version, docs/UI.md section or the clarification from the user).
+     Changed lines in earlier test files that are not listed here are restored automatically. -->
+
 ## Test disputes
 
 <!-- Dev: if you believe a test is wrong - the test name, why, citing the SPEC or the mini-spec.
