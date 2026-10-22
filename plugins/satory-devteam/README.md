@@ -112,6 +112,9 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.4.4** - The runner returns its result only after the Bash result has arrived. Before, a runner
+  could answer in the same message as the Bash call with a placeholder, so the workflow stopped with
+  "unparsable output" although the command had run.
 - **0.4.3** - QA can adapt a test from an earlier task when the current task's requirements
   contradict it (e.g. a placeholder page that became a real one). Before, the add-only guard restored
   every changed line of an earlier test file, so such a task could never pass. QA lists each adapted file

@@ -190,6 +190,7 @@ async function sh(cmd, { phase, label, note } = {}) {
   const prompt = `Run exactly this bash command once and return its exit code and stdout verbatim.\n\n` +
     `Call the Bash tool with \`timeout: 600000\` (the maximum - the command can take several minutes) and WITHOUT run_in_background. ` +
     `If the tool still reports that the command moved to a background task, wait for that task's completion notification, then return the exit code and the full content of its output file. Never run the command a second time.\n\n` +
+    `Return your result only in a later message, after the Bash tool result has arrived - never in the same message as the Bash call, and never with invented or placeholder values.\n\n` +
     `\`\`\`bash\n${full}\n\`\`\``
   const opts = { phase, label: `satory ${label || cmd}`, model: MODELS.runner, schema: RUN_SCHEMA }
   let r = await spawn('runner', prompt, opts)
