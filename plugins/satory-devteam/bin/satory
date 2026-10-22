@@ -514,7 +514,49 @@ def cmd_workflow(p: Project, a) -> None:
     dst = p.run / "satory-build.js"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
+    shutil.rmtree(p.run / "sh", ignore_errors=True)  # captured steps of the previous run
     emit({"ok": True, "script": str(dst), "root": str(p.root)})
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def cmd_wait(p: Project, a) -> None:
+    """Wait for a step the workflow ran with captured output (`captured` in satory-build.js) and print its stdout.
+
+    The runner's Bash call can move to the background and the runner may return before the step ends;
+    the workflow then collects the real result here, in calls that stay below the Bash time limit.
+    """
+    if not re.fullmatch(r"[\w.-]+", a.id):
+        raise SatoryError(f"invalid step id: {a.id}")
+    base = p.run / "sh" / a.id
+    pid_f, out_f, err_f, done_f = (base.with_name(f"{a.id}.{x}") for x in ("pid", "out", "err", "done"))
+    deadline = time.monotonic() + a.timeout
+    while not done_f.exists():
+        if not pid_f.exists():
+            return emit({"ok": False, "wait": "not_started", "error": f"step {a.id} never started"})
+        pid = int(pid_f.read_text().strip() or 0)
+        if not pid_alive(pid):
+            if done_f.exists():  # finished between the two checks
+                break
+            tail = err_f.read_text(errors="replace")[-500:] if err_f.exists() else ""
+            return emit({"ok": False, "wait": "died", "error": f"step {a.id} ended without an exit code: {tail}"})
+        if time.monotonic() >= deadline:
+            return emit({"ok": False, "wait": "pending"})
+        time.sleep(5)
+    out = out_f.read_text(encoding="utf-8", errors="replace") if out_f.exists() else ""
+    if "{" not in out:
+        tail = err_f.read_text(errors="replace")[-500:] if err_f.exists() else ""
+        return emit({"ok": False, "error": f"step {a.id} exited with code {done_f.read_text().strip()} "
+                                           f"without output: {tail}"})
+    sys.stdout.write(out)
 
 
 def cmd_where(p: Project, a) -> None:
@@ -1000,6 +1042,10 @@ def main() -> None:
     s.add_argument("--verdict")
     s.add_argument("--note-stdin", action="store_true")
 
+    s = sub.add_parser("wait")
+    s.add_argument("id")
+    s.add_argument("--timeout", type=int, default=540)
+
     s = sub.add_parser("deploy")
     s.add_argument("env", choices=["staging", "prod"])
     s.add_argument("--image")
@@ -1014,7 +1060,7 @@ def main() -> None:
             return cmd_doctor(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release}
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock}[a.action](p, a)

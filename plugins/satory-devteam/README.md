@@ -27,7 +27,8 @@ specification, the plan and the production release, and everything in between ru
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
 `satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs` and `satory-devteam:runner`
-(a mechanical executor of the CLI).
+(a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
+deploy - because it has to wait for a Bash call that moved to the background).
 
 The rules are enforced by code (`bin/satory`), not only by the instructions:
 - Dev cannot touch the tests;
@@ -107,11 +108,21 @@ docs/PLAN.md            generated from .satory/plan.json
 docs/tasks/T-xxx.md     task: Dev mini-spec, QA coverage, disputes, clarifications
 docs/JOURNAL.md         history of everything (append-only)
 .satory/project.json    commands for build/test/e2e/security, UI review and deploy
-.satory/run/            working files (gitignored): logs, state
+.satory/run/            working files (gitignored): logs, state, captured output of long steps (sh/)
 ```
 
 ## Changelog
 
+- **0.4.5** - a long step no longer stops the workflow when its runner returns too early. A step
+  that runs longer than the 10-minute Bash limit (e.g. `step after-qa` with the whole e2e suite) moves to
+  the background, and the haiku runner sometimes returned right away with no output instead of waiting:
+  the workflow stopped with "unparsable output" although the step finished fine. Now:
+  - the long steps (`after-dev`, `pre-qa`, `after-qa`, `security-scan`, `task finish`) run on a sonnet
+    runner (`runnerLong` in the workflow's models), the quick ones stay on haiku;
+  - their stdout and exit code are also written to `.satory/run/sh/`; when the runner's answer has no
+    result, the new `satory wait <id>` collects it there, in calls of up to 9 minutes (3 hours in total),
+    and reports a step that never started or died. A step is still never run twice;
+  - `satory workflow` empties `.satory/run/sh/` before each run.
 - **0.4.4** - The runner returns its result only after the Bash result has arrived. Before, a runner
   could answer in the same message as the Bash call with a placeholder, so the workflow stopped with
   "unparsable output" although the command had run.

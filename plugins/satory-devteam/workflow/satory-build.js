@@ -30,12 +30,16 @@ function parseArgs(raw) {
 const A = parseArgs(args)
 const MODELS = {
   dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet',
-  runner: 'haiku',
+  // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
+  // Bash call that moved to the background instead of returning early, which haiku does not do reliably
+  runner: 'haiku', runnerLong: 'sonnet',
   ...(A.models || {}),
 }
 const MAX_TASKS = Number(A.max || A.maxTasks || 1000)
 const MILESTONE = A.milestone || null
 const QA_ATTEMPTS = 3
+const WAIT_SECONDS = 540  // one `satory wait` call, below the 600 s Bash limit
+const WAIT_CALLS = 20     // up to 3 hours for one long step
 const q = s => "'" + String(s).replace(/'/g, `'\\''`) + "'"
 // python3 explicitly: the executable bit does not survive commits from Windows (core.filemode=false)
 const BIN = A.bin ? `python3 ${q(A.bin)}` : 'satory'
@@ -181,27 +185,66 @@ async function spawn(role, prompt, opts) {
   return agent(`First read the whole file ${AGENTS_DIR}/${role}.md (without the YAML front matter) - it is your role and your rules; follow them strictly.\n\n${prompt}`, opts)
 }
 
-async function sh(cmd, { phase, label, note } = {}) {
+function runPrompt(full) {
+  return `Run exactly this bash command once and return its exit code and stdout verbatim.\n\n` +
+    `Call the Bash tool with \`timeout: 600000\` (the maximum - the command can take several minutes) and WITHOUT run_in_background. ` +
+    `If the tool still reports that the command moved to a background task, wait for that task's completion notification, then return the exit code and the full content of its output file. Never run the command a second time.\n\n` +
+    `Return your result only in a later message, after the Bash tool result has arrived - never in the same message as the Bash call, and never with invented or placeholder values.\n\n` +
+    `\`\`\`bash\n${full}\n\`\`\``
+}
+
+function parseOut(text) {
+  text = String(text)
+  const start = text.indexOf('{'), end = text.lastIndexOf('}')
+  if (start < 0 || end < start) return undefined
+  try {
+    return JSON.parse(text.slice(start, end + 1))
+  } catch (e) {
+    return undefined
+  }
+}
+
+// A long step also writes its stdout and exit code to .satory/run/sh/<id>.*, so its result survives a
+// runner that returns before the step ends (see collect). `satory workflow` empties the folder.
+let SH_SEQ = 0
+function captured(full, id) {
+  const f = `${q(PROJECT)}/.satory/run/sh/${id}`
+  return `mkdir -p ${q(PROJECT)}/.satory/run/sh && rm -f ${f}.* && echo $$ > ${f}.pid && { ${full}\n} > ${f}.out 2> ${f}.err; ` +
+    `rc=$?; echo $rc > ${f}.done; cat ${f}.out; cat ${f}.err >&2; (exit $rc)`
+}
+
+// Waits for a captured step with `satory wait`, in calls short enough to never leave the foreground.
+// Returns the step's own JSON, or {wait: 'not_started' | 'died', error} from the CLI.
+async function collect(id, label, phase) {
+  const prompt = runPrompt(`${BIN} --project ${q(PROJECT)} wait ${id} --timeout ${WAIT_SECONDS}`)
+  for (let i = 1; i <= WAIT_CALLS; i++) {
+    const w = await spawn('runner', prompt, { phase, label: `satory wait ${label} (${i})`, model: MODELS.runner, schema: RUN_SCHEMA })
+    const res = w ? parseOut(w.stdout) : undefined
+    if (res && res.wait !== 'pending') return res
+  }
+  throw new Error(`satory ${label}: no result after waiting ${Math.round(WAIT_CALLS * WAIT_SECONDS / 60)} minutes - see .satory/run/sh/${id}.*`)
+}
+
+async function sh(cmd, { phase, label, note, long = false } = {}) {
   let full = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
   if (note !== undefined) {
     const body = String(note).replace(/^SATORY_EOF$/gm, 'SATORY_EOF_')
     full += ` --note-stdin <<'SATORY_EOF'\n${body}\nSATORY_EOF`
   }
-  const prompt = `Run exactly this bash command once and return its exit code and stdout verbatim.\n\n` +
-    `Call the Bash tool with \`timeout: 600000\` (the maximum - the command can take several minutes) and WITHOUT run_in_background. ` +
-    `If the tool still reports that the command moved to a background task, wait for that task's completion notification, then return the exit code and the full content of its output file. Never run the command a second time.\n\n` +
-    `Return your result only in a later message, after the Bash tool result has arrived - never in the same message as the Bash call, and never with invented or placeholder values.\n\n` +
-    `\`\`\`bash\n${full}\n\`\`\``
-  const opts = { phase, label: `satory ${label || cmd}`, model: MODELS.runner, schema: RUN_SCHEMA }
-  let r = await spawn('runner', prompt, opts)
-  if (!r) r = await spawn('runner', prompt, opts) // only when the runner itself died
-  if (!r) throw new Error(`satory ${cmd}: the runner returned no result`)
-  const text = String(r.stdout)
-  const start = text.indexOf('{'), end = text.lastIndexOf('}')
-  try {
-    return JSON.parse(text.slice(start, end + 1))
-  } catch (e) {
-    throw new Error(`satory ${cmd}: unparsable output (exit ${r.exit_code}): ${text.slice(0, 300)}`)
+  const id = long && PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
+  const prompt = runPrompt(id ? captured(full, id) : full)
+  const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
+  for (let attempt = 1; ; attempt++) {
+    const r = await spawn('runner', prompt, opts)
+    let res = r ? parseOut(r.stdout) : undefined
+    if (res === undefined && id) res = await collect(id, label || cmd, phase)
+    // run again only when the command surely did not run, never twice
+    const notRun = id ? res && res.wait === 'not_started' : !r
+    if (notRun && attempt < 2) continue
+    if (res && id && res.wait) throw new Error(`satory ${cmd}: ${res.error}`)
+    if (res !== undefined) return res
+    if (!r) throw new Error(`satory ${cmd}: the runner returned no result`)
+    throw new Error(`satory ${cmd}: unparsable output (exit ${r.exit_code}): ${String(r.stdout).slice(0, 300)}`)
   }
 }
 
@@ -388,7 +431,7 @@ async function runTask(t) {
     if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
     if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
     const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
-      { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev) }), `after-dev ${tag}`)
+      { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
     if (!ad.ok) {
       lastStage = 'build/lint'
       feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
@@ -414,7 +457,7 @@ async function runTask(t) {
     }
 
     // ---- QA -----------------------------------------------------------
-    const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}` }), `staging ${tag}`)
+    const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}`, long: true }), `staging ${tag}`)
     if (!staging.ok) {
       lastStage = 'staging'
       feedback = `### The app does not start on staging\nStage: ${staging.stage}. Log: ${staging.log}` +
@@ -427,7 +470,7 @@ async function runTask(t) {
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict}`,
-        { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa) }), `after-qa ${tag}`)
+        { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) break
       if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
@@ -458,7 +501,7 @@ async function runTask(t) {
     }
 
     // ---- Security -----------------------------------------------------
-    const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}` }), `scan ${tag}`)
+    const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
     const sec = await spawn('security', secPrompt(ctx, round, start.base, scan),
       { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
     if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
@@ -482,7 +525,7 @@ async function runTask(t) {
     }
     const docsSummary = docs ? `${docs.summary}\n\n${bullets(docs.files)}` : 'The technical writer returned no result.'
     const fin = must(await sh(`task finish ${t.id}`,
-      { phase: 'Docs', label: `merge+push ${t.id}`,
+      { phase: 'Docs', label: `merge+push ${t.id}`, long: true,
         note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
     `finish ${t.id}`)
     log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
