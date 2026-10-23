@@ -81,6 +81,16 @@ marks the questions `planned` or, when the answer keeps the current behaviour, `
 questions. The register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
 new items wait in `.satory/run/` and are written on main at the next task finish.
 
+## Flaky e2e tests
+
+With `commands.e2e_retry` in `.satory/project.json` (for Playwright:
+`cd e2e && npx playwright test --last-failed --reporter=line`), an e2e check that fails runs only the
+failed tests once more. If they pass, the check passes and the task goes on; each such test goes to the
+register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a test flaky 3 times becomes
+`major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
+The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
+(default 1 %, at least 1 test) - more failures are not flakiness.
+
 ## Experimental settings
 
 Trial settings live in an `"experimental"` block of `.satory/project.json`. The workflow lists the ones
@@ -160,6 +170,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.7.2** - flaky e2e tests no longer cost a round: with `commands.e2e_retry` the failed tests of an
+  e2e check run once more when at most `e2e_retry_max_percent` (default 1 %) of the run failed; passing
+  on the retry passes the check and records the test as flaky in the register (`minor`, `major` after 3
+  times). The journal and the build log name the flaky tests.
 - **0.7.1** - QA runs the unit tests and the e2e tests it added or changed, no longer the whole e2e
   suite: the orchestrator runs that right after QA (and again before the task finishes with
   `e2e_task_first`), so the whole suite no longer ran twice per round (about 20 minutes saved per

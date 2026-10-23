@@ -245,6 +245,45 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     return run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}.log", p.env(tid, rnd))
 
 
+E2E_COUNT = re.compile(r"^\s*(\d+) (passed|failed|flaky|skipped|did not run|interrupted)\b", re.M)
+E2E_FAILED = re.compile(r"^\s*\d+ failed\s*$(.*?)(?=^\s*\d+ (?:passed|flaky|skipped|did not run|interrupted)\b|^\[satory\]|\Z)",
+                        re.M | re.S)
+
+
+def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
+    """(failed, total, failed test names) from the summary of a Playwright run (line/list reporter)."""
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    counts: dict[str, int] = {}
+    for n, kind in E2E_COUNT.findall(text):
+        counts[kind] = int(n)
+    m = E2E_FAILED.search(text)
+    names = [x.strip() for x in m.group(1).splitlines() if x.strip().startswith("[")] if m else []
+    return counts.get("failed", 0), sum(counts.values()), names
+
+
+def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
+    """Run e2e commands; when a few tests fail (at most e2e_retry_max_percent of the run), run only those
+    once more with commands.e2e_retry. Passing then counts as passing; the tests go to the register as flaky."""
+    log = p.logs / f"{tid}-r{rnd}-{name}.log"
+    res = run_cmds(p, cmds, log, p.env(tid, rnd))
+    retry = p.commands("e2e_retry")
+    if res["ok"] or res.get("skipped") or not retry:
+        return res
+    failed, total, names = e2e_failures(log)
+    limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 1)) / 100))
+    if not failed or not total or failed > limit or len(names) != failed:
+        res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
+        return res
+    rlog = p.logs / f"{tid}-r{rnd}-{name}-retry.log"
+    again = run_cmds(p, retry, rlog, p.env(tid, rnd))
+    res["retry_log"] = again["log"]
+    if again["ok"]:
+        res.update(ok=True, exit=0, flaky=names)
+        for test in names:
+            question_flaky(p, test, f"{name} {tid} r{rnd}", tid)
+    return res
+
+
 def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]:
     cmds = p.commands("test_list")
     if not cmds:
@@ -322,6 +361,50 @@ def questions_flush(p: Project) -> None:
     p.questions_pending.unlink()
 
 
+def question_append(reg: dict, item: dict, source: str, task: str | None, milestone: str | None) -> dict:
+    num = 1 + max((int(q["id"][2:]) for q in reg["items"]), default=0)
+    q = {"id": f"Q-{num:03d}", "kind": item.get("kind") if item.get("kind") in Q_KINDS else "question",
+         "severity": item.get("severity") if item.get("severity") in Q_SEVERITIES else "major",
+         "title": str(item.get("title", "")).strip(), "detail": str(item.get("detail", "")).strip(),
+         "options": [str(o) for o in item.get("options") or []], "refs": [str(r) for r in item.get("refs") or []],
+         "source": source, "task": None, "milestone": milestone, "from_task": task, "created": now("%Y-%m-%d"),
+         "status": "open", "answer": None, "answered": None}
+    for k in ("key", "occurrences"):
+        if k in item:
+            q[k] = item[k]
+    reg["items"].append(q)
+    return q
+
+
+FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing problem: major, reopened
+
+
+def question_flaky(p: Project, test: str, source: str, task: str) -> None:
+    """Record a test that failed and passed on the retry; repeated flakiness raises the severity."""
+    name = re.sub(r":\d+:\d+", "", test).strip()
+    reg = questions_load(p)
+    key = f"flaky:{name}"
+    q = next((x for x in reg["items"] if x.get("key") == key), None)
+    if q is None:
+        question_append(reg, {
+            "kind": "test", "severity": "minor", "key": key, "occurrences": [source],
+            "title": f"Flaky e2e test: {name}",
+            "detail": "The test failed and passed when it was run again, so the task went on. A test that fails "
+                      "now and then either waits for time instead of a state, or hides a real timing problem in "
+                      "the app; it is escalated when it keeps happening.",
+            "options": ["Plan it: make the test wait for the state it checks (QA), or fix the race in the app",
+                        "Not needed"],
+            "refs": [test.split(" › ")[1] if " › " in test else test]}, source, task, None)
+    else:
+        q.setdefault("occurrences", []).append(source)
+        if len(q["occurrences"]) >= FLAKY_ESCALATE and q["severity"] == "minor":
+            q["severity"] = "major"
+            q["detail"] += f" Flaky {len(q['occurrences'])} times so far: likely a real timing problem."
+            if q["status"] in ("dismissed", "resolved"):
+                q["status"] = "open"
+    questions_save(p, reg)
+
+
 def question_find(reg: dict, qid: str) -> dict:
     for q in reg["items"]:
         if q["id"] == qid:
@@ -348,16 +431,7 @@ def cmd_question(p: Project, a) -> None:
                 skipped.append(title)
                 continue
             seen.add(question_key(title))
-            num = 1 + max((int(q["id"][2:]) for q in reg["items"]), default=0)
-            kind = item.get("kind") if item.get("kind") in Q_KINDS else "question"
-            sev = item.get("severity") if item.get("severity") in Q_SEVERITIES else "major"
-            reg["items"].append({
-                "id": f"Q-{num:03d}", "kind": kind, "severity": sev, "title": title,
-                "detail": str(item.get("detail", "")).strip(), "options": [str(o) for o in item.get("options") or []],
-                "refs": [str(r) for r in item.get("refs") or []], "source": a.source or "manual",
-                "task": None, "milestone": a.milestone, "from_task": a.task, "created": now("%Y-%m-%d"),
-                "status": "open", "answer": None, "answered": None})
-            added.append(f"Q-{num:03d}")
+            added.append(question_append(reg, item, a.source or "manual", a.task, a.milestone)["id"])
         if added:
             questions_save(p, reg)
         return emit({"ok": True, "added": added, "skipped": skipped})
@@ -955,10 +1029,9 @@ def cmd_step(p: Project, a) -> None:
         # workflow that runs that step (--split-e2e): an older one would otherwise finish without the whole suite.
         first = [c.replace("{task}", tid) for c in p.experimental("e2e_task_first")]
         if first and a.split_e2e and not st.get("full_e2e_failed"):
-            quick = run_cmds(p, first, p.logs / f"{tid}-r{rnd}-e2e-task.log", p.env(tid, rnd))
-            gates["e2e"] = {**quick, "scope": "task"}
+            gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
         else:
-            gates["e2e"] = gate(p, tid, rnd, "e2e")
+            gates["e2e"] = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
             st["full_e2e_failed"] = not gates["e2e"]["ok"]
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
@@ -968,6 +1041,7 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   f"{' (experimental: only this task and smoke tests; the whole suite runs after Security)' if g.get('scope') == 'task' else ''}"
                   for k, g in gates.items()]
+        extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         p.save_state()
@@ -990,10 +1064,11 @@ def cmd_step(p: Project, a) -> None:
 
     elif a.step == "full-e2e":
         # experimental e2e_task_first: the whole suite, once Review, QA, UI and Security have passed
-        g = gate(p, tid, rnd, "e2e")
+        g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
         st["full_e2e_failed"] = not g["ok"]
         guard(p, ck, lambda path, status: "test run artifact")
         extra = [f"- Whole e2e suite: {'✓' if g['ok'] else '✗ - back to Dev; the next round runs it again in QA'}"]
+        extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
         p.save_state()
         emit({"ok": g["ok"], "gates": {"e2e": g}})

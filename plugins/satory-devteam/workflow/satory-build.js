@@ -335,6 +335,11 @@ function gateLines(gates) {
       (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : ''))
 }
 
+function flakyLog(gates, tag) {
+  const flaky = (gates && gates.e2e && gates.e2e.flaky) || []
+  if (flaky.length) log(`⚠ ${tag}: ${flaky.length} e2e test(s) passed only on the retry - recorded as flaky for the user`)
+}
+
 function context(t, start) {
   return [
     `Project: ${PROJECT}`,
@@ -639,6 +644,7 @@ async function runTask(t) {
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) break
+      flakyLog(aq.gates, tag)
       if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
         `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
@@ -685,6 +691,7 @@ async function runTask(t) {
     if (aq.gates && aq.gates.e2e && aq.gates.e2e.scope === 'task') {
       const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
+      flakyLog(full.gates, tag)
       if (!full.ok) {
         lastStage = 'full e2e'
         feedback = `### The whole e2e suite fails
