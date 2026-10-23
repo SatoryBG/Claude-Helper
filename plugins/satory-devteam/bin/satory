@@ -896,13 +896,15 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     if branch:
         if not p.branch_exists(branch):
             raise SatoryError(f"branch {branch} of the queued change is gone")
-        r = p.git("merge", "--squash", branch, check=False)
+        # a real merge (not squash): the next queued branch is built on this one and must see it as merged
+        before = p.git("rev-parse", "HEAD")
+        r = p.git("merge", "--no-ff", "-q", "-m", f"{item.get('message') or f'docs: {branch}'}\n\n{TRAILER}",
+                  branch, check=False)
         if r.returncode != 0:
-            p.git("reset", "-q", "--hard", "HEAD")
+            p.git("merge", "--abort", check=False)
+            p.git("reset", "-q", "--hard", before)
             raise SatoryError(f"merge of {branch} failed: {(r.stderr or r.stdout).strip()[:300]}")
-        if p.dirty():
-            p.git("commit", "-q", "-m", f"{item.get('message') or f'docs: {branch}'}\n\n{TRAILER}")
-            res["merged"] = True
+        res["merged"] = p.git("rev-parse", "HEAD") != before
     if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved")):
         res.update(plan_add(p, p.plan(), data, item.get("source", "request")))
     if branch:
@@ -922,8 +924,11 @@ def cmd_queue(p: Project, a) -> None:
         branch = f"satory/queue-{now('%Y%m%d-%H%M%S')}-{os.getpid()}"
         wdir = tempfile.mkdtemp(prefix="satory-queue-")
         os.rmdir(wdir)
-        p.git("worktree", "add", "-q", "-b", branch, wdir, p.main)
-        return emit({"ok": True, "branch": branch, "dir": wdir})
+        # on top of the last queued change, so the queued documents build on each other and merge in order
+        waiting = [b for b in (load_json(x).get("branch") for x in files) if b and p.branch_exists(b)]
+        base = waiting[-1] if waiting else p.main
+        p.git("worktree", "add", "-q", "-b", branch, wdir, base)
+        return emit({"ok": True, "branch": branch, "dir": wdir, "base": base})
     if a.action == "add":
         try:
             data = json.loads(read_note(a) or "{}")

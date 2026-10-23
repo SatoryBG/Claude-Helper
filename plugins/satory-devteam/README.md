@@ -191,6 +191,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.2** - queued changes build on each other: `queue begin` starts the new branch from the last queued
+  one, and `queue apply` merges each with a merge commit (not a squash), so two queued edits of the same
+  document (e.g. SPEC v4 and v5) merge in order without a conflict.
 - **0.8.1** - `main` changes only between two tasks. New `satory queue begin|add|list|apply`: the
   documents of a change are written on their own branch and wait in `.satory/run/queue/` with the plan
   change; the build merges and applies them in order at the next task boundary (or at once on a clean
