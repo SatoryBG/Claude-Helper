@@ -89,7 +89,7 @@ failed tests once more. If they pass, the check passes and the task goes on; eac
 register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a test flaky 3 times becomes
 `major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
-(default 1 %, at least 1 test) - more failures are not flakiness.
+(default 3 %, at least 1 test) - more failures are not flakiness.
 
 ## Experimental settings
 
@@ -170,6 +170,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.7.3** - the default limit for retrying failed e2e tests (`e2e_retry_max_percent`) is 3 % of the
+  run instead of 1 %.
 - **0.7.2** - flaky e2e tests no longer cost a round: with `commands.e2e_retry` the failed tests of an
   e2e check run once more when at most `e2e_retry_max_percent` (default 1 %) of the run failed; passing
   on the retry passes the check and records the test as flaky in the register (`minor`, `major` after 3

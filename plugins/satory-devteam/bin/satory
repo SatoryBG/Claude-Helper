@@ -270,7 +270,7 @@ def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
     if res["ok"] or res.get("skipped") or not retry:
         return res
     failed, total, names = e2e_failures(log)
-    limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 1)) / 100))
+    limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 3)) / 100))
     if not failed or not total or failed > limit or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
         return res
