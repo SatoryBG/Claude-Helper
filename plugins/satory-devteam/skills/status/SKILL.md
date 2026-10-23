@@ -57,4 +57,6 @@ Talk to the user in the language they write in.
      turned into tasks by `/satory-devteam:architect`: suggest it at the end.
    The register is in `.satory/questions.json` and readable in `docs/QUESTIONS.md` (both updated on main
    at the next task finish, or now with `$SATORY question flush` when on main).
+   Open `critical` items keep the next milestone from starting (the started ones are finished): say so
+   when there are any.
 5. If there are tasks to run, suggest `/satory-devteam:build`.

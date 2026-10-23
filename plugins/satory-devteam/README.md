@@ -68,6 +68,11 @@ enforced or not tested - are collected as questions and **never stop the work**.
   far: questions, Dev's decisions to confirm, rules that are not enforced (`fix`) or not tested (`test`).
   Turn it off with `"milestone_review": false` in `.satory/project.json`.
 
+Open `critical` questions hold the build at the next milestone boundary: the milestones already started
+are finished, but no new one starts until the critical questions are answered, so nothing is built on top
+of data rules that may change. The summary of the build says so. Turn it off with
+`"critical_questions_gate": false`.
+
 Each item has a severity (`critical` - numbers or data can silently become wrong; `major`; `minor`) and
 options with a recommended one. Answers that change the requirements go into the SPEC; those that need
 code become tasks via `/satory-devteam:architect`. `/satory-devteam:release` warns about open critical
@@ -153,6 +158,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.6.1** - open critical questions keep the next milestone from starting (the started milestones are
+  finished); the build summary reports `waiting_for_answers`. Off with `"critical_questions_gate": false`.
 - **0.6.0** - questions for the user that never stop the work (see "Questions for the user"): the
   analyst's data rules pass before the SPEC is approved; Dev's `assumptions` and the Reviewer's and QA's
   `spec_gaps` in every task; the new `auditor` agent reviews each finished milestone (also milestones

@@ -42,7 +42,10 @@ Summarise the result:
 - `stopped_on_error`, if any: show the error and propose a fix;
 - remaining tasks and what they wait for;
 - `questions`: the open questions for the user (and how many are critical), collected without stopping
-  the work → `/satory-devteam:status` whenever it suits the user.
+  the work → `/satory-devteam:status` whenever it suits the user;
+- `waiting_for_answers`: the next milestone did not start because critical questions are open. Say so
+  plainly, show their titles (`$SATORY question list --open`), and point to `/satory-devteam:status`
+  and then `/satory-devteam:build`.
 
 If everything is done and the project has a deploy, suggest `/satory-devteam:release` for production.
 

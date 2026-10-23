@@ -645,13 +645,29 @@ ${bullets(gateLines(full.gates))}`
 
 // ------------------------------------------------------------------- main --
 
-function pickNext(plan, attempted) {
+// A milestone has started once one of its tasks is done or in progress.
+const started = (plan, m) => !m || plan.tasks.some(x => x.milestone === m && (x.status === 'done' || x.status === 'in_progress'))
+
+// held: open critical questions keep the milestones that have not started yet from starting
+function pickNext(plan, attempted, held = false) {
   const status = Object.fromEntries(plan.tasks.map(t => [t.id, t.status]))
   const ready = plan.tasks.filter(t =>
     (t.status === 'todo' || t.status === 'in_progress') && !attempted.has(t.id) &&
     (!MILESTONE || t.milestone === MILESTONE) &&
+    (!held || started(plan, t.milestone)) &&
     t.depends_on.every(d => status[d] === 'done'))
   return ready.find(t => t.status === 'in_progress') || ready[0] || null
+}
+
+// Open critical questions (0 when the gate is off or the register cannot be read).
+async function criticalOpen(plan) {
+  if (plan.critical_questions_gate === false) return 0
+  try {
+    return must(await sh('question list --open', { phase: 'Prepare', label: 'critical questions' }), 'question list').critical_open || 0
+  } catch (e) {
+    log(`Could not read the questions: ${e.message}`)
+    return 0
+  }
 }
 
 phase('Prepare')
@@ -668,10 +684,19 @@ await reviewMilestones(plan)
 
 const results = []
 const attempted = new Set()
-let stopped = null
+let stopped = null, waiting = null
 while (results.length < MAX_TASKS) {
-  const t = pickNext(plan, attempted)
-  if (!t) break
+  const critical = await criticalOpen(plan)
+  const t = pickNext(plan, attempted, critical > 0)
+  if (!t) {
+    // the started milestones are finished, but a new one waits for answers to critical questions
+    const next = critical > 0 && pickNext(plan, attempted)
+    if (next) {
+      waiting = { critical, milestone: next.milestone, task: next.id }
+      log(`⏸ ${next.milestone} does not start while ${critical} critical question(s) are open - answer them with /satory-devteam:status, then run /satory-devteam:build`)
+    }
+    break
+  }
   attempted.add(t.id)
   log(`▶ ${t.id} - ${t.title}`)
   try {
@@ -698,6 +723,7 @@ return {
   done: results.filter(r => r.status === 'done'),
   blocked: results.filter(r => r.status === 'blocked'),
   stopped_on_error: stopped,
+  waiting_for_answers: waiting,
   questions,
   remaining: left.map(t => ({ id: t.id, title: t.title, status: t.status, waits_for: t.depends_on.filter(d => plan.tasks.find(x => x.id === d).status !== 'done') })),
 }

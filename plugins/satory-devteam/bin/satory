@@ -718,6 +718,7 @@ def cmd_plan(p: Project, a) -> None:
               "ui_review": bool(p.config.get("ui", {}).get("review")),
               "experimental": sorted(p.config.get("experimental", {})),
               "milestone_review": p.config.get("milestone_review", True) is not False,
+              "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
                          "milestone": t.get("milestone"), "depends_on": t.get("depends_on", []), "ui": t.get("ui"),
                          "status": merged_status(p, t)} for t in plan["tasks"]]})
