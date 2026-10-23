@@ -35,7 +35,8 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    Product behaviour the SPEC does not define but you can reasonably choose (e.g. what happens to
    existing records when a field is edited) does not block: choose, put it in the mini-spec and list it
    in `assumptions` with the options you saw, so the user can confirm it later. Report each one once,
-   in the round you decide it.
+   in the round you decide it. Write it in the documentation language and skip what
+   is already in the register (the list is in your task).
 6. **Before you finish**, run the `build`, `lint` and `test` commands from `.satory/project.json` and make
    them pass. The orchestrator runs them again and sends the task back to you if they fail.
 7. **Feedback.** Address every point. If you disagree with one, explain why in `summary` instead of

@@ -41,6 +41,8 @@ Talk to the user in the language they write in.
    chose, confirm it), `fix` (defined but not enforced), `test` (not covered by a test), from Dev, the
    Reviewer, QA and the milestone reviews. If there are any, ask whether to go through them now; the user
    may also pick only the critical ones or postpone everything.
+   - Items that ask the same thing (another wording or language, from different agents) are asked once:
+     say which ids they are and record the same answer for each.
    - Go from critical to minor. For each, show the title, the concrete scenario from `detail` and the
      refs in a few lines, then ask with AskUserQuestion: the `options` (the first is recommended), plus
      "Later" (it stays open) and "Not needed" (dismissed). For `fix`/`test`: "Plan it" / "Later" /

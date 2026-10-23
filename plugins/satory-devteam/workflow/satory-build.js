@@ -50,6 +50,7 @@ const AGENTS_DIR = A.agentsDir || null  // for the role-file fallback
 let PROJECT = A.project || null
 let MAX_ROUNDS = 33
 let UI_REVIEW = false
+let LANG = 'en'  // the project's documentation language: also for the questions to the user
 
 // ----------------------------------------------------------------- schemas --
 
@@ -347,7 +348,21 @@ function context(t, start) {
     `Task file: docs/tasks/${t.id}.md`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
+    `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
   ].join('\n')
+}
+
+// What is already in the register of questions, so an agent does not report it again in other words.
+async function registerNote() {
+  try {
+    const reg = must(await sh('question list', { phase: 'Dev', label: 'register' }), 'question list')
+    const items = reg.items.filter(x => x.status !== 'dismissed')
+    if (!items.length) return ''
+    return `\n\n## Already in the register of questions\nDo not report these again, not even reworded or in another language; ` +
+      `report only what is new:\n${bullets(items.map(x => `${x.id} [${x.status}] ${x.title}`))}`
+  } catch (e) {
+    return ''
+  }
 }
 
 // A task gets a UI review when the project has one enabled, staging runs, and the task touches the UI.
@@ -600,7 +615,8 @@ async function runTask(t) {
     const tag = `${t.id} r${round}`
 
     // ---- Dev ----------------------------------------------------------
-    const dev = await spawn(role, devPrompt(ctx, round, feedback),
+    const known = await registerNote()
+    const dev = await spawn(role, devPrompt(ctx, round, feedback) + known,
       { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
     if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
     if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
@@ -616,7 +632,7 @@ async function runTask(t) {
       ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
 
     // ---- Review -------------------------------------------------------
-    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev),
+    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev) + known,
       { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
     if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
     await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' })
@@ -642,7 +658,7 @@ async function runTask(t) {
     }
     let qa = null, aq = null, retryNote = ''
     for (let attempt = 1; ; attempt++) {
-      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote),
+      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote) + known,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
       await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' })
@@ -762,6 +778,7 @@ if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${
 PROJECT = plan.root
 MAX_ROUNDS = Number(A.rounds || plan.max_rounds || 33)
 UI_REVIEW = plan.ui_review === true
+LANG = plan.language || 'en'
 if (plan.experimental && plan.experimental.length) log(`⚗ Experimental settings on: ${plan.experimental.join(', ')} (remove "experimental" from .satory/project.json to turn them off)`)
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 

@@ -191,6 +191,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.4** - fewer duplicate questions and all in the documentation language: Dev, the Reviewer and QA
+  get the items already in the register with each round and are told not to report them again, even
+  reworded; the task context names the documentation language (`plan json` returns `language`), which
+  every question uses. `/satory-devteam:status` asks the same question from several items once.
 - **0.8.3** - a plan change can depend on the task that covers a question (`"depends_on": ["Q-028"]`,
   also in `depends`), e.g. on a task another queued change adds; `queue add` checks a change against the
   plan as it will be after the changes already waiting in the queue.

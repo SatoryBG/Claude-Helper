@@ -66,7 +66,8 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after
 records exist, a record that contradicts another one, a value that is surely a typo), test what the
 mini-spec says and put the gap in `spec_gaps` as a question for the user, with options. It does not
-change your verdict. Report each gap once, in the round you notice it.
+change your verdict. Report each gap once, in the round you notice it. Write it in the documentation language (given in
+the task) and skip anything already in the register (the list is in your task), even reworded.
 
 ## Verdict
 `fail` if any test you ran fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.
