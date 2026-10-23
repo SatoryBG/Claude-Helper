@@ -572,19 +572,51 @@ def validate_plan(plan: dict) -> list[str]:
 STATUS_LABEL = {"todo": "to do", "in_progress": "in progress", "blocked": "⛔ blocked", "done": "✓ done"}
 
 
+def task_source(t: dict, by_id: dict) -> str:
+    """Where a task comes from: the plan, or the questions it covers grouped by their origin; the questions
+    that extended a task planned before follow after a +."""
+    ext = t.get("extended") or []
+    own = source_groups([x for x in t.get("questions") or [] if x not in ext], by_id) or "plan"
+    return f"{own} + {source_groups(ext, by_id)}" if ext else own
+
+
+def source_groups(qids: list, by_id: dict) -> str:
+    groups: dict = {}
+    for qid in qids:
+        q = by_id.get(qid, {})
+        src = str(q.get("source") or "")
+        if q.get("kind") == "request":
+            label = "request"
+        elif str(q.get("key") or "").startswith("flaky:"):
+            label = "flaky test"
+        elif src.startswith("milestone "):
+            label = src.removeprefix("milestone ")
+        elif q.get("from_task"):
+            label = q["from_task"]
+        else:
+            label = "question"
+        groups.setdefault(label, []).append(qid)
+    return "; ".join(f"{k} {', '.join(v)}" for k, v in groups.items())
+
+
 def render_plan(p: Project, plan: dict) -> None:
     lines = [f"# Plan - {p.config.get('name', p.root.name)}", "",
              "> Generated from `.satory/plan.json` by `satory plan render` - do not edit by hand.", ""]
     milestones = plan.get("milestones") or [{"id": None, "title": "Tasks"}]
+    by_id = {q["id"]: q for q in questions_load(p)["items"]}
     for m in milestones:
         tasks = [t for t in plan["tasks"] if m["id"] is None or t.get("milestone") == m["id"]]
         lines += [f"## {m['id'] + ' - ' if m['id'] else ''}{m['title']}", "",
-                  "| ID | Task | Owner | Depends on | Status |", "|---|---|---|---|---|"]
+                  "| ID | Task | Owner | Depends on | Source | Status |", "|---|---|---|---|---|---|"]
         for t in tasks:
             lines.append(f"| {t['id']} | {t['title']} | {t['owner']} | "
-                         f"{', '.join(t.get('depends_on', [])) or '-'} | {STATUS_LABEL[merged_status(p, t)]} |")
+                         f"{', '.join(t.get('depends_on', [])) or '-'} | {task_source(t, by_id)} | "
+                         f"{STATUS_LABEL[merged_status(p, t)]} |")
         lines.append("")
-    lines += ["## Details", ""]
+    lines += ["Source: `plan` - the architect's plan; `request` - a request from the user; `M2 review` - the "
+              "milestone review; `T-0xx` - found by Dev, the Reviewer or QA in that task; `flaky test` - an e2e "
+              "test that passed only on the retry. The question ids are in `docs/QUESTIONS.md`.", "",
+              "## Details", ""]
     for t in plan["tasks"]:
         lines += [f"### {t['id']} - {t['title']}", "", t["description"], "",
                   f"Requirements: {', '.join(t.get('requirements', [])) or '-'}", "", "Acceptance criteria:"]
@@ -858,6 +890,18 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
             for x in up.get(f"{k}_add", []):
                 if x not in t.setdefault(k, []):
                     t[k].append(x)
+        for x in up.get("questions_add", []):  # the task was planned before; these questions extend it
+            if x not in t.setdefault("extended", []):
+                t["extended"].append(x)
+    known = {q["id"] for q in reg["items"]}
+    for ln in data.get("links", []):  # only names where a task comes from (the Source column), any status
+        t = p.task(plan, ln.get("task", ""))
+        for x in ln.get("questions", []):
+            if x not in known:
+                raise SatoryError(f"links: no question {x}")
+            for k in ("questions", "extended") if ln.get("extended") else ("questions",):
+                if x not in t.setdefault(k, []):
+                    t[k].append(x)
     for dep in data.get("depends", []):
         t = p.task(plan, dep.get("task", ""))
         if status[t["id"]] != "todo":
@@ -893,6 +937,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines = [f"- {t['id']} ({t['milestone']}): {t['title']} - for {', '.join(t['questions']) or '-'}" for t in added]
     lines += [f"- {up['task']} extended" + (f" - for {', '.join(up.get('questions_add', []))}" if up.get("questions_add") else "")
               for up in data.get("updates", [])]
+    lines += [f"- {ln['task']} comes from {', '.join(ln.get('questions', []))}" for ln in data.get("links", [])]
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
     journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
@@ -900,6 +945,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     render_plan(p, plan)
     p.git("add", "-A")
     changed = [t["id"] for t in added] + [up["task"] for up in data.get("updates", [])]
+    changed += [ln["task"] for ln in data.get("links", []) if ln["task"] not in changed]
     p.git("commit", "-q", "-m", f"chore(plan): {data.get('title') or 'tasks for answered questions'} ({', '.join(changed) or 'no tasks'})"
                                 f"\n\n{TRAILER}")
     return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
@@ -917,7 +963,7 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     qids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
     reg = questions_load(p)
     if qids and all(any(q["id"] == x and q["status"] in ("planned", "resolved") for q in reg["items"]) for x in qids):
-        data = {}  # already planned another way: only the documents remain
+        data = {"links": data["links"]} if data.get("links") else {}  # already planned: documents and links remain
     res = {"file": name, "branch": branch, "merged": False, "added": [], "updated": [], "resolved": []}
     if branch:
         if not p.branch_exists(branch):
@@ -1012,6 +1058,7 @@ def cmd_plan(p: Project, a) -> None:
         emit({"ok": True, "path": "docs/PLAN.md"})
     else:
         errors = validate_plan(plan)
+        by_id = {q["id"]: q for q in questions_load(p)["items"]}
         emit({"ok": not errors, "errors": errors, "root": str(p.root), "name": p.config.get("name"),
               "max_rounds": p.config.get("max_rounds", 33),
               "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
@@ -1023,7 +1070,7 @@ def cmd_plan(p: Project, a) -> None:
               "milestones": plan.get("milestones", []),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
                          "milestone": t.get("milestone"), "depends_on": t.get("depends_on", []), "ui": t.get("ui"),
-                         "status": merged_status(p, t)} for t in plan["tasks"]]})
+                         "source": task_source(t, by_id), "status": merged_status(p, t)} for t in plan["tasks"]]})
 
 
 def cmd_task_start(p: Project, a) -> None:

@@ -102,6 +102,13 @@ the queue (with the ones after it) and is reported. `task finish` and `task bloc
 when it changed while the task ran; running the build again rebases the task and goes on.
 `/satory-devteam:status` writes the SPEC changes from your answers the same way.
 
+`docs/PLAN.md` shows where each task comes from in the column **Source**: `plan` (the architect's plan),
+`request Q-027` (a request), `M3 review Q-014` (a milestone review), `T-032 Q-033` (found by Dev, the
+Reviewer or QA in that task) or `flaky test Q-037`; a task planned before and extended later reads
+`plan + request Q-029`. It comes from the question ids in each task's `questions` (and `questions_add`
+of an extension). A plan change can also only name them, for any task: `"links": [{"task": "T-034",
+"questions": ["Q-029"]}]` (`"extended": true` for an extension). `plan json` returns it as `source`.
+
 ## Flaky e2e tests
 
 With `commands.e2e_retry` in `.satory/project.json` (for Playwright:
@@ -191,6 +198,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.6** - the column **Source** in `docs/PLAN.md` (and `source` in `plan json`): the plan, a request, a
+  milestone review, a task's Dev/Reviewer/QA or a flaky test, with the question ids; extensions of a task
+  planned before after a `+`. A plan change takes `links` to name where existing tasks come from.
 - **0.8.5** - the answered questions are planned again: `question list` grew past what an agent's tool
   output carries, so the planning between two tasks (and the register note and the milestone review)
   failed without a sign. `question list` is now small by default (open items in full, answered ones with
