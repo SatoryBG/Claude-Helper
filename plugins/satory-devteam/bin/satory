@@ -214,7 +214,22 @@ def restore(p: Project, ref: str, path: str, status: str) -> None:
 def checkpoint(p: Project, tid: str, label: str) -> str:
     p.git("add", "-A")
     p.git("commit", "-q", "--allow-empty", "--no-verify", "-m", f"wip({tid}): {label}")
+    if p.config.get("push_task_branch", True) is not False:
+        # a copy of the work in progress on GitHub; forced, since resuming rebases the branch
+        push_quiet(p, "--force", "origin", f"HEAD:refs/heads/{p.current_branch()}")
     return p.git("rev-parse", "HEAD")
+
+
+def push_quiet(p: Project, *args: str) -> str | None:
+    """git push to origin, if there is one; it never fails the step. Returns the error, if any."""
+    if not p.git_ok("remote", "get-url", "origin"):
+        return None
+    try:
+        r = subprocess.run(["git", "push", "-q", *args], cwd=p.root, capture_output=True, text=True,
+                           timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return "git push timed out"
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-500:]
 
 
 # ------------------------------------------------------- commands & gates ---
@@ -948,8 +963,9 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     changed += [ln["task"] for ln in data.get("links", []) if ln["task"] not in changed]
     p.git("commit", "-q", "-m", f"chore(plan): {data.get('title') or 'tasks for answered questions'} ({', '.join(changed) or 'no tasks'})"
                                 f"\n\n{TRAILER}")
+    push_error = push_quiet(p, "origin", p.main)
     return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
-            "resolved": [r.get("id") for r in data.get("resolved", [])]}
+            "resolved": [r.get("id") for r in data.get("resolved", [])], "push_error": push_error}
 
 
 def queue_dir(p: Project) -> Path:
@@ -981,6 +997,7 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
         res.update(plan_add(p, p.plan(), data, item.get("source", "request")))
     if branch:
         p.git("branch", "-D", branch)
+    res["push_error"] = push_quiet(p, "origin", p.main)
     return res
 
 
@@ -1337,9 +1354,10 @@ def cmd_task_finish(p: Project, a) -> None:
     p.save_state()
     pushed, push_error = False, None
     if p.git_ok("remote", "get-url", "origin"):
-        r = p.git("push", "-q", "origin", p.main, check=False)
-        pushed = r.returncode == 0
-        push_error = None if pushed else (r.stderr or r.stdout).strip()[-500:]
+        push_error = push_quiet(p, "origin", p.main)
+        pushed = push_error is None
+        if pushed and p.git_ok("ls-remote", "--exit-code", "--heads", "origin", branch):
+            push_quiet(p, "origin", "--delete", branch)  # the copy of the work in progress is merged
     staging = deploy(p, "staging", label=f"main-{commit[:12]}")
     if not staging.get("skipped"):
         p.state.setdefault("deploy", {})["main_image"] = staging.get("image")

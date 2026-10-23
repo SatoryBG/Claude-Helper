@@ -12,6 +12,13 @@ specification, the plan and the production release, and everything in between ru
 /satory-devteam:release ───► ✋ approval ──► production
 ```
 
+What reaches GitHub (`origin`) and when: the task's branch `satory/T-…` after every step of a round
+(Dev, QA, Docs, a block - a copy of the work in progress, forced since resuming rebases it; CI runs only
+on `main`); `main` when a task is finished (the branch on GitHub is then deleted), and after every change
+between two tasks (a queued request or answer, the planner's new tasks). A failed push never stops the
+work; `task finish` reports it as `push_error`. `"push_task_branch": false` in `.satory/project.json`
+keeps the task branches local.
+
 ## Commands
 
 | Command | What it does |
@@ -198,6 +205,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.8** - more reaches GitHub: the task's branch after every step of a round (a copy of the work in
+  progress, deleted when the task is merged; off with `"push_task_branch": false`) and `main` after every
+  change between two tasks (queued requests and answers, the planner's tasks), not only at a task finish.
 - **0.8.7** - a queued change with only `links` is applied too.
 - **0.8.6** - the column **Source** in `docs/PLAN.md` (and `source` in `plan json`): the plan, a request, a
   milestone review, a task's Dev/Reviewer/QA or a flaky test, with the question ids; extensions of a task
