@@ -15,10 +15,15 @@ of the affected finished tasks and the code they touch. Do not read `docs/JOURNA
 - An answer needs work when the product must behave differently than it does now (a new rule, a
   refusal, a confirmation, a different calculation or display, a missing test). An answer that confirms
   the current behaviour ("leave it as it is") needs no task: put it in `resolved` with a short reason.
-- Group related answers into one task when they touch the same code (e.g. all rules of the purchase
-  form), but keep a task small enough for one Dev to finish in a few rounds. Each task lists the
-  question ids it covers in `questions`; every answered question ends up either in a task or in
-  `resolved`.
+- **One task per place in the plan.** Every task runs the whole cycle (Dev, review, staging, QA, UI,
+  security, the full e2e suite), so the fixes are not split into small tasks: all the answers that go
+  to the same place (the same milestone, ahead of the same task) are **one task** with `subtasks` - one
+  subtask per group of related answers (e.g. all rules of the purchase form), each with its
+  `description`, `acceptance` and `questions`. The task's own `description` says in a few lines what
+  the subtasks have in common; its `title` names the whole. A separate task only for fixes that must
+  come at another place: after work that is not built yet (e.g. a fix of the import while the import
+  is a task still to do) or in a later milestone. (Several tasks for the same place are merged into
+  one automatically.) Every answered question ends up either in a subtask or in `resolved`.
 - `description`: what to change, where (files, endpoints, components) and which acceptance criteria of
   the SPEC it implements, in the same style and language as the existing tasks of the plan. Existing
   behaviour that must change, and existing tests that assert the old behaviour, are named explicitly

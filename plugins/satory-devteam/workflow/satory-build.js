@@ -213,6 +213,19 @@ const PLANNER_SCHEMA = {
           description: { type: 'string' }, acceptance: { type: 'array', items: { type: 'string' } },
           questions: { type: 'array', items: { type: 'string' }, description: 'Question ids the task covers' },
           insert_before: { type: 'string', description: 'A task to do that comes after this one' },
+          subtasks: {
+            type: 'array',
+            description: 'The fixes of this task, one per group of related answers; all are done in one cycle',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' }, description: { type: 'string' },
+                acceptance: { type: 'array', items: { type: 'string' } },
+                questions: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['title', 'description', 'acceptance', 'questions'],
+            },
+          },
         },
         required: ['ref', 'title', 'milestone', 'owner', 'ui', 'depends_on', 'description', 'acceptance', 'questions'],
       },
@@ -597,7 +610,9 @@ async function planAnswers(plan) {
     const out = await spawn('planner', plannerPrompt(answered, plan),
       { phase: 'Planning', label: `plan ${answered.length} answer(s)`, model: MODELS.planner, schema: PLANNER_SCHEMA })
     if (!out) { log('The planner returned no result; it runs again after the next task.'); return plan }
-    const res = must(await sh('plan add', { phase: 'Planning', label: 'add tasks', note: JSON.stringify(out) }), 'plan add')
+    // bundle: tasks for the same place in the plan become one task with subtasks, so the whole cycle
+    // runs once for all the fixes of this planning, not once for each
+    const res = must(await sh('plan add', { phase: 'Planning', label: 'add tasks', note: JSON.stringify({ ...out, bundle: true }) }), 'plan add')
     log(`🗂 ${res.added.length} new task(s) for the answered questions${res.added.length ? `: ${res.added.join(', ')}` : ''}` +
       (res.resolved.length ? `; ${res.resolved.length} answer(s) need no task` : ''))
     return must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')

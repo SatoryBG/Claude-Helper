@@ -42,8 +42,11 @@ Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/archit
 - Architecture: does it fit `docs/ARCHITECTURE.md` and the ADRs? If it needs a decision (a new
   dependency, a data model change, an integration), write an ADR or update the architecture and say so.
 - Where it goes. Offer the user the options that make sense, with your recommendation first:
-  - **a fix now** - new tasks ahead of everything still to do (for a defect or a change to something
-    built that later work relies on);
+  - **a fix now** - one new task ahead of everything still to do (for a defect or a change to something
+    built that later work relies on). Several fixes are one task with `subtasks` (`{title, description,
+    acceptance, questions}` each), because every task runs the whole cycle; a fix task still to do from
+    an earlier request or the planner is joined with `merge: [{"tasks": ["T-0AA", "T-0BB"], "title": "…"}]`
+    (the earliest keeps its id and place);
   - **with a task still to do** - extend that task (`updates`: `description_append`, `acceptance_add`,
     `requirements_add`), when it is about to build the same thing;
   - **in a later milestone** - new tasks in an existing milestone, or a new milestone (`milestones`:

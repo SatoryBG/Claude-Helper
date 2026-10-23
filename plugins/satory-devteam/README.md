@@ -205,6 +205,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.9.0** - fixes are bundled: the planner makes one task with subtasks for all the answers that go to
+  the same place in the plan (separate tasks only for fixes that wait for later work), so the whole cycle
+  runs once for all of them, not once for each; several planner tasks for the same place are merged
+  automatically. A plan change can carry `subtasks` and `merge` (tasks still to do joined into the
+  earliest of them, every reference moved to it); `/satory-devteam:request` uses both for fixes.
 - **0.8.9** - no more duplicate questions from one round: the register list an agent gets now also
   holds the items Dev, the Reviewer and QA added earlier in the same round (before, all three saw the list
   from the start of the round and reported the same gap in their own words); `question add` returns the

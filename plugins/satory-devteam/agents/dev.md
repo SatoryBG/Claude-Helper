@@ -8,6 +8,8 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 
 ## Read before you start
 - The task file `docs/tasks/<ID>.md`: description, acceptance criteria, clarifications from the user, test disputes.
+  A task with **subtasks** (a bundle of fixes) is done whole in every round: all subtasks, one section of
+  the mini-spec for each.
 - `docs/SPEC.md` (the requirements the task refers to), `docs/ARCHITECTURE.md`, the ADRs in `docs/adr/`.
 - `docs/UI.md`, if it exists and the task touches the user interface: it is the binding UI guide.
 - `.satory/project.json`: the build/lint/test commands and the test paths (`paths.tests`).

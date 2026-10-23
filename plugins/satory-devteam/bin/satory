@@ -841,6 +841,94 @@ def cmd_where(p: Project, a) -> None:
     emit({"ok": True, "root": str(p.root), "name": p.config.get("name"), "branch": p.current_branch()})
 
 
+def union(*lists) -> list:
+    out = []
+    for xs in lists:
+        for x in xs or []:
+            if x not in out:
+                out.append(x)
+    return out
+
+
+def with_subtasks(item: dict) -> dict:
+    """A task with `subtasks`: they are written into its description, and their acceptance criteria and
+    questions are added to the task's, so Dev, the Reviewer and QA cover all of them in one cycle."""
+    subs = item.get("subtasks") or []
+    if not subs:
+        return item
+    parts = [str(item.get("description", "")).strip(),
+             f"Subtasks ({len(subs)}) - all are done in this task, in one cycle (the mini-spec and the tests cover each):"]
+    for i, st in enumerate(subs, 1):
+        meta = [f"Acceptance: {', '.join(st.get('acceptance') or []) or '-'}"]
+        if st.get("questions"):
+            meta.append(f"Questions: {', '.join(st['questions'])}")
+        parts.append(f"### Subtask {i} - {str(st.get('title', '')).strip()}\n\n"
+                     f"{str(st.get('description', '')).strip()}\n\n{' · '.join(meta)}")
+    return {**item, "description": "\n\n".join(x for x in parts if x),
+            "acceptance": union(item.get("acceptance"), *[st.get("acceptance") for st in subs]),
+            "questions": union(item.get("questions"), *[st.get("questions") for st in subs]),
+            "subtasks": None}
+
+
+def fold_tasks(items: list[dict], title: str | None = None, description: str = "") -> dict:
+    """One task from several fixes planned for the same place in the plan: each becomes a subtask, so the
+    whole cycle (review, staging, QA, UI, security, full e2e) runs once for all of them, not once for each."""
+    subs = []
+    for it in items:
+        subs += it.get("subtasks") or [{"title": it.get("title", ""), "description": it.get("description", ""),
+                                         "acceptance": it.get("acceptance") or [], "questions": it.get("questions") or []}]
+    refs = union(*[it.get("refs") or [it.get("ref") or it.get("id")] for it in items])
+    folded = {
+        "ref": refs[0], "refs": refs, "title": title or "; ".join(str(it.get("title", "")).strip() for it in items),
+        "milestone": items[0].get("milestone"), "insert_before": items[0].get("insert_before"),
+        "owner": "devops" if all(it.get("owner") == "devops" for it in items) else "dev",
+        "ui": any(it.get("ui", True) for it in items),
+        "depends_on": [d for d in union(*[it.get("depends_on") for it in items]) if d not in refs],
+        "requirements": union(*[it.get("requirements") for it in items]),
+        "description": description, "acceptance": [], "questions": union(*[it.get("questions") for it in items]),
+        "subtasks": subs}
+    return with_subtasks(folded)
+
+
+def bundle_items(items: list[dict]) -> list[dict]:
+    """The planner's tasks for the same place (milestone and insert_before) become one task with subtasks."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault((it.get("milestone"), it.get("insert_before") or ""), []).append(it)
+    return [g[0] if len(g) == 1 else fold_tasks(g) for g in groups.values()]
+
+
+def plan_merge(p: Project, plan: dict, reg: dict, status: dict, mg: dict) -> dict:
+    """Merge tasks still to do into the earliest of them (its id stays); the others are removed and
+    every reference to them points to the merged task."""
+    tasks = plan["tasks"]
+    ids = list(dict.fromkeys(mg.get("tasks") or []))
+    if len(ids) < 2:
+        raise SatoryError("merge needs at least two tasks")
+    for x in ids:
+        p.task(plan, x)
+        if status[x] != "todo":
+            raise SatoryError(f"{x} is {status[x]}; only tasks to do can be merged")
+    parts = [t for t in tasks if t["id"] in ids]  # in plan order: the earliest keeps its id and place
+    keep, gone = parts[0], {t["id"] for t in parts[1:]}
+    folded = fold_tasks(parts, mg.get("title"), str(mg.get("description", "")).strip())
+    for k in ("title", "owner", "ui", "requirements", "description", "acceptance", "questions"):
+        keep[k] = folded[k]
+    keep["extended"] = union(*[t.get("extended") for t in parts])
+    if not keep["extended"]:
+        keep.pop("extended")
+    keep["depends_on"] = [d for d in union(*[t.get("depends_on") for t in parts]) if d not in ids]
+    tasks[:] = [t for t in tasks if t["id"] not in gone]
+    for t in tasks:
+        if t is not keep:
+            t["depends_on"] = [d for d in union([keep["id"] if d in gone else d for d in t.get("depends_on", [])])
+                               if d != t["id"]]
+    for q in reg["items"]:
+        if q.get("task") in gone:
+            q["task"] = keep["id"]
+    return {"task": keep["id"], "merged": sorted(gone)}
+
+
 def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
     """Apply a plan change to `plan` and `reg` in memory and validate it: new milestones, new tasks (before
     `insert_before`, else ahead of everything still to do), additions to tasks still to do, extra
@@ -856,10 +944,14 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
     num = 1 + max((int(t["id"].split("-")[1]) for t in tasks), default=0)
     cursor = next((i for i, t in enumerate(tasks) if status[t["id"]] == "todo"), len(tasks))
     added, refs = [], {}
-    for item in data.get("tasks", []):
+    items = data.get("tasks", [])
+    if data.get("bundle"):  # the planner's fixes: one task with subtasks per place in the plan
+        items = bundle_items(items)
+    for item in map(with_subtasks, items):
         tid = f"T-{num:03d}"
         num += 1
-        refs[item.get("ref") or tid] = tid
+        for r in item.get("refs") or [item.get("ref") or tid]:
+            refs[r] = tid
         task = {"id": tid, "title": str(item.get("title", "")).strip(), "milestone": item.get("milestone"),
                 "owner": item.get("owner", "dev"), "ui": bool(item.get("ui", True)),
                 "depends_on": list(item.get("depends_on") or []), "requirements": list(item.get("requirements") or []),
@@ -895,7 +987,7 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
         return d
 
     for t in added:  # dependencies may name other new tasks by their ref
-        t["depends_on"] = [resolve(d) for d in t["depends_on"]]
+        t["depends_on"] = [d for d in union([resolve(d) for d in t["depends_on"]]) if d != t["id"]]
     for up in data.get("updates", []):
         t = p.task(plan, up.get("task", ""))
         if status[t["id"]] != "todo":
@@ -926,6 +1018,7 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
             d = resolve(d)
             if d not in t.setdefault("depends_on", []):
                 t["depends_on"].append(d)
+    data["_merged"] = [plan_merge(p, plan, reg, status, mg) for mg in data.get("merge", [])]
     errors = validate_plan(plan)
     if errors:
         raise SatoryError("the new plan is invalid: " + "; ".join(errors))
@@ -954,6 +1047,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines += [f"- {up['task']} extended" + (f" - for {', '.join(up.get('questions_add', []))}" if up.get("questions_add") else "")
               for up in data.get("updates", [])]
     lines += [f"- {ln['task']} comes from {', '.join(ln.get('questions', []))}" for ln in data.get("links", [])]
+    lines += [f"- {m['task']} merged with {', '.join(m['merged'])}" for m in data.get("_merged", [])]
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
     journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
@@ -962,10 +1056,12 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     p.git("add", "-A")
     changed = [t["id"] for t in added] + [up["task"] for up in data.get("updates", [])]
     changed += [ln["task"] for ln in data.get("links", []) if ln["task"] not in changed]
+    changed += [f"{m['task']} + {', '.join(m['merged'])}" for m in data.get("_merged", [])]
     p.git("commit", "-q", "-m", f"chore(plan): {data.get('title') or 'tasks for answered questions'} ({', '.join(changed) or 'no tasks'})"
                                 f"\n\n{TRAILER}")
     push_error = push_quiet(p, "origin", p.main)
     return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
+            "merged": data.get("_merged", []),
             "resolved": [r.get("id") for r in data.get("resolved", [])], "push_error": push_error}
 
 
@@ -994,7 +1090,7 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
             p.git("reset", "-q", "--hard", before)
             raise SatoryError(f"merge of {branch} failed: {(r.stderr or r.stdout).strip()[:300]}")
         res["merged"] = p.git("rev-parse", "HEAD") != before
-    if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved", "links")):
+    if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved", "links", "merge")):
         res.update(plan_add(p, p.plan(), data, item.get("source", "request")))
     if branch:
         p.git("branch", "-D", branch)
@@ -1036,7 +1132,7 @@ def cmd_queue(p: Project, a) -> None:
         sim_plan, sim_reg = copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p))
         for x in files:
             plan_patch(p, sim_plan, sim_reg, load_json(x).get("data") or {})
-        plan_patch(p, sim_plan, sim_reg, data)
+        plan_patch(p, sim_plan, sim_reg, copy.deepcopy(data))  # the check must not change what is queued
         item = {"source": a.source or "request", "branch": a.branch, "message": message, "data": data}
         if free and not files:
             return emit({"ok": True, "applied": queue_apply_one(p, item, "now")})
