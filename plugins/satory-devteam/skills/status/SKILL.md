@@ -62,4 +62,5 @@ Talk to the user in the language they write in.
    at the next task finish, or now with `$SATORY question flush` when on main).
    Open `critical` items keep the next milestone from starting (the started ones are finished): say so
    when there are any.
-5. If there are tasks to run, suggest `/satory-devteam:build`.
+5. If there are tasks to run, suggest `/satory-devteam:build`. For a defect the user found or a new idea,
+   point to `/satory-devteam:request` (it works while a build is running).

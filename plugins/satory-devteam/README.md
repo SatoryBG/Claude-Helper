@@ -21,6 +21,7 @@ specification, the plan and the production release, and everything in between ru
 | `/satory-devteam:architect` | Stack (chosen together with you), architecture, ADRs, UI guide, `.satory/project.json`, task plan. |
 | `/satory-devteam:build [milestone=M2] [max=N] [rounds=33]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
 | `/satory-devteam:status` | How far the project has got, the blocked tasks and your answers to them. |
+| `/satory-devteam:request [what you found or want]` | A new input at any time - a defect, a change, an idea: the analyst puts it into the SPEC, the architect into the architecture and the plan. No restart of a running build. |
 | `/satory-devteam:release [version]` | Production after explicit approval. Production gets the same Docker image that passed staging. |
 
 ## Agents
@@ -80,6 +81,18 @@ code become tasks automatically: between two tasks (and when it starts) the buil
 marks the questions `planned` or, when the answer keeps the current behaviour, `resolved`. `/satory-devteam:release` warns about open critical
 questions. The register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
 new items wait in `.satory/run/` and are written on main at the next task finish.
+
+## Requests while the work runs
+
+`/satory-devteam:request` takes anything new from you at any time: a defect you found while trying the
+app, a change to something built, a new idea. It runs the analyst first (clarifying questions, the data
+rules pass, new or changed acceptance criteria in the SPEC with a version bump), then the architect (fit
+with the architecture and ADRs, and where it goes: a fix ahead of everything still to do, an addition to
+a task still to do, or tasks in a later or new milestone - you choose, done tasks are never changed).
+The request is tracked in the register (`kind: request`). The plan change is one JSON for
+`satory plan add`: on a clean main it is applied at once; while a task runs it is checked against the
+plan and queued in `.satory/run/plan-queue/`, and the build applies it at the next boundary between two
+tasks - no restart. Tasks for a later milestone are placed after that milestone's tasks.
 
 ## Flaky e2e tests
 
@@ -170,6 +183,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.0** - new `/satory-devteam:request` for input from the user at any time (defects, changes,
+  ideas): analyst, then architect, then a plan change. `satory plan add` also adds milestones, extends
+  tasks still to do (`updates`) and places tasks for a later milestone after that milestone; with
+  `--queue` it waits in `.satory/run/plan-queue/` while a task runs and the build applies it at the next
+  task boundary (`satory plan apply-queue`, before the planner). Fix: `task finish` and `task block` read
+  the plan from main after switching to it, so a plan change made on main while a task ran is no longer
+  overwritten. New register kind `request`.
 - **0.7.3** - the default limit for retrying failed e2e tests (`e2e_retry_max_percent`) is 3 % of the
   run instead of 1 %.
 - **0.7.2** - flaky e2e tests no longer cost a round: with `commands.e2e_retry` the failed tests of an

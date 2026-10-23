@@ -304,7 +304,7 @@ def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]
 # whenever it suits them. While a task runs, the register lives in a gitignored working copy; it is
 # written to .satory/questions.json and docs/QUESTIONS.md on main together with the journal.
 
-Q_KINDS = ("question", "decision", "fix", "test")
+Q_KINDS = ("question", "decision", "fix", "test", "request")
 Q_SEVERITIES = ("critical", "major", "minor")
 Q_STATUSES = ("open", "answered", "dismissed", "planned", "resolved")
 
@@ -778,16 +778,18 @@ def cmd_where(p: Project, a) -> None:
     emit({"ok": True, "root": str(p.root), "name": p.config.get("name"), "branch": p.current_branch()})
 
 
-def plan_add(p: Project, plan: dict, data: dict) -> dict:
-    """Add the planner's tasks for answered questions (on main): new tasks before `insert_before`,
-    extra dependencies of tasks not started yet, and the questions marked planned or resolved."""
-    if p.current_branch() != p.main:
-        raise SatoryError(f"plan add runs only on {p.main} (between tasks)")
-    if p.dirty():
-        raise SatoryError(f"{p.main} has uncommitted changes")
-    reg = questions_load(p)
+def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
+    """Apply a plan change to `plan` and `reg` in memory and validate it: new milestones, new tasks (before
+    `insert_before`, else ahead of everything still to do), additions to tasks still to do, extra
+    dependencies, and the register items marked planned or resolved. Returns the new tasks."""
     tasks = plan["tasks"]
     status = {t["id"]: merged_status(p, t) for t in tasks}
+    for m in data.get("milestones", []):
+        ms = plan.setdefault("milestones", [])
+        if any(x["id"] == m.get("id") for x in ms):
+            raise SatoryError(f"milestone {m.get('id')} already exists")
+        after = next((i for i, x in enumerate(ms) if x["id"] == m.get("after")), len(ms) - 1)
+        ms.insert(after + 1, {"id": m["id"], "title": str(m.get("title", "")).strip()})
     num = 1 + max((int(t["id"].split("-")[1]) for t in tasks), default=0)
     cursor = next((i for i, t in enumerate(tasks) if status[t["id"]] == "todo"), len(tasks))
     added, refs = [], {}
@@ -801,9 +803,18 @@ def plan_add(p: Project, plan: dict, data: dict) -> dict:
                 "description": str(item.get("description", "")).strip(),
                 "acceptance": [str(x) for x in item.get("acceptance") or []],
                 "questions": [str(x) for x in item.get("questions") or []], "status": "todo"}
-        # before the named task to do, else after the tasks added so far, ahead of everything still to do
+        # before the named task to do; else a task for a later milestone goes after the tasks of its milestone
+        # and the ones before it, any other ahead of everything still to do (after the tasks added so far)
         before = item.get("insert_before")
-        pos = next((i for i, t in enumerate(tasks) if t["id"] == before and status[t["id"]] == "todo"), cursor)
+        pos = next((i for i, t in enumerate(tasks) if t["id"] == before and status[t["id"]] == "todo"), None)
+        if pos is None:
+            order = {m["id"]: i for i, m in enumerate(plan.get("milestones", []))}
+            current = tasks[cursor].get("milestone") if cursor < len(tasks) else None
+            mine = order.get(task["milestone"], -1)
+            if mine > order.get(current, mine):
+                pos = 1 + max((i for i, t in enumerate(tasks) if order.get(t.get("milestone"), -1) <= mine), default=-1)
+            else:
+                pos = cursor
         tasks.insert(pos, task)
         status[tid] = "todo"
         if pos <= cursor:
@@ -811,6 +822,16 @@ def plan_add(p: Project, plan: dict, data: dict) -> dict:
         added.append(task)
     for t in added:  # dependencies may name other new tasks by their ref
         t["depends_on"] = [refs.get(d, d) for d in t["depends_on"]]
+    for up in data.get("updates", []):
+        t = p.task(plan, up.get("task", ""))
+        if status[t["id"]] != "todo":
+            raise SatoryError(f"{t['id']} is {status[t['id']]}; only tasks to do can be changed")
+        if up.get("description_append"):
+            t["description"] = f"{t['description'].rstrip()}\n\n{str(up['description_append']).strip()}"
+        for k in ("acceptance", "requirements", "questions"):
+            for x in up.get(f"{k}_add", []):
+                if x not in t.setdefault(k, []):
+                    t[k].append(x)
     for dep in data.get("depends", []):
         t = p.task(plan, dep.get("task", ""))
         if status[t["id"]] != "todo":
@@ -822,27 +843,45 @@ def plan_add(p: Project, plan: dict, data: dict) -> dict:
     errors = validate_plan(plan)
     if errors:
         raise SatoryError("the new plan is invalid: " + "; ".join(errors))
-    planned = {}
-    for t in added:
-        for qid in t["questions"]:
+    for t in added + [p.task(plan, up["task"]) for up in data.get("updates", [])]:
+        for qid in t.get("questions", []):
             q = question_find(reg, qid)
-            q["status"], q["task"] = "planned", t["id"]
-            planned[qid] = t["id"]
+            if q["status"] in ("open", "answered"):
+                q["status"], q["task"] = "planned", t["id"]
     for r in data.get("resolved", []):
         q = question_find(reg, r.get("id", ""))
         q["status"], q["resolution"] = "resolved", str(r.get("reason", "")).strip()
+    return added
+
+
+def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dict:
+    """Apply a plan change on a clean main and commit it with the journal and the register."""
+    if p.current_branch() != p.main:
+        raise SatoryError(f"plan add runs only on {p.main} (between tasks); use --queue")
+    if p.dirty():
+        raise SatoryError(f"{p.main} has uncommitted changes")
+    reg = questions_load(p)
+    added = plan_patch(p, plan, reg, data)
     p.save_plan(plan)
     questions_save(p, reg)
     lines = [f"- {t['id']} ({t['milestone']}): {t['title']} - for {', '.join(t['questions']) or '-'}" for t in added]
+    lines += [f"- {up['task']} extended" + (f" - for {', '.join(up.get('questions_add', []))}" if up.get("questions_add") else "")
+              for up in data.get("updates", [])]
+    lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
-    journal_pending(p, "plan", "planner", None, "ok", join_note(data.get("summary", ""), lines))
+    journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
     journal_flush(p)
     render_plan(p, plan)
     p.git("add", "-A")
-    p.git("commit", "-q", "-m", f"chore(plan): tasks for answered questions ({', '.join(t['id'] for t in added) or 'none'})"
+    changed = [t["id"] for t in added] + [up["task"] for up in data.get("updates", [])]
+    p.git("commit", "-q", "-m", f"chore(plan): {data.get('title') or 'tasks for answered questions'} ({', '.join(changed) or 'no tasks'})"
                                 f"\n\n{TRAILER}")
-    return {"ok": True, "added": [t["id"] for t in added], "planned": planned,
+    return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
             "resolved": [r.get("id") for r in data.get("resolved", [])]}
+
+
+def plan_queue_dir(p: Project) -> Path:
+    return p.run / "plan-queue"
 
 
 def cmd_plan(p: Project, a) -> None:
@@ -852,7 +891,40 @@ def cmd_plan(p: Project, a) -> None:
             data = json.loads(read_note(a) or "{}")
         except json.JSONDecodeError as e:
             raise SatoryError(f"plan add expects JSON on stdin: {e}")
-        return emit(plan_add(p, plan, data))
+        source = a.source or "planner"
+        if a.queue and (p.current_branch() != p.main or p.dirty()):
+            # a task is running: check the change against today's plan, apply it at the next task boundary
+            import copy
+            plan_patch(p, copy.deepcopy(plan), copy.deepcopy(questions_load(p)), data)
+            qd = plan_queue_dir(p)
+            qd.mkdir(parents=True, exist_ok=True)
+            path = qd / f"{now('%Y%m%d-%H%M%S')}-{len(list(qd.glob('*.json'))) + 1:03d}.json"
+            write_json(path, {"source": source, "data": data})
+            return emit({"ok": True, "queued": p.rel(path)})
+        return emit(plan_add(p, plan, data, source))
+    if a.action == "apply-queue":
+        qd = plan_queue_dir(p)
+        files = sorted(qd.glob("*.json")) if qd.exists() else []
+        if files and (p.current_branch() != p.main or p.dirty()):
+            return emit({"ok": True, "applied": [], "waiting": len(files), "note": f"applied on a clean {p.main}"})
+        applied, errors = [], []
+        for path in files:
+            item = load_json(path)
+            data = item["data"]
+            qids = {x for t in data.get("tasks", []) for x in t.get("questions", [])}
+            qids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
+            reg = questions_load(p)
+            if qids and all(any(q["id"] == x and q["status"] in ("planned", "resolved") for q in reg["items"]) for x in qids):
+                applied.append({"file": path.name, "skipped": f"{', '.join(sorted(qids))} already planned"})
+                path.unlink()
+                continue
+            try:
+                res = plan_add(p, p.plan(), item["data"], item.get("source", "request"))
+                applied.append({"file": path.name, **res})
+                path.unlink()
+            except SatoryError as e:
+                errors.append(f"{path.name}: {e}")
+        return emit({"ok": not errors, "applied": applied, "errors": errors})
     if a.action == "validate":
         errors = validate_plan(plan)
         emit({"ok": not errors, "errors": errors, "tasks": len(plan["tasks"])})
@@ -1110,6 +1182,9 @@ def cmd_task_finish(p: Project, a) -> None:
         p.git("reset", "-q", "--hard", "HEAD")
         p.git("checkout", "-q", branch)
         raise SatoryError(f"squash merge of {branch} failed: {(r.stderr or r.stdout).strip()}")
+    # main's plan, not the branch's copy: it may have changed on main while the task ran
+    plan = p.plan()
+    t = p.task(plan, tid)
     t["status"], t["rounds"], t["finished"] = "done", st["rounds"], now()
     t.pop("blocked_reason", None)
     p.save_plan(plan)
@@ -1149,6 +1224,8 @@ def cmd_task_block(p: Project, a) -> None:
     if p.current_branch() == st["branch"]:
         st["checkpoint"] = checkpoint(p, tid, "blocked")
         p.git("checkout", "-q", p.main)
+        plan = p.plan()  # main's plan, which may have changed while the task ran
+        t = p.task(plan, tid)
     t["status"], t["blocked_reason"], t["rounds"] = "blocked", reason, st["rounds"]
     p.save_plan(plan)
     journal_pending(p, tid, "orchestrator", st["rounds"], "blocked", reason)
@@ -1343,8 +1420,10 @@ def main() -> None:
     sub.add_parser("workflow")
     sub.add_parser("status")
     s = sub.add_parser("plan")
-    s.add_argument("action", choices=["json", "validate", "render", "add"])
+    s.add_argument("action", choices=["json", "validate", "render", "add", "apply-queue"])
     s.add_argument("--note-stdin", action="store_true")
+    s.add_argument("--queue", action="store_true", help="add: queue it while a task runs")
+    s.add_argument("--source", help="add: who changes the plan (journal)")
 
     s = sub.add_parser("task")
     s.add_argument("action", choices=["start", "finish", "block", "unblock"])

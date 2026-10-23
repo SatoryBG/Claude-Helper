@@ -556,17 +556,22 @@ Tasks not done yet (in plan order):
 ${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone || '-'}, ${t.status}] ${t.title}`)) : '- (none)'}`
 }
 
-// Between two tasks, on main: the answered questions become tasks of the plan. Returns the plan.
+// Between two tasks, on main: first the plan changes queued by /satory-devteam:request, then the answered
+// questions become tasks. Returns the plan.
 async function planAnswers(plan) {
   try {
+    const st = must(await sh('status', { phase: 'Planning', label: 'branch' }), 'status')
+    if (/^satory\//.test(st.branch || '')) return plan
+    const q = must(await sh('plan apply-queue', { phase: 'Planning', label: 'queued requests' }), 'plan apply-queue')
+    for (const a of q.applied || []) {
+      log(a.skipped ? `🗂 Queued request skipped: ${a.skipped}`
+        : `🗂 Request applied to the plan: ${[...a.added, ...a.updated.map(x => `${x} (extended)`)].join(', ') || 'no task changes'}`)
+    }
+    for (const e of q.errors || []) log(`A queued plan change could not be applied (${e}); it stays in .satory/run/plan-queue/`)
+    if ((q.applied || []).length) plan = must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
     const reg = must(await sh('question list', { phase: 'Planning', label: 'answered questions' }), 'question list')
     const answered = reg.items.filter(x => x.status === 'answered')
     if (!answered.length) return plan
-    const st = must(await sh('status', { phase: 'Planning', label: 'branch' }), 'status')
-    if (/^satory\//.test(st.branch || '')) {
-      log(`🗂 ${answered.length} answered question(s) are planned after the current task`)
-      return plan
-    }
     const out = await spawn('planner', plannerPrompt(answered, plan),
       { phase: 'Planning', label: `plan ${answered.length} answer(s)`, model: MODELS.planner, schema: PLANNER_SCHEMA })
     if (!out) { log('The planner returned no result; it runs again after the next task.'); return plan }
@@ -575,7 +580,7 @@ async function planAnswers(plan) {
       (res.resolved.length ? `; ${res.resolved.length} answer(s) need no task` : ''))
     return must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
   } catch (e) {
-    log(`Planning the answers failed (${e.message}); it is tried again after the next task.`)
+    log(`Planning failed (${e.message}); it is tried again after the next task.`)
     return plan
   }
 }
