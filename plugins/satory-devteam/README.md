@@ -198,6 +198,7 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.7** - a queued change with only `links` is applied too.
 - **0.8.6** - the column **Source** in `docs/PLAN.md` (and `source` in `plan json`): the plan, a request, a
   milestone review, a task's Dev/Reviewer/QA or a flaky test, with the question ids; extensions of a task
   planned before after a `+`. A plan change takes `links` to name where existing tasks come from.

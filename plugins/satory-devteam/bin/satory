@@ -977,7 +977,7 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
             p.git("reset", "-q", "--hard", before)
             raise SatoryError(f"merge of {branch} failed: {(r.stderr or r.stdout).strip()[:300]}")
         res["merged"] = p.git("rev-parse", "HEAD") != before
-    if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved")):
+    if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved", "links")):
         res.update(plan_add(p, p.plan(), data, item.get("source", "request")))
     if branch:
         p.git("branch", "-D", branch)
