@@ -54,7 +54,10 @@ Talk to the user in the language they write in.
      (`git worktree add <scratch dir> main`, commit there, `git worktree remove`); the task's squash merge
      keeps it.
    - Answers that need code changes (a different behaviour than built, an accepted `fix` or `test`) are
-     turned into tasks by `/satory-devteam:architect`: suggest it at the end.
+     turned into tasks automatically: the build runs the `planner` agent between two tasks (and when it
+     starts), puts the new tasks ahead of the work that builds on them and marks the questions
+     `planned` or `resolved`. Nothing to do for the user; if no build is running, suggest
+     `/satory-devteam:build`.
    The register is in `.satory/questions.json` and readable in `docs/QUESTIONS.md` (both updated on main
    at the next task finish, or now with `$SATORY question flush` when on main).
    Open `critical` items keep the next milestone from starting (the started ones are finished): say so

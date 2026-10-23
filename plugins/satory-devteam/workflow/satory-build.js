@@ -12,6 +12,7 @@ export const meta = {
     { title: 'Full tests', detail: 'the whole e2e suite (experimental e2e_task_first only)' },
     { title: 'Docs', detail: 'documentation, merge, push, staging' },
     { title: 'Milestone review', detail: 'data rules across the finished milestone; questions for the user' },
+    { title: 'Planning', detail: 'tasks for the questions the user answered' },
   ],
 }
 
@@ -31,7 +32,7 @@ function parseArgs(raw) {
 
 const A = parseArgs(args)
 const MODELS = {
-  dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus',
+  dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus', planner: 'opus',
   // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
   // Bash call that moved to the background instead of returning early, which haiku does not do reliably
   runner: 'haiku', runnerLong: 'sonnet',
@@ -193,6 +194,42 @@ const AUDIT_SCHEMA = {
     },
   },
   required: ['summary', 'items'],
+}
+const PLANNER_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          ref: { type: 'string', description: 'Your name for the task, for depends_on/depends (e.g. "fix-currency")' },
+          title: { type: 'string' }, milestone: { type: 'string' },
+          owner: { type: 'string', enum: ['dev', 'devops'] }, ui: { type: 'boolean' },
+          depends_on: { type: 'array', items: { type: 'string' } },
+          requirements: { type: 'array', items: { type: 'string' } },
+          description: { type: 'string' }, acceptance: { type: 'array', items: { type: 'string' } },
+          questions: { type: 'array', items: { type: 'string' }, description: 'Question ids the task covers' },
+          insert_before: { type: 'string', description: 'A task to do that comes after this one' },
+        },
+        required: ['ref', 'title', 'milestone', 'owner', 'ui', 'depends_on', 'description', 'acceptance', 'questions'],
+      },
+    },
+    depends: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { task: { type: 'string' }, add: { type: 'array', items: { type: 'string' } } },
+        required: ['task', 'add'],
+      },
+    },
+    resolved: {
+      type: 'array',
+      items: { type: 'object', properties: { id: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'reason'] },
+    },
+  },
+  required: ['summary', 'tasks', 'depends', 'resolved'],
 }
 const DOCS_SCHEMA = {
   type: 'object',
@@ -502,6 +539,41 @@ async function reviewMilestones(plan) {
   }
 }
 
+function plannerPrompt(answered, plan) {
+  const todo = plan.tasks.filter(t => t.status !== 'done')
+  return `Project: ${PROJECT}
+Answered questions to plan (every one goes into a task or into \`resolved\`):
+${answered.map(x => `- ${x.id} [${x.kind}, ${x.severity}] ${x.title}\n  Answer: ${x.answer || '(accepted)'}${x.refs && x.refs.length ? `\n  Refs: ${x.refs.join(', ')}` : ''}`).join('\n')}
+
+Milestones: ${(plan.milestones || []).map(m => m.id).join(', ') || '(none)'}
+Tasks not done yet (in plan order):
+${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone || '-'}, ${t.status}] ${t.title}`)) : '- (none)'}`
+}
+
+// Between two tasks, on main: the answered questions become tasks of the plan. Returns the plan.
+async function planAnswers(plan) {
+  try {
+    const reg = must(await sh('question list', { phase: 'Planning', label: 'answered questions' }), 'question list')
+    const answered = reg.items.filter(x => x.status === 'answered')
+    if (!answered.length) return plan
+    const st = must(await sh('status', { phase: 'Planning', label: 'branch' }), 'status')
+    if (/^satory\//.test(st.branch || '')) {
+      log(`🗂 ${answered.length} answered question(s) are planned after the current task`)
+      return plan
+    }
+    const out = await spawn('planner', plannerPrompt(answered, plan),
+      { phase: 'Planning', label: `plan ${answered.length} answer(s)`, model: MODELS.planner, schema: PLANNER_SCHEMA })
+    if (!out) { log('The planner returned no result; it runs again after the next task.'); return plan }
+    const res = must(await sh('plan add', { phase: 'Planning', label: 'add tasks', note: JSON.stringify(out) }), 'plan add')
+    log(`🗂 ${res.added.length} new task(s) for the answered questions${res.added.length ? `: ${res.added.join(', ')}` : ''}` +
+      (res.resolved.length ? `; ${res.resolved.length} answer(s) need no task` : ''))
+    return must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
+  } catch (e) {
+    log(`Planning the answers failed (${e.message}); it is tried again after the next task.`)
+    return plan
+  }
+}
+
 async function runTask(t) {
   const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
   const ctx = context(t, start)
@@ -681,6 +753,7 @@ if (plan.experimental && plan.experimental.length) log(`⚗ Experimental setting
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 
 await reviewMilestones(plan)
+plan = await planAnswers(plan)
 
 const results = []
 const attempted = new Set()
@@ -708,6 +781,7 @@ while (results.length < MAX_TASKS) {
   }
   plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
   await reviewMilestones(plan)
+  plan = await planAnswers(plan)
 }
 
 let questions = null

@@ -27,7 +27,7 @@ specification, the plan and the production release, and everything in between ru
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
 `satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs`, `satory-devteam:auditor`
-(milestone review) and `satory-devteam:runner`
+(milestone review), `satory-devteam:planner` (tasks for answered questions) and `satory-devteam:runner`
 (a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
 deploy - because it has to wait for a Bash call that moved to the background).
 
@@ -75,7 +75,9 @@ of data rules that may change. The summary of the build says so. Turn it off wit
 
 Each item has a severity (`critical` - numbers or data can silently become wrong; `major`; `minor`) and
 options with a recommended one. Answers that change the requirements go into the SPEC; those that need
-code become tasks via `/satory-devteam:architect`. `/satory-devteam:release` warns about open critical
+code become tasks automatically: between two tasks (and when it starts) the build runs the read-only
+`satory-devteam:planner`, and `satory plan add` puts its tasks ahead of the work that builds on them and
+marks the questions `planned` or, when the answer keeps the current behaviour, `resolved`. `/satory-devteam:release` warns about open critical
 questions. The register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
 new items wait in `.satory/run/` and are written on main at the next task finish.
 
@@ -135,7 +137,7 @@ file system.
 ```
 .claude-plugin/   plugin.json
 skills/           setup, analyst, architect, build, status, release
-agents/           dev, devops, reviewer, qa, ui-reviewer, security, docs, auditor, runner
+agents/           dev, devops, reviewer, qa, ui-reviewer, security, docs, auditor, planner, runner
 bin/satory        CLI (python3): plan, file guards, checks, journal, merge/push, deploy
 workflow/         satory-build.js - the orchestrator (Workflow script)
 templates/        SPEC, ARCHITECTURE, UI, ADR, task, project.json, plan.json, CHANGELOG, JOURNAL
@@ -158,6 +160,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.6.2** - answered questions become tasks automatically: between two tasks (and when the build
+  starts on main) the new read-only `planner` agent plans them, and the new `satory plan add` inserts
+  the tasks ahead of the work that builds on them, adds dependencies to tasks still to do and marks the
+  questions `planned` or `resolved` (new status for answers that keep the current behaviour).
+  `plan json` returns the milestones.
 - **0.6.1** - open critical questions keep the next milestone from starting (the started milestones are
   finished); the build summary reports `waiting_for_answers`. Off with `"critical_questions_gate": false`.
 - **0.6.0** - questions for the user that never stop the work (see "Questions for the user"): the
