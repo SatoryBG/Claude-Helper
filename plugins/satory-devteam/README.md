@@ -54,6 +54,23 @@ Projects with a UI get two extra safeguards:
 It is enabled with `"ui": { "review": true }` in `.satory/project.json`; per task, `"ui": false` in the
 plan skips it.
 
+## Experimental settings
+
+Trial settings live in an `"experimental"` block of `.satory/project.json`. The workflow lists the ones
+that are on when it starts; delete the key (or the whole block) to go back to the normal behaviour.
+
+- **`e2e_task_first`** - commands that run only the current task's e2e tests first; `{task}` becomes
+  the task id. The whole e2e suite runs only when they pass, so the rounds in which the new tests still
+  fail are much shorter. A task is never finished without a green whole suite. Regressions in earlier
+  features are found only in the round in which the task's own tests pass. Example for Playwright
+  (the QA agent puts the task id in every test title):
+
+  ```json
+  "experimental": {
+    "e2e_task_first": ["cd e2e && npx playwright test --reporter=line --grep \"{task}|@smoke\""]
+  }
+  ```
+
 ## Installation
 
 ```text
@@ -113,6 +130,10 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.5.0** - experimental `e2e_task_first` setting (see "Experimental settings"): QA's check runs
+  the current task's e2e tests first and the whole suite only when they pass. Off unless set in
+  `.satory/project.json`; the journal and Dev's feedback say when only the task's tests ran. The QA
+  agent puts the task id in every e2e test title.
 - **0.4.5** - a long step no longer stops the workflow when its runner returns too early. A step
   that runs longer than the 10-minute Bash limit (e.g. `step after-qa` with the whole e2e suite) moves to
   the background, and the haiku runner sometimes returned right away with no output instead of waiting:

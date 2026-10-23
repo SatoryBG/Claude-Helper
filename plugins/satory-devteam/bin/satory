@@ -148,6 +148,10 @@ class Project:
     def commands(self, name: str) -> list[str]:
         return as_list(self.config.get("commands", {}).get(name))
 
+    def experimental(self, name: str) -> list[str]:
+        """Opt-in trial settings under "experimental" in project.json; removing the block turns them off."""
+        return as_list(self.config.get("experimental", {}).get(name))
+
     def env(self, tid: str = "", rnd: int = 0) -> dict:
         env = dict(os.environ)
         env.update({"SATORY_PROJECT_ROOT": str(self.root), "SATORY_TASK": tid,
@@ -577,6 +581,7 @@ def cmd_plan(p: Project, a) -> None:
               "max_rounds": p.config.get("max_rounds", 33),
               "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
               "ui_review": bool(p.config.get("ui", {}).get("review")),
+              "experimental": sorted(p.config.get("experimental", {})),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
                          "milestone": t.get("milestone"), "depends_on": t.get("depends_on", []), "ui": t.get("ui"),
                          "status": merged_status(p, t)} for t in plan["tasks"]]})
@@ -731,13 +736,18 @@ def cmd_step(p: Project, a) -> None:
             return
         if listed:
             st["known_tests"] = sorted(known | names)
-        gates = {g: gate(p, tid, rnd, g) for g in ("test", "e2e")}
+        gates = {"test": gate(p, tid, rnd, "test")}
+        # experimental e2e_task_first: this task's e2e tests (+ smoke) first, the whole suite only once they pass
+        first = [c.replace("{task}", tid) for c in p.experimental("e2e_task_first")]
+        quick = run_cmds(p, first, p.logs / f"{tid}-r{rnd}-e2e-task.log", p.env(tid, rnd)) if first else None
+        gates["e2e"] = gate(p, tid, rnd, "e2e") if not quick or quick["ok"] else {**quick, "scope": "task"}
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
+                  f"{' (experimental: only this task and smoke tests ran, the whole suite was skipped)' if g.get('scope') == 'task' else ''}"
                   for k, g in gates.items()]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))

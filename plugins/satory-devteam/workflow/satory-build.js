@@ -256,7 +256,8 @@ function must(res, what) {
 function gateLines(gates) {
   return Object.entries(gates || {})
     .filter(([, g]) => !g.ok)
-    .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}`)
+    .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}` +
+      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran; the whole suite runs once they pass)' : ''))
 }
 
 function context(t, start) {
@@ -553,6 +554,7 @@ if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${
 PROJECT = plan.root
 MAX_ROUNDS = Number(A.rounds || plan.max_rounds || 33)
 UI_REVIEW = plan.ui_review === true
+if (plan.experimental && plan.experimental.length) log(`⚗ Experimental settings on: ${plan.experimental.join(', ')} (remove "experimental" from .satory/project.json to turn them off)`)
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 
 const results = []
