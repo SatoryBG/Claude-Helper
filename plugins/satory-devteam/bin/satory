@@ -820,8 +820,19 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
         if pos <= cursor:
             cursor += 1
         added.append(task)
+    def resolve(d: str) -> str:
+        # a new task by its ref, or the task that covers a question (e.g. one added by an earlier queued change)
+        if d in refs:
+            return refs[d]
+        if re.fullmatch(r"Q-\d+", d):
+            by_q = [t["id"] for t in tasks if d in t.get("questions", [])]
+            if not by_q:
+                raise SatoryError(f"no task covers {d}")
+            return by_q[0]
+        return d
+
     for t in added:  # dependencies may name other new tasks by their ref
-        t["depends_on"] = [refs.get(d, d) for d in t["depends_on"]]
+        t["depends_on"] = [resolve(d) for d in t["depends_on"]]
     for up in data.get("updates", []):
         t = p.task(plan, up.get("task", ""))
         if status[t["id"]] != "todo":
@@ -837,7 +848,7 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
         if status[t["id"]] != "todo":
             raise SatoryError(f"{t['id']} has started; only tasks to do get new dependencies")
         for d in dep.get("add", []):
-            d = refs.get(d, d)
+            d = resolve(d)
             if d not in t.setdefault("depends_on", []):
                 t["depends_on"].append(d)
     errors = validate_plan(plan)
@@ -942,7 +953,11 @@ def cmd_queue(p: Project, a) -> None:
                 subprocess.run(["git", "-C", str(d), "commit", "-q", "-m", f"{message}\n\n{TRAILER}"], check=True)
             p.git("worktree", "remove", "--force", str(d))
         import copy
-        plan_patch(p, copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p)), data)  # check it now
+        # check it now, on the plan as it will be after the changes already waiting in the queue
+        sim_plan, sim_reg = copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p))
+        for x in files:
+            plan_patch(p, sim_plan, sim_reg, load_json(x).get("data") or {})
+        plan_patch(p, sim_plan, sim_reg, data)
         item = {"source": a.source or "request", "branch": a.branch, "message": message, "data": data}
         if free and not files:
             return emit({"ok": True, "applied": queue_apply_one(p, item, "now")})

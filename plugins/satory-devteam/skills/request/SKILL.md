@@ -52,6 +52,8 @@ Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/archit
 - Write the tasks like the architect: small, vertical, `owner`, `ui`, `milestone`, `depends_on`,
   `requirements`, a description that needs no guessing, `acceptance` with AC ids. `insert_before` places
   a task before a task still to do; `depends` makes tasks still to do wait for a new one (by its `ref`).
+  A task added by an earlier request still in the queue has no id yet: depend on it by its question id
+  (`"depends_on": ["Q-028"]`).
 
 ## 3. Record and plan
 1. Put the request into the register, so it is tracked like the other decisions:

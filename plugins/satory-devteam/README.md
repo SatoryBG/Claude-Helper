@@ -191,6 +191,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.3** - a plan change can depend on the task that covers a question (`"depends_on": ["Q-028"]`,
+  also in `depends`), e.g. on a task another queued change adds; `queue add` checks a change against the
+  plan as it will be after the changes already waiting in the queue.
 - **0.8.2** - queued changes build on each other: `queue begin` starts the new branch from the last queued
   one, and `queue apply` merges each with a merge commit (not a squash), so two queued edits of the same
   document (e.g. SPEC v4 and v5) merge in order without a conflict.
