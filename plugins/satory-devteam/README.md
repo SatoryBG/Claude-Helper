@@ -160,6 +160,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.7.0** - a new approach to the user's decisions: they no longer stop the work. Gaps in the data
+  rules are collected as questions (analyst before the SPEC, Dev, Reviewer and QA in every task, the
+  `auditor` after every milestone), the user answers them with `/satory-devteam:status` whenever it suits
+  them, the answers go into the SPEC and the `planner` turns them into tasks between two tasks of the
+  build. Only open critical questions hold the start of a new milestone. Includes 0.6.0-0.6.2; no other
+  changes since 0.6.2.
 - **0.6.2** - answered questions become tasks automatically: between two tasks (and when the build
   starts on main) the new read-only `planner` agent plans them, and the new `satory plan add` inserts
   the tasks ahead of the work that builds on them, adds dependencies to tasks still to do and marks the

@@ -23,7 +23,7 @@
       "name": "satory-devteam",
       "source": "./plugins/satory-devteam",
       "description": "A team of AI agents that builds small software projects from idea to production: analyst, architect, Dev, Reviewer, QA, UI reviewer, Security and Docs, with deterministic guards and local Docker staging/prod.",
-      "version": "0.6.2"
+      "version": "0.7.0"
     }
   ]
 }
