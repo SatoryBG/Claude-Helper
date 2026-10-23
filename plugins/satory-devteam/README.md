@@ -160,6 +160,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.7.1** - QA runs the unit tests and the e2e tests it added or changed, no longer the whole e2e
+  suite: the orchestrator runs that right after QA (and again before the task finishes with
+  `e2e_task_first`), so the whole suite no longer ran twice per round (about 20 minutes saved per
+  round at ~950 e2e tests).
 - **0.7.0** - a new approach to the user's decisions: they no longer stop the work. Gaps in the data
   rules are collected as questions (analyst before the SPEC, Dev, Reviewer and QA in every task, the
   `auditor` after every milestone), the user answers them with `/satory-devteam:status` whenever it suits

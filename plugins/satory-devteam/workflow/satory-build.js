@@ -388,6 +388,7 @@ Round: ${round}.
 ${env}
 
 Scope of the changes: \`git diff ${base}..HEAD\`
+Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the orchestrator runs it after you.
 Dev reports: ${dev.summary}${disputes}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
