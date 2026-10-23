@@ -191,6 +191,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.5** - the answered questions are planned again: `question list` grew past what an agent's tool
+  output carries, so the planning between two tasks (and the register note and the milestone review)
+  failed without a sign. `question list` is now small by default (open items in full, answered ones with
+  the answer and refs, the rest by id, status and title); `--status a,b` filters, `--brief` shows only
+  the identifying fields, `--full` everything. The planner reads the scenarios in `docs/QUESTIONS.md`.
 - **0.8.4** - fewer duplicate questions and all in the documentation language: Dev, the Reviewer and QA
   get the items already in the register with each round and are told not to report them again, even
   reworded; the task context names the documentation language (`plan json` returns `language`), which

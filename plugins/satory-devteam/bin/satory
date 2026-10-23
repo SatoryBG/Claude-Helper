@@ -307,6 +307,7 @@ def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]
 Q_KINDS = ("question", "decision", "fix", "test", "request")
 Q_SEVERITIES = ("critical", "major", "minor")
 Q_STATUSES = ("open", "answered", "dismissed", "planned", "resolved")
+Q_BRIEF = ("id", "kind", "severity", "status", "title", "task", "from_task")
 
 
 def questions_load(p: Project) -> dict:
@@ -436,13 +437,27 @@ def cmd_question(p: Project, a) -> None:
             questions_save(p, reg)
         return emit({"ok": True, "added": added, "skipped": skipped})
     if a.action == "list":
-        items = [q for q in reg["items"] if not a.open or q["status"] == "open"]
+        # the output goes through an agent's tool output, so it stays small: open items in full,
+        # answered ones with the answer and refs, closed ones (and with --brief all) only what
+        # identifies them; --full shows everything
+        wanted = ["open"] if a.open else [x for x in (a.status or "").split(",") if x]
+        bad = [x for x in wanted if x not in Q_STATUSES]
+        if bad:
+            raise SatoryError(f"unknown status {', '.join(bad)} (known: {', '.join(Q_STATUSES)})")
+        items = [q for q in reg["items"] if not wanted or q["status"] in wanted]
+        if not a.full:
+            items = [q if not a.brief and q["status"] == "open"
+                     else {k: q.get(k) for k in Q_BRIEF + (("answer", "refs") if not a.brief
+                                                           and q["status"] == "answered" else ())}
+                     for q in items]
         open_items = [q for q in reg["items"] if q["status"] == "open"]
         return emit({"ok": True, "items": items, "open": len(open_items),
                      "critical_open": sum(q["severity"] == "critical" for q in open_items),
                      "milestones_reviewed": reg["milestones_reviewed"]})
     if a.action == "answer":
         q = question_find(reg, a.target)
+        if a.status and a.status not in ("answered", "dismissed", "planned", "resolved"):
+            raise SatoryError("question answer --status is answered, dismissed, planned or resolved")
         q["status"] = a.status or "answered"
         q["answer"] = read_note(a).strip() or q.get("answer")
         q["answered"] = now("%Y-%m-%d")
@@ -1517,7 +1532,9 @@ def main() -> None:
     s.add_argument("--task")
     s.add_argument("--milestone")
     s.add_argument("--open", action="store_true")
-    s.add_argument("--status", choices=[x for x in Q_STATUSES if x != "open"])
+    s.add_argument("--status", help="answer: the new status; list: only these (comma-separated)")
+    s.add_argument("--brief", action="store_true", help="list: only id, kind, severity, status, title, task")
+    s.add_argument("--full", action="store_true", help="list: every field of every item")
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("queue")

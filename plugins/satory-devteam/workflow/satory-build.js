@@ -355,7 +355,7 @@ function context(t, start) {
 // What is already in the register of questions, so an agent does not report it again in other words.
 async function registerNote() {
   try {
-    const reg = must(await sh('question list', { phase: 'Dev', label: 'register' }), 'question list')
+    const reg = must(await sh('question list --brief', { phase: 'Dev', label: 'register' }), 'question list')
     const items = reg.items.filter(x => x.status !== 'dismissed')
     if (!items.length) return ''
     return `\n\n## Already in the register of questions\nDo not report these again, not even reworded or in another language; ` +
@@ -540,7 +540,7 @@ async function reviewMilestones(plan) {
   if (plan.milestone_review === false) return
   let reg
   try {
-    reg = must(await sh('question list', { phase: 'Milestone review', label: 'questions' }), 'question list')
+    reg = must(await sh('question list --brief', { phase: 'Milestone review', label: 'questions' }), 'question list')
   } catch (e) {
     log(`Milestone review skipped: ${e.message}`)
     return
@@ -563,7 +563,8 @@ async function reviewMilestones(plan) {
 function plannerPrompt(answered, plan) {
   const todo = plan.tasks.filter(t => t.status !== 'done')
   return `Project: ${PROJECT}
-Answered questions to plan (every one goes into a task or into \`resolved\`):
+Answered questions to plan (every one goes into a task or into \`resolved\`; the scenario of each is
+in docs/QUESTIONS.md):
 ${answered.map(x => `- ${x.id} [${x.kind}, ${x.severity}] ${x.title}\n  Answer: ${x.answer || '(accepted)'}${x.refs && x.refs.length ? `\n  Refs: ${x.refs.join(', ')}` : ''}`).join('\n')}
 
 Milestones: ${(plan.milestones || []).map(m => m.id).join(', ') || '(none)'}
@@ -584,8 +585,8 @@ async function planAnswers(plan) {
     }
     for (const e of q.errors || []) log(`⚠ A queued change could not be applied (${e}); it and the ones after it wait in .satory/run/queue/ - /satory-devteam:status`)
     if ((q.applied || []).length) plan = must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
-    const reg = must(await sh('question list', { phase: 'Planning', label: 'answered questions' }), 'question list')
-    const answered = reg.items.filter(x => x.status === 'answered')
+    const reg = must(await sh('question list --status answered', { phase: 'Planning', label: 'answered questions' }), 'question list')
+    const answered = reg.items
     if (!answered.length) return plan
     const out = await spawn('planner', plannerPrompt(answered, plan),
       { phase: 'Planning', label: `plan ${answered.length} answer(s)`, model: MODELS.planner, schema: PLANNER_SCHEMA })
