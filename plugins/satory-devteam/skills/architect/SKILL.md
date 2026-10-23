@@ -122,7 +122,10 @@ changed only by QA" and "docs/JOURNAL.md is never read or touched". The agents r
 
 ## Replanning
 
-When the plan already exists: do not touch tasks with `status: done`. You may add, split, reorder and
+When the plan already exists: do not touch tasks with `status: done`. Turn the answered questions that
+need work into tasks: `$SATORY question list` - items with `status: answered` whose answer asks for a
+change, and accepted `fix`/`test` items. Mark each one with
+`$SATORY question plan Q-xxx --task T-0yy`. You may add, split, reorder and
 rewrite `todo` and `blocked` tasks. New work on a finished feature is a new task. A change to the UI
 direction is a change to `docs/UI.md` (bump its version) plus new tasks for the screens it affects.
 Then validate → render → commit.

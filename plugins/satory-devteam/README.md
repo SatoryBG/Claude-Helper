@@ -26,7 +26,8 @@ specification, the plan and the production release, and everything in between ru
 ## Agents
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
-`satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs` and `satory-devteam:runner`
+`satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs`, `satory-devteam:auditor`
+(milestone review) and `satory-devteam:runner`
 (a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
 deploy - because it has to wait for a Bash call that moved to the background).
 
@@ -53,6 +54,25 @@ Projects with a UI get two extra safeguards:
 
 It is enabled with `"ui": { "review": true }` in `.satory/project.json`; per task, `"ui": false` in the
 plan skips it.
+
+## Questions for the user
+
+Gaps in the data rules - what the SPEC does not say, what Dev decided on its own, what is defined but not
+enforced or not tested - are collected as questions and **never stop the work**. You answer them with
+`/satory-devteam:status` whenever it suits you. They come from three places:
+- **before the SPEC is approved** - the analyst goes through every entity and editable field (edits
+  after records exist, chronology, balances, duplicates, implausible values) and asks you;
+- **in every task** - Dev lists the product behaviour it chose without the SPEC (`decision`), the Reviewer
+  and QA list the gaps they notice (`question`);
+- **after every milestone** - `satory-devteam:auditor` reviews the data rules across everything built so
+  far: questions, Dev's decisions to confirm, rules that are not enforced (`fix`) or not tested (`test`).
+  Turn it off with `"milestone_review": false` in `.satory/project.json`.
+
+Each item has a severity (`critical` - numbers or data can silently become wrong; `major`; `minor`) and
+options with a recommended one. Answers that change the requirements go into the SPEC; those that need
+code become tasks via `/satory-devteam:architect`. `/satory-devteam:release` warns about open critical
+questions. The register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
+new items wait in `.satory/run/` and are written on main at the next task finish.
 
 ## Experimental settings
 
@@ -110,7 +130,7 @@ file system.
 ```
 .claude-plugin/   plugin.json
 skills/           setup, analyst, architect, build, status, release
-agents/           dev, devops, reviewer, qa, ui-reviewer, security, docs, runner
+agents/           dev, devops, reviewer, qa, ui-reviewer, security, docs, auditor, runner
 bin/satory        CLI (python3): plan, file guards, checks, journal, merge/push, deploy
 workflow/         satory-build.js - the orchestrator (Workflow script)
 templates/        SPEC, ARCHITECTURE, UI, ADR, task, project.json, plan.json, CHANGELOG, JOURNAL
@@ -126,12 +146,19 @@ docs/UI.md              UI guide (projects with a UI)
 docs/PLAN.md            generated from .satory/plan.json
 docs/tasks/T-xxx.md     task: Dev mini-spec, QA coverage, disputes, clarifications
 docs/JOURNAL.md         history of everything (append-only)
+docs/QUESTIONS.md       questions for the user (generated from .satory/questions.json)
 .satory/project.json    commands for build/test/e2e/security, UI review and deploy
 .satory/run/            working files (gitignored): logs, state, captured output of long steps (sh/)
 ```
 
 ## Changelog
 
+- **0.6.0** - questions for the user that never stop the work (see "Questions for the user"): the
+  analyst's data rules pass before the SPEC is approved; Dev's `assumptions` and the Reviewer's and QA's
+  `spec_gaps` in every task; the new `auditor` agent reviews each finished milestone (also milestones
+  finished before the upgrade, at the next build). New `satory question add|list|answer|plan|reviewed|flush`,
+  the register in `.satory/questions.json` and `docs/QUESTIONS.md`, `/satory-devteam:status` walks through
+  the open items, the build summary counts them and the release warns about critical ones.
 - **0.5.2** - `step after-qa` splits the e2e tests only when the workflow says it runs `full-e2e`
   (`--split-e2e`): a workflow started with an older script keeps running the whole suite in QA's check
   instead of finishing a task without it.

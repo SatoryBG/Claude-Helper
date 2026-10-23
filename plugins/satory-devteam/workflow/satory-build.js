@@ -11,6 +11,7 @@ export const meta = {
     { title: 'Security', detail: 'scanners + audit' },
     { title: 'Full tests', detail: 'the whole e2e suite (experimental e2e_task_first only)' },
     { title: 'Docs', detail: 'documentation, merge, push, staging' },
+    { title: 'Milestone review', detail: 'data rules across the finished milestone; questions for the user' },
   ],
 }
 
@@ -30,7 +31,7 @@ function parseArgs(raw) {
 
 const A = parseArgs(args)
 const MODELS = {
-  dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet',
+  dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus',
   // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
   // Bash call that moved to the background instead of returning early, which haiku does not do reliably
   runner: 'haiku', runnerLong: 'sonnet',
@@ -56,6 +57,21 @@ const RUN_SCHEMA = {
   properties: { exit_code: { type: 'integer' }, stdout: { type: 'string' } },
   required: ['exit_code', 'stdout'],
 }
+// Questions for the user that never stop the workflow (see `satory question`)
+const GAP_ITEMS = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
+      title: { type: 'string', description: 'One line, in the documentation language' },
+      detail: { type: 'string', description: 'What is undefined, what can go wrong with which data, what was done meanwhile' },
+      options: { type: 'array', items: { type: 'string' }, description: '2-4 possible answers, the recommended one first' },
+      refs: { type: 'array', items: { type: 'string' }, description: 'R-/AC- ids, files' },
+    },
+    required: ['severity', 'title', 'detail'],
+  },
+}
 const DEV_SCHEMA = {
   type: 'object',
   properties: {
@@ -67,6 +83,7 @@ const DEV_SCHEMA = {
       items: { type: 'object', properties: { test: { type: 'string' }, reason: { type: 'string' } }, required: ['test', 'reason'] },
     },
     blocked_question: { type: 'string', description: 'Empty, unless the task cannot continue without a business decision by the user' },
+    assumptions: { ...GAP_ITEMS, description: 'New in this round: product behaviour the SPEC does not define and you chose yourself, for the user to confirm later (does not stop the task)' },
   },
   required: ['summary', 'changes', 'mini_spec_updated', 'disputes', 'blocked_question'],
 }
@@ -86,6 +103,7 @@ const REVIEW_SCHEMA = {
         required: ['severity', 'file', 'issue', 'fix'],
       },
     },
+    spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
   required: ['verdict', 'summary', 'findings'],
 }
@@ -113,6 +131,7 @@ const QA_SCHEMA = {
         required: ['severity', 'description'],
       },
     },
+    spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
   required: ['verdict', 'summary', 'mini_spec_complete', 'tests_added', 'failures', 'findings'],
 }
@@ -156,6 +175,24 @@ const SEC_SCHEMA = {
     },
   },
   required: ['verdict', 'summary', 'findings'],
+}
+const AUDIT_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['question', 'decision', 'fix', 'test'] },
+          ...GAP_ITEMS.items.properties,
+        },
+        required: ['kind', 'severity', 'title', 'detail'],
+      },
+    },
+  },
+  required: ['summary', 'items'],
 }
 const DOCS_SCHEMA = {
   type: 'object',
@@ -413,6 +450,58 @@ async function block(t, round, reason) {
   return { id: t.id, title: t.title, status: 'blocked', rounds: round, reason }
 }
 
+// Never throws: a question that cannot be recorded must not stop the task.
+async function addQuestions(items, kind, source, { task, milestone, phase }) {
+  if (!items || !items.length) return 0
+  const list = items.map(x => ({ kind: x.kind || kind, ...x }))
+  try {
+    const res = await sh(`question add --source ${q(source)}${task ? ` --task ${task}` : ''}${milestone ? ` --milestone ${milestone}` : ''}`,
+      { phase, label: `questions ${source}`, note: JSON.stringify(list) })
+    const n = (res && res.added || []).length
+    if (n) log(`❓ ${n} new question(s) for the user from ${source} - /satory-devteam:status`)
+    return n
+  } catch (e) {
+    log(`Could not record the questions from ${source}: ${e.message}`)
+    return 0
+  }
+}
+
+function auditPrompt(m, tasks, known) {
+  return `Project: ${PROJECT}
+Milestone: ${m} - all its tasks are done:
+${bullets(tasks.map(t => `${t.id} - ${t.title} (docs/tasks/${t.id}.md)`))}
+
+Review the data rules of this milestone together with everything built before it (the whole SPEC and the
+code on the current branch). Already in the register - do not repeat them, even reworded:
+${known.length ? bullets(known.map(x => `${x.id} [${x.status}] ${x.title}`)) : '- (none)'}`
+}
+
+// After a milestone is finished: one read-only review of its data rules. Its items go to the register
+// of questions; the workflow goes on.
+async function reviewMilestones(plan) {
+  if (plan.milestone_review === false) return
+  let reg
+  try {
+    reg = must(await sh('question list', { phase: 'Milestone review', label: 'questions' }), 'question list')
+  } catch (e) {
+    log(`Milestone review skipped: ${e.message}`)
+    return
+  }
+  const order = [...new Set(plan.tasks.map(t => t.milestone).filter(Boolean))]
+  for (const m of order) {
+    const tasks = plan.tasks.filter(t => t.milestone === m)
+    if (reg.milestones_reviewed.includes(m) || !tasks.every(t => t.status === 'done')) continue
+    if (MILESTONE && m !== MILESTONE) continue
+    const audit = await spawn('auditor', auditPrompt(m, tasks, reg.items),
+      { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
+    if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
+    const n = await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })
+    await sh(`question reviewed ${m}`, { phase: 'Milestone review', label: `reviewed ${m}` })
+    reg.milestones_reviewed.push(m)
+    log(`🔎 ${m} reviewed: ${n} new item(s) - ${audit.summary.split('\n')[0]}`)
+  }
+}
+
 async function runTask(t) {
   const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
   const ctx = context(t, start)
@@ -432,6 +521,7 @@ async function runTask(t) {
       { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
     if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
     if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
+    await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' })
     const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
       { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
     if (!ad.ok) {
@@ -446,6 +536,7 @@ async function runTask(t) {
     const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev),
       { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
     if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
+    await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' })
     const revBlocking = rev.findings.some(f => f.severity === 'blocker' || f.severity === 'major')
     const revVerdict = revBlocking ? 'changes_requested' : 'approve'
     must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revVerdict}`,
@@ -471,6 +562,7 @@ async function runTask(t) {
       qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote),
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
+      await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' })
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) break
@@ -572,6 +664,8 @@ UI_REVIEW = plan.ui_review === true
 if (plan.experimental && plan.experimental.length) log(`⚗ Experimental settings on: ${plan.experimental.join(', ')} (remove "experimental" from .satory/project.json to turn them off)`)
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 
+await reviewMilestones(plan)
+
 const results = []
 const attempted = new Set()
 let stopped = null
@@ -588,7 +682,15 @@ while (results.length < MAX_TASKS) {
     break
   }
   plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
+  await reviewMilestones(plan)
 }
+
+let questions = null
+try {
+  const reg = must(await sh('question list --open', { phase: 'Docs', label: 'open questions' }), 'question list')
+  questions = { open: reg.open, critical: reg.critical_open }
+  if (reg.open) log(`❓ ${reg.open} open question(s) for the user (${reg.critical_open} critical) - /satory-devteam:status`)
+} catch (e) { /* the summary goes on without the count */ }
 
 const left = plan.tasks.filter(t => t.status !== 'done' && (!MILESTONE || t.milestone === MILESTONE))
 return {
@@ -596,5 +698,6 @@ return {
   done: results.filter(r => r.status === 'done'),
   blocked: results.filter(r => r.status === 'blocked'),
   stopped_on_error: stopped,
+  questions,
   remaining: left.map(t => ({ id: t.id, title: t.title, status: t.status, waits_for: t.depends_on.filter(d => plan.tasks.find(x => x.id === d).status !== 'done') })),
 }

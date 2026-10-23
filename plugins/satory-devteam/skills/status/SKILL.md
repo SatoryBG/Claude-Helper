@@ -13,7 +13,8 @@ Talk to the user in the language they write in.
 1. `$SATORY status` and `$SATORY plan json`. Show briefly:
    - how many tasks are done, in progress, blocked and to do, and which one is next;
    - staging and prod (URL, image, when), the remote;
-   - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it).
+   - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
+   - the open questions for the user (`questions` in the status): how many, how many critical.
 2. For every **blocked** task show the reason (`reason`) and classify it:
    - **Question from an agent** (business decision): ask the user (AskUserQuestion with options or a
      free answer). If the answer changes the requirements, update `docs/SPEC.md` (version + a history
@@ -31,4 +32,29 @@ Talk to the user in the language they write in.
    ```
    The answer is recorded in the task as a "Clarification from the user", the round counter is reset,
    and the work on the branch continues from where it stopped.
-4. If there are tasks to run, suggest `/satory-devteam:build`.
+4. **Questions for the user** (they never stop the work; the user answers when it suits them).
+   `$SATORY question list --open` returns them: `question` (the SPEC does not define it), `decision` (Dev
+   chose, confirm it), `fix` (defined but not enforced), `test` (not covered by a test), from Dev, the
+   Reviewer, QA and the milestone reviews. If there are any, ask whether to go through them now; the user
+   may also pick only the critical ones or postpone everything.
+   - Go from critical to minor. For each, show the title, the concrete scenario from `detail` and the
+     refs in a few lines, then ask with AskUserQuestion: the `options` (the first is recommended), plus
+     "Later" (it stays open) and "Not needed" (dismissed). For `fix`/`test`: "Plan it" / "Later" /
+     "Not needed". Up to 4 questions per AskUserQuestion call.
+   - Record each answer (the option or the user's own text, with a short reason if they gave one):
+     ```bash
+     $SATORY question answer Q-00X --note-stdin <<'SATORY_EOF'
+     <the answer>
+     SATORY_EOF
+     ```
+     For "Not needed" add `--status dismissed`; for "Later" record nothing.
+   - Answers that change the requirements go into `docs/SPEC.md` (version + history row, the affected
+     R-IDs; a decision becomes an acceptance criterion with concrete values), committed on main. If a
+     build is running on a task branch, commit through a temporary worktree of main
+     (`git worktree add <scratch dir> main`, commit there, `git worktree remove`); the task's squash merge
+     keeps it.
+   - Answers that need code changes (a different behaviour than built, an accepted `fix` or `test`) are
+     turned into tasks by `/satory-devteam:architect`: suggest it at the end.
+   The register is in `.satory/questions.json` and readable in `docs/QUESTIONS.md` (both updated on main
+   at the next task finish, or now with `$SATORY question flush` when on main).
+5. If there are tasks to run, suggest `/satory-devteam:build`.

@@ -40,7 +40,9 @@ Summarise the result:
 - finished tasks (with the number of rounds, whether they were pushed, and the staging URL);
 - blocked tasks with the reason → `/satory-devteam:status` to answer them;
 - `stopped_on_error`, if any: show the error and propose a fix;
-- remaining tasks and what they wait for.
+- remaining tasks and what they wait for;
+- `questions`: the open questions for the user (and how many are critical), collected without stopping
+  the work → `/satory-devteam:status` whenever it suits the user.
 
 If everything is done and the project has a deploy, suggest `/satory-devteam:release` for production.
 

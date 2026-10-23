@@ -19,7 +19,10 @@ Show the user:
 - the `## [Unreleased]` section of `CHANGELOG.md`;
 - `git log <latest tag>..HEAD --oneline` (or the whole log if there is no tag);
 - the staging URL, so they can look at it themselves before deciding;
-- the blocked tasks, if any (they do **not** go in).
+- the blocked tasks, if any (they do **not** go in);
+- the open questions for the user (`$SATORY question list --open`). If any is `critical`, list them and
+  say that they can make the numbers or data wrong in production; recommend answering them first
+  (`/satory-devteam:status`) and continue only if the user says so in the approval below.
 
 ## 3. Version
 If there are `$ARGUMENTS`, use them. Otherwise propose one by SemVer: new functionality bumps minor, fixes

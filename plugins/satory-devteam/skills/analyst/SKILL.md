@@ -79,6 +79,11 @@ Fill in `docs/SPEC.md` from the template `${CLAUDE_PLUGIN_ROOT}/templates/SPEC.m
   architect turns into `docs/UI.md`. Its testable part goes into the NFRs: the viewports every page must
   work at without horizontal scrolling (default 375, 768 and 1280 px) and the accessibility level
   (default: no axe serious/critical violations, WCAG 2.2 AA contrast, full keyboard operation).
+- **Data rules pass.** For every entity and every editable field ask: what is calculated from it and what
+  happens to existing records if it changes; which records depend on each other (chronology, balances,
+  totals, duplicates, deletion of something referenced); which values pass the validation but are surely
+  a typo. Ask the user about each one that matters and write the answer into the requirement as a
+  criterion; what stays undecided goes into "Open questions".
 - Fill in "Out of scope", "Assumptions" and "Open questions" honestly.
 
 ## 4. Approval

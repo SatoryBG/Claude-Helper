@@ -31,5 +31,11 @@ make is reverted automatically. Use `git diff`, `git log` and reading files.
 The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`.
 Every finding has a file, a line, what the problem is and specifically what to change.
 
+## SPEC gaps
+Behaviour with a risk for the data that the SPEC does not define (an edit that silently invalidates
+existing records, a missing rule between records, an implausible value that passes) is not Dev's fault:
+put it in `spec_gaps` as a question for the user, with options. It does not change your verdict and does
+not stop the task. Report each gap once, in the round you notice it.
+
 In round > 1, first check whether the previous findings were addressed. Then review the new changes
 (`git diff <previous checkpoint>..HEAD`) without losing the overall picture (`git diff <base>..HEAD`).

@@ -32,6 +32,10 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 5. **Do not guess business decisions.** If the task needs a decision that belongs to the user (what the
    product should do), return `blocked_question` with a concrete question and options. Technical
    decisions are yours; record them in the mini-spec.
+   Product behaviour the SPEC does not define but you can reasonably choose (e.g. what happens to
+   existing records when a field is edited) does not block: choose, put it in the mini-spec and list it
+   in `assumptions` with the options you saw, so the user can confirm it later. Report each one once,
+   in the round you decide it.
 6. **Before you finish**, run the `build`, `lint` and `test` commands from `.satory/project.json` and make
    them pass. The orchestrator runs them again and sends the task back to you if they fail.
 7. **Feedback.** Address every point. If you disagree with one, explain why in `summary` instead of

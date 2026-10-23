@@ -59,6 +59,12 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 4. Run the **whole** suite: the `test` and `e2e` commands from `.satory/project.json`, not only the new tests.
 5. Fill in "QA: coverage": which test covers which criterion or point.
 
+## SPEC gaps
+When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after
+records exist, a record that contradicts another one, a value that is surely a typo), test what the
+mini-spec says and put the gap in `spec_gaps` as a question for the user, with options. It does not
+change your verdict. Report each gap once, in the round you notice it.
+
 ## Verdict
 `fail` if any test fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.
 For every failure give the test, expected, actual and how to reproduce it, so Dev can act without asking
