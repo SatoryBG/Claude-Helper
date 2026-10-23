@@ -556,18 +556,18 @@ Tasks not done yet (in plan order):
 ${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone || '-'}, ${t.status}] ${t.title}`)) : '- (none)'}`
 }
 
-// Between two tasks, on main: first the plan changes queued by /satory-devteam:request, then the answered
-// questions become tasks. Returns the plan.
+// Between two tasks, on main: first the queued changes (documents and plan changes from
+// /satory-devteam:request and /satory-devteam:status), then the answered questions become tasks. Returns the plan.
 async function planAnswers(plan) {
   try {
     const st = must(await sh('status', { phase: 'Planning', label: 'branch' }), 'status')
     if (/^satory\//.test(st.branch || '')) return plan
-    const q = must(await sh('plan apply-queue', { phase: 'Planning', label: 'queued requests' }), 'plan apply-queue')
+    const q = must(await sh('queue apply', { phase: 'Planning', label: 'queued changes' }), 'queue apply')
     for (const a of q.applied || []) {
-      log(a.skipped ? `🗂 Queued request skipped: ${a.skipped}`
-        : `🗂 Request applied to the plan: ${[...a.added, ...a.updated.map(x => `${x} (extended)`)].join(', ') || 'no task changes'}`)
+      const tasks = [...a.added, ...a.updated.map(x => `${x} (extended)`)]
+      log(`🗂 Queued change applied${a.merged ? ` (documents from ${a.branch})` : ''}${tasks.length ? `: ${tasks.join(', ')}` : ''}`)
     }
-    for (const e of q.errors || []) log(`A queued plan change could not be applied (${e}); it stays in .satory/run/plan-queue/`)
+    for (const e of q.errors || []) log(`⚠ A queued change could not be applied (${e}); it and the ones after it wait in .satory/run/queue/ - /satory-devteam:status`)
     if ((q.applied || []).length) plan = must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
     const reg = must(await sh('question list', { phase: 'Planning', label: 'answered questions' }), 'question list')
     const answered = reg.items.filter(x => x.status === 'answered')

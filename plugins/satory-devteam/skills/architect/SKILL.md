@@ -127,4 +127,7 @@ register are planned by the build itself (the `planner` agent between two tasks)
 and include one, mark it with `$SATORY question plan Q-xxx --task T-0yy`. You may add, split, reorder and
 rewrite `todo` and `blocked` tasks. New work on a finished feature is a new task. A change to the UI
 direction is a change to `docs/UI.md` (bump its version) plus new tasks for the screens it affects.
-Then validate → render → commit.
+Then validate → render → commit. While a build is running (a `satory/T-…` branch is checked out), `main`
+changes only between two tasks: make the change the way `/satory-devteam:request` does - documents in
+`$SATORY queue begin`, the plan change as JSON to `$SATORY queue add` - and the build applies it after the
+current task.

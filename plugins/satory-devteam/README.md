@@ -89,10 +89,18 @@ app, a change to something built, a new idea. It runs the analyst first (clarify
 rules pass, new or changed acceptance criteria in the SPEC with a version bump), then the architect (fit
 with the architecture and ADRs, and where it goes: a fix ahead of everything still to do, an addition to
 a task still to do, or tasks in a later or new milestone - you choose, done tasks are never changed).
-The request is tracked in the register (`kind: request`). The plan change is one JSON for
-`satory plan add`: on a clean main it is applied at once; while a task runs it is checked against the
-plan and queued in `.satory/run/plan-queue/`, and the build applies it at the next boundary between two
-tasks - no restart. Tasks for a later milestone are placed after that milestone's tasks.
+The request is tracked in the register (`kind: request`).
+
+`main` changes only between two tasks, as in a real team: the task in progress is finished against the
+specification it started with, and everything new waits. The request's documents (SPEC, architecture,
+ADRs, UI guide) are written on their own branch (`satory queue begin`), and `satory queue add` puts them
+together with the plan change into `.satory/run/queue/`. The build applies the queue at the next
+boundary between two tasks, in order, before the planner: it merges the branch, then changes the plan
+(tasks for a later milestone go after that milestone's tasks). With no task running, on a clean main, it
+is applied at once - no restart either way. A change that conflicts with what a task changed stays in
+the queue (with the ones after it) and is reported. `task finish` and `task block` refuse to touch main
+when it changed while the task ran; running the build again rebases the task and goes on.
+`/satory-devteam:status` writes the SPEC changes from your answers the same way.
 
 ## Flaky e2e tests
 
@@ -183,6 +191,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.1** - `main` changes only between two tasks. New `satory queue begin|add|list|apply`: the
+  documents of a change are written on their own branch and wait in `.satory/run/queue/` with the plan
+  change; the build merges and applies them in order at the next task boundary (or at once on a clean
+  main). `/satory-devteam:request`, `/satory-devteam:status` (SPEC changes from answers) and the
+  architect's replanning during a build use it. `task finish` and `task block` refuse when main changed
+  while the task ran, instead of reading main's plan (0.8.0); running the build again rebases the task.
+  Replaces `plan add --queue` / `plan apply-queue` of 0.8.0.
 - **0.8.0** - new `/satory-devteam:request` for input from the user at any time (defects, changes,
   ideas): analyst, then architect, then a plan change. `satory plan add` also adds milestones, extends
   tasks still to do (`updates`) and places tasks for a later milestone after that milestone; with

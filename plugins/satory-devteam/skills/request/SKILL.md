@@ -14,8 +14,9 @@ language (`language` in `.satory/project.json`).
 The user describes something in `$ARGUMENTS` (or you ask for it): a defect they found while trying the
 app, a change to how something built works, or a new idea. You act first as the **analyst**, then as the
 **architect**, so the request is consistent with the SPEC and its questions and with the architecture
-and the plan. A running build is never stopped or restarted: the plan change waits in a queue and the
-build applies it at the next boundary between two tasks.
+and the plan. A running build is never stopped or restarted, and `main` changes only between two tasks:
+while a task runs, the documents are written on their own branch and the change waits in the queue
+(`satory queue`); the build merges it at the next boundary between two tasks, then plans.
 
 ## 0. Where things stand
 - `$SATORY status` and `$SATORY plan json`: the branch (`satory/T-…` means a task is running), the tasks,
@@ -63,12 +64,16 @@ Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/archit
    SATORY_EOF
    ```
    (`critical` when it can make numbers or data wrong; it then also holds the next milestone until done.)
-2. Commit the documents (`docs/SPEC.md`, `docs/ARCHITECTURE.md`, ADRs) on main. If a task is running,
-   do it in a temporary worktree of main (`git worktree add <scratch dir> main`, commit there,
-   `git worktree remove`); the task's squash merge keeps it.
-3. Change the plan with one JSON (the request's id in each task's `questions` or `questions_add`):
+2. Write the documents (`docs/SPEC.md`, `docs/ARCHITECTURE.md`, ADRs, `docs/UI.md`) in a worktree of
+   main on a new branch - never on the current branch and never directly on main:
    ```bash
-   $SATORY plan add --queue --source request --note-stdin <<'SATORY_EOF'
+   $SATORY queue begin        # -> {"branch": "satory/queue-…", "dir": "/tmp/satory-queue-…"}
+   ```
+   Edit the files under `dir` (do the analyst's and architect's writing there from the start).
+3. Queue the change: the documents and the plan change in one JSON (the request's id in each task's
+   `questions` or `questions_add`):
+   ```bash
+   $SATORY queue add --branch <branch> --dir <dir> --source request --message "docs: <short name>" --note-stdin <<'SATORY_EOF'
    {"title": "<short name of the request>", "summary": "<2-3 sentences>",
     "milestones": [], "tasks": [{"ref": "…", "title": "…", "milestone": "M4", "owner": "dev", "ui": true,
       "depends_on": [], "requirements": [], "description": "…", "acceptance": ["AC-…"],
@@ -76,8 +81,9 @@ Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/archit
     "updates": [], "depends": [], "resolved": []}
    SATORY_EOF
    ```
-   On a clean main it is applied and committed at once; while a task runs it is checked against the
-   current plan and queued (`.satory/run/plan-queue/`), and the build applies it after the current task.
+   It commits the documents on the branch, removes the worktree and checks the plan change against the
+   current plan. On a clean main (no task running) it is merged and applied at once; otherwise it waits
+   in `.satory/run/queue/` and the build applies it after the current task, before the planner.
 4. Tell the user in a few lines what changed in the SPEC, which tasks were added or extended and where,
    and when the work starts (now, after the current task, or with milestone X). If no build is running,
    suggest `/satory-devteam:build`.

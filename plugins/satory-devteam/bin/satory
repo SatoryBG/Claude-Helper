@@ -880,8 +880,85 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
             "resolved": [r.get("id") for r in data.get("resolved", [])]}
 
 
-def plan_queue_dir(p: Project) -> Path:
-    return p.run / "plan-queue"
+def queue_dir(p: Project) -> Path:
+    return p.run / "queue"
+
+
+def queue_apply_one(p: Project, item: dict, name: str) -> dict:
+    """On a clean main: merge the item's branch (documents), then apply its plan change."""
+    data, branch = item.get("data") or {}, item.get("branch")
+    qids = {x for t in data.get("tasks", []) for x in t.get("questions", [])}
+    qids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
+    reg = questions_load(p)
+    if qids and all(any(q["id"] == x and q["status"] in ("planned", "resolved") for q in reg["items"]) for x in qids):
+        data = {}  # already planned another way: only the documents remain
+    res = {"file": name, "branch": branch, "merged": False, "added": [], "updated": [], "resolved": []}
+    if branch:
+        if not p.branch_exists(branch):
+            raise SatoryError(f"branch {branch} of the queued change is gone")
+        r = p.git("merge", "--squash", branch, check=False)
+        if r.returncode != 0:
+            p.git("reset", "-q", "--hard", "HEAD")
+            raise SatoryError(f"merge of {branch} failed: {(r.stderr or r.stdout).strip()[:300]}")
+        if p.dirty():
+            p.git("commit", "-q", "-m", f"{item.get('message') or f'docs: {branch}'}\n\n{TRAILER}")
+            res["merged"] = True
+    if any(data.get(k) for k in ("tasks", "updates", "milestones", "depends", "resolved")):
+        res.update(plan_add(p, p.plan(), data, item.get("source", "request")))
+    if branch:
+        p.git("branch", "-D", branch)
+    return res
+
+
+def cmd_queue(p: Project, a) -> None:
+    """Changes to main while a task runs (documents on their own branch + a plan change) wait here and are
+    applied between two tasks, in order. With no task running, on a clean main, they are applied at once."""
+    qd = queue_dir(p)
+    files = sorted(qd.glob("*.json")) if qd.exists() else []
+    free = p.current_branch() == p.main and not p.dirty()
+    if a.action == "begin":
+        # a worktree of main on a new branch, outside the project, for the documents of the change
+        import tempfile
+        branch = f"satory/queue-{now('%Y%m%d-%H%M%S')}-{os.getpid()}"
+        wdir = tempfile.mkdtemp(prefix="satory-queue-")
+        os.rmdir(wdir)
+        p.git("worktree", "add", "-q", "-b", branch, wdir, p.main)
+        return emit({"ok": True, "branch": branch, "dir": wdir})
+    if a.action == "add":
+        try:
+            data = json.loads(read_note(a) or "{}")
+        except json.JSONDecodeError as e:
+            raise SatoryError(f"queue add expects JSON on stdin: {e}")
+        message = a.message or f"docs: {a.source or 'change'}"
+        if a.dir:  # commit the documents edited in the worktree and remove it; the branch stays
+            d = Path(a.dir)
+            subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+            if subprocess.run(["git", "-C", str(d), "diff", "--cached", "--quiet"]).returncode != 0:
+                subprocess.run(["git", "-C", str(d), "commit", "-q", "-m", f"{message}\n\n{TRAILER}"], check=True)
+            p.git("worktree", "remove", "--force", str(d))
+        import copy
+        plan_patch(p, copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p)), data)  # check it now
+        item = {"source": a.source or "request", "branch": a.branch, "message": message, "data": data}
+        if free and not files:
+            return emit({"ok": True, "applied": queue_apply_one(p, item, "now")})
+        qd.mkdir(parents=True, exist_ok=True)
+        path = qd / f"{now('%Y%m%d-%H%M%S')}-{os.getpid()}.json"
+        write_json(path, item)
+        return emit({"ok": True, "queued": p.rel(path)})
+    if a.action == "list":
+        return emit({"ok": True, "items": [{"file": f.name, **load_json(f)} for f in files]})
+    if a.action == "apply":
+        if files and (p.current_branch() != p.main or p.dirty()):
+            return emit({"ok": True, "applied": [], "waiting": len(files), "note": f"applied on a clean {p.main}"})
+        applied, errors = [], []
+        for path in files:
+            try:
+                applied.append(queue_apply_one(p, load_json(path), path.name))
+                path.unlink()
+            except SatoryError as e:
+                errors.append(f"{path.name}: {e}")
+                break  # keep the order: the later items wait for this one
+        return emit({"ok": not errors, "applied": applied, "errors": errors, "waiting": len(files) - len(applied)})
 
 
 def cmd_plan(p: Project, a) -> None:
@@ -891,40 +968,7 @@ def cmd_plan(p: Project, a) -> None:
             data = json.loads(read_note(a) or "{}")
         except json.JSONDecodeError as e:
             raise SatoryError(f"plan add expects JSON on stdin: {e}")
-        source = a.source or "planner"
-        if a.queue and (p.current_branch() != p.main or p.dirty()):
-            # a task is running: check the change against today's plan, apply it at the next task boundary
-            import copy
-            plan_patch(p, copy.deepcopy(plan), copy.deepcopy(questions_load(p)), data)
-            qd = plan_queue_dir(p)
-            qd.mkdir(parents=True, exist_ok=True)
-            path = qd / f"{now('%Y%m%d-%H%M%S')}-{len(list(qd.glob('*.json'))) + 1:03d}.json"
-            write_json(path, {"source": source, "data": data})
-            return emit({"ok": True, "queued": p.rel(path)})
-        return emit(plan_add(p, plan, data, source))
-    if a.action == "apply-queue":
-        qd = plan_queue_dir(p)
-        files = sorted(qd.glob("*.json")) if qd.exists() else []
-        if files and (p.current_branch() != p.main or p.dirty()):
-            return emit({"ok": True, "applied": [], "waiting": len(files), "note": f"applied on a clean {p.main}"})
-        applied, errors = [], []
-        for path in files:
-            item = load_json(path)
-            data = item["data"]
-            qids = {x for t in data.get("tasks", []) for x in t.get("questions", [])}
-            qids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
-            reg = questions_load(p)
-            if qids and all(any(q["id"] == x and q["status"] in ("planned", "resolved") for q in reg["items"]) for x in qids):
-                applied.append({"file": path.name, "skipped": f"{', '.join(sorted(qids))} already planned"})
-                path.unlink()
-                continue
-            try:
-                res = plan_add(p, p.plan(), item["data"], item.get("source", "request"))
-                applied.append({"file": path.name, **res})
-                path.unlink()
-            except SatoryError as e:
-                errors.append(f"{path.name}: {e}")
-        return emit({"ok": not errors, "applied": applied, "errors": errors})
+        return emit(plan_add(p, plan, data, a.source or "planner"))
     if a.action == "validate":
         errors = validate_plan(plan)
         emit({"ok": not errors, "errors": errors, "tasks": len(plan["tasks"])})
@@ -1165,9 +1209,19 @@ def cmd_step(p: Project, a) -> None:
         raise SatoryError(f"unknown step {a.step}")
 
 
+def main_unchanged(p: Project, st: dict, tid: str) -> None:
+    """main changes only between tasks; everything else waits in the queue (satory queue)."""
+    head = p.git("rev-parse", p.main)
+    if head != st["base"]:
+        raise SatoryError(f"{p.main} changed while {tid} ran ({st['base'][:12]} -> {head[:12]}); changes to "
+                          f"{p.main} go through `satory queue` and are applied between tasks. Run the build again: "
+                          f"the task is rebased onto {p.main} and goes on.")
+
+
 def cmd_task_finish(p: Project, a) -> None:
     tid = a.task
     st = p.task_state(tid)
+    main_unchanged(p, st, tid)
     plan = p.plan()
     t = p.task(plan, tid)
     note = read_note(a)
@@ -1182,9 +1236,6 @@ def cmd_task_finish(p: Project, a) -> None:
         p.git("reset", "-q", "--hard", "HEAD")
         p.git("checkout", "-q", branch)
         raise SatoryError(f"squash merge of {branch} failed: {(r.stderr or r.stdout).strip()}")
-    # main's plan, not the branch's copy: it may have changed on main while the task ran
-    plan = p.plan()
-    t = p.task(plan, tid)
     t["status"], t["rounds"], t["finished"] = "done", st["rounds"], now()
     t.pop("blocked_reason", None)
     p.save_plan(plan)
@@ -1219,13 +1270,12 @@ def cmd_task_block(p: Project, a) -> None:
     tid = a.task
     st = p.task_state(tid)
     reason = read_note(a).strip() or "no reason given"
+    main_unchanged(p, st, tid)
     plan = p.plan()
     t = p.task(plan, tid)
     if p.current_branch() == st["branch"]:
         st["checkpoint"] = checkpoint(p, tid, "blocked")
         p.git("checkout", "-q", p.main)
-        plan = p.plan()  # main's plan, which may have changed while the task ran
-        t = p.task(plan, tid)
     t["status"], t["blocked_reason"], t["rounds"] = "blocked", reason, st["rounds"]
     p.save_plan(plan)
     journal_pending(p, tid, "orchestrator", st["rounds"], "blocked", reason)
@@ -1420,9 +1470,8 @@ def main() -> None:
     sub.add_parser("workflow")
     sub.add_parser("status")
     s = sub.add_parser("plan")
-    s.add_argument("action", choices=["json", "validate", "render", "add", "apply-queue"])
+    s.add_argument("action", choices=["json", "validate", "render", "add"])
     s.add_argument("--note-stdin", action="store_true")
-    s.add_argument("--queue", action="store_true", help="add: queue it while a task runs")
     s.add_argument("--source", help="add: who changes the plan (journal)")
 
     s = sub.add_parser("task")
@@ -1450,6 +1499,14 @@ def main() -> None:
     s.add_argument("--status", choices=[x for x in Q_STATUSES if x != "open"])
     s.add_argument("--note-stdin", action="store_true")
 
+    s = sub.add_parser("queue")
+    s.add_argument("action", choices=["begin", "add", "list", "apply"])
+    s.add_argument("--branch", help="add: the branch with the documents of the change")
+    s.add_argument("--dir", help="add: its worktree from `queue begin`; committed and removed")
+    s.add_argument("--message", help="add: the commit message of the documents")
+    s.add_argument("--source", help="add: who asks for it (journal)")
+    s.add_argument("--note-stdin", action="store_true")
+
     s = sub.add_parser("wait")
     s.add_argument("id")
     s.add_argument("--timeout", type=int, default=540)
@@ -1468,7 +1525,8 @@ def main() -> None:
             return cmd_doctor(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question}
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
+                    "queue": cmd_queue}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock}[a.action](p, a)

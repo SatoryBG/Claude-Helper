@@ -15,6 +15,10 @@ Talk to the user in the language they write in.
    - staging and prod (URL, image, when), the remote;
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
    - the open questions for the user (`questions` in the status): how many, how many critical.
+   - queued changes waiting for the next task boundary: `$SATORY queue list` (how many). If the build
+     reported that one could not be merged (a conflict with what a task changed), rebase its branch onto
+     main and resolve it with the user (`git rebase main <branch>` in a worktree of that branch); the
+     build retries it at the next boundary.
 2. For every **blocked** task show the reason (`reason`) and classify it:
    - **Question from an agent** (business decision): ask the user (AskUserQuestion with options or a
      free answer). If the answer changes the requirements, update `docs/SPEC.md` (version + a history
@@ -49,10 +53,11 @@ Talk to the user in the language they write in.
      ```
      For "Not needed" add `--status dismissed`; for "Later" record nothing.
    - Answers that change the requirements go into `docs/SPEC.md` (version + history row, the affected
-     R-IDs; a decision becomes an acceptance criterion with concrete values), committed on main. If a
-     build is running on a task branch, commit through a temporary worktree of main
-     (`git worktree add <scratch dir> main`, commit there, `git worktree remove`); the task's squash merge
-     keeps it.
+     R-IDs; a decision becomes an acceptance criterion with concrete values). `main` changes only between
+     two tasks, so write the SPEC through the queue: `$SATORY queue begin` (a worktree of main on a new
+     branch), edit `docs/SPEC.md` under its `dir`, then
+     `$SATORY queue add --branch <branch> --dir <dir> --source answers --message "docs: specification vN"`
+     with `{}` on stdin. It is merged at once on a clean main, or by the build after the current task.
    - Answers that need code changes (a different behaviour than built, an accepted `fix` or `test`) are
      turned into tasks automatically: the build runs the `planner` agent between two tasks (and when it
      starts), puts the new tasks ahead of the work that builds on them and marks the questions
