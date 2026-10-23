@@ -205,6 +205,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.8.9** - no more duplicate questions from one round: the register list an agent gets now also
+  holds the items Dev, the Reviewer and QA added earlier in the same round (before, all three saw the list
+  from the start of the round and reported the same gap in their own words); `question add` returns the
+  new items with their titles (`added_items`).
 - **0.8.8** - more reaches GitHub: the task's branch after every step of a round (a copy of the work in
   progress, deleted when the task is merged; off with `"push_task_branch": false`) and `main` after every
   change between two tasks (queued requests and answers, the planner's tasks), not only at a task finish.

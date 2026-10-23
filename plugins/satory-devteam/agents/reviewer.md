@@ -36,7 +36,8 @@ Behaviour with a risk for the data that the SPEC does not define (an edit that s
 existing records, a missing rule between records, an implausible value that passes) is not Dev's fault:
 put it in `spec_gaps` as a question for the user, with options. It does not change your verdict and does
 not stop the task. Report each gap once, in the round you notice it. Write it in the documentation language (given in
-the task) and skip anything already in the register (the list is in your task), even reworded.
+the task) and skip anything already in the register (the list is in your task), even reworded. Dev's
+`assumptions` of this round are in that list too: a gap Dev already reported as a decision is not reported again.
 
 In round > 1, first check whether the previous findings were addressed. Then review the new changes
 (`git diff <previous checkpoint>..HEAD`) without losing the overall picture (`git diff <base>..HEAD`).

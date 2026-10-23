@@ -353,16 +353,22 @@ function context(t, start) {
 }
 
 // What is already in the register of questions, so an agent does not report it again in other words.
+// The note is read once per round; the items Dev, the Reviewer and QA add during the round are appended
+// with withAdded, so the next agent of the round sees them too (otherwise each reports the same gap).
 async function registerNote() {
   try {
     const reg = must(await sh('question list --brief', { phase: 'Dev', label: 'register' }), 'question list')
-    const items = reg.items.filter(x => x.status !== 'dismissed')
-    if (!items.length) return ''
-    return `\n\n## Already in the register of questions\nDo not report these again, not even reworded or in another language; ` +
-      `report only what is new:\n${bullets(items.map(x => `${x.id} [${x.status}] ${x.title}`))}`
+    return withAdded('', reg.items.filter(x => x.status !== 'dismissed'))
   } catch (e) {
     return ''
   }
+}
+
+function withAdded(known, items) {
+  if (!items || !items.length) return known
+  const head = known || `\n\n## Already in the register of questions\nDo not report these again, not even reworded, ` +
+    `from another angle or in another language; report only what is new:`
+  return `${head}\n${bullets(items.map(x => `${x.id} [${x.status || 'open'}] ${x.title}`))}`
 }
 
 // A task gets a UI review when the project has one enabled, staging runs, and the task touches the UI.
@@ -508,19 +514,19 @@ async function block(t, round, reason) {
   return { id: t.id, title: t.title, status: 'blocked', rounds: round, reason }
 }
 
-// Never throws: a question that cannot be recorded must not stop the task.
+// Never throws: a question that cannot be recorded must not stop the task. Returns the new items ({id, title}).
 async function addQuestions(items, kind, source, { task, milestone, phase }) {
-  if (!items || !items.length) return 0
+  if (!items || !items.length) return []
   const list = items.map(x => ({ kind: x.kind || kind, ...x }))
   try {
     const res = await sh(`question add --source ${q(source)}${task ? ` --task ${task}` : ''}${milestone ? ` --milestone ${milestone}` : ''}`,
       { phase, label: `questions ${source}`, note: JSON.stringify(list) })
-    const n = (res && res.added || []).length
-    if (n) log(`❓ ${n} new question(s) for the user from ${source} - /satory-devteam:status`)
-    return n
+    const added = (res && res.added_items) || ((res && res.added) || []).map(id => ({ id, title: '' }))
+    if (added.length) log(`❓ ${added.length} new question(s) for the user from ${source} - /satory-devteam:status`)
+    return added
   } catch (e) {
     log(`Could not record the questions from ${source}: ${e.message}`)
-    return 0
+    return []
   }
 }
 
@@ -553,7 +559,7 @@ async function reviewMilestones(plan) {
     const audit = await spawn('auditor', auditPrompt(m, tasks, reg.items),
       { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
     if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
-    const n = await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })
+    const n = (await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })).length
     await sh(`question reviewed ${m}`, { phase: 'Milestone review', label: `reviewed ${m}` })
     reg.milestones_reviewed.push(m)
     log(`🔎 ${m} reviewed: ${n} new item(s) - ${audit.summary.split('\n')[0]}`)
@@ -616,12 +622,12 @@ async function runTask(t) {
     const tag = `${t.id} r${round}`
 
     // ---- Dev ----------------------------------------------------------
-    const known = await registerNote()
+    let known = await registerNote()
     const dev = await spawn(role, devPrompt(ctx, round, feedback) + known,
       { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
     if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
     if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
-    await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' })
+    known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
     const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
       { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
     if (!ad.ok) {
@@ -636,7 +642,7 @@ async function runTask(t) {
     const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev) + known,
       { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
     if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
-    await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' })
+    known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
     const revBlocking = rev.findings.some(f => f.severity === 'blocker' || f.severity === 'major')
     const revVerdict = revBlocking ? 'changes_requested' : 'approve'
     must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revVerdict}`,
@@ -662,7 +668,7 @@ async function runTask(t) {
       qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote) + known,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
-      await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' })
+      known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) break

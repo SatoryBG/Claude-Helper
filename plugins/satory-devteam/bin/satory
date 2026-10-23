@@ -438,7 +438,7 @@ def cmd_question(p: Project, a) -> None:
         if isinstance(new, dict):
             new = new.get("items", [])
         seen = {question_key(q["title"]) for q in reg["items"]}
-        added, skipped = [], []
+        added, skipped = [], []  # added: the new items as {id, title}
         for item in new:
             title = str(item.get("title", "")).strip()
             if not title:
@@ -447,10 +447,11 @@ def cmd_question(p: Project, a) -> None:
                 skipped.append(title)
                 continue
             seen.add(question_key(title))
-            added.append(question_append(reg, item, a.source or "manual", a.task, a.milestone)["id"])
+            q = question_append(reg, item, a.source or "manual", a.task, a.milestone)
+            added.append({"id": q["id"], "title": q["title"]})
         if added:
             questions_save(p, reg)
-        return emit({"ok": True, "added": added, "skipped": skipped})
+        return emit({"ok": True, "added": [x["id"] for x in added], "added_items": added, "skipped": skipped})
     if a.action == "list":
         # the output goes through an agent's tool output, so it stays small: open items in full,
         # answered ones with the answer and refs, closed ones (and with --brief all) only what
