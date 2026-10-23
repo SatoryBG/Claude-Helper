@@ -9,6 +9,7 @@ export const meta = {
     { title: 'QA', detail: 'staging, new tests, the whole test suite' },
     { title: 'UI', detail: 'browser review against docs/UI.md: viewports, accessibility, consistency' },
     { title: 'Security', detail: 'scanners + audit' },
+    { title: 'Full tests', detail: 'the whole e2e suite (experimental e2e_task_first only)' },
     { title: 'Docs', detail: 'documentation, merge, push, staging' },
   ],
 }
@@ -257,7 +258,7 @@ function gateLines(gates) {
   return Object.entries(gates || {})
     .filter(([, g]) => !g.ok)
     .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}` +
-      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran; the whole suite runs once they pass)' : ''))
+      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : ''))
 }
 
 function context(t, start) {
@@ -513,6 +514,20 @@ async function runTask(t) {
       lastStage = 'security'
       feedback = secFeedback(sec, secBlocking)
       continue
+    }
+
+    // ---- Full e2e (experimental e2e_task_first) ------------------------
+    if (aq.gates && aq.gates.e2e && aq.gates.e2e.scope === 'task') {
+      const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
+        { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
+      if (!full.ok) {
+        lastStage = 'full e2e'
+        feedback = `### The whole e2e suite fails
+This task's own tests pass, but tests of earlier features fail - ` +
+          `most likely a regression caused by this task.
+${bullets(gateLines(full.gates))}`
+        continue
+      }
     }
 
     // ---- Docs + finish -------------------------------------------------

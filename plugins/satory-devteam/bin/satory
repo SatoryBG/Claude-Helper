@@ -737,17 +737,22 @@ def cmd_step(p: Project, a) -> None:
         if listed:
             st["known_tests"] = sorted(known | names)
         gates = {"test": gate(p, tid, rnd, "test")}
-        # experimental e2e_task_first: this task's e2e tests (+ smoke) first, the whole suite only once they pass
+        # experimental e2e_task_first: only this task's e2e tests (+ smoke) here; the whole suite runs in
+        # step full-e2e after Security - or here again when it failed there in the previous round
         first = [c.replace("{task}", tid) for c in p.experimental("e2e_task_first")]
-        quick = run_cmds(p, first, p.logs / f"{tid}-r{rnd}-e2e-task.log", p.env(tid, rnd)) if first else None
-        gates["e2e"] = gate(p, tid, rnd, "e2e") if not quick or quick["ok"] else {**quick, "scope": "task"}
+        if first and not st.get("full_e2e_failed"):
+            quick = run_cmds(p, first, p.logs / f"{tid}-r{rnd}-e2e-task.log", p.env(tid, rnd))
+            gates["e2e"] = {**quick, "scope": "task"}
+        else:
+            gates["e2e"] = gate(p, tid, rnd, "e2e")
+            st["full_e2e_failed"] = not gates["e2e"]["ok"]
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
-                  f"{' (experimental: only this task and smoke tests ran, the whole suite was skipped)' if g.get('scope') == 'task' else ''}"
+                  f"{' (experimental: only this task and smoke tests; the whole suite runs after Security)' if g.get('scope') == 'task' else ''}"
                   for k, g in gates.items()]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
@@ -768,6 +773,16 @@ def cmd_step(p: Project, a) -> None:
         # scanners must not leave changes behind
         guard(p, ck, lambda path, status: "scanner artifact")
         emit({"ok": all(s["ok"] or s.get("missing_tool") for s in scans), "scans": scans})
+
+    elif a.step == "full-e2e":
+        # experimental e2e_task_first: the whole suite, once Review, QA, UI and Security have passed
+        g = gate(p, tid, rnd, "e2e")
+        st["full_e2e_failed"] = not g["ok"]
+        guard(p, ck, lambda path, status: "test run artifact")
+        extra = [f"- Whole e2e suite: {'✓' if g['ok'] else '✗ - back to Dev; the next round runs it again in QA'}"]
+        journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
+        p.save_state()
+        emit({"ok": g["ok"], "gates": {"e2e": g}})
 
     elif a.step == "docs-check":
         changed = changed_files(p, ck)
@@ -1044,7 +1059,7 @@ def main() -> None:
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("step")
-    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "docs-check", "readonly"])
+    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "readonly"])
     s.add_argument("task")
     s.add_argument("--round", type=int, required=True)
     s.add_argument("--owner", choices=OWNERS, default="dev")

@@ -59,11 +59,13 @@ plan skips it.
 Trial settings live in an `"experimental"` block of `.satory/project.json`. The workflow lists the ones
 that are on when it starts; delete the key (or the whole block) to go back to the normal behaviour.
 
-- **`e2e_task_first`** - commands that run only the current task's e2e tests first; `{task}` becomes
-  the task id. The whole e2e suite runs only when they pass, so the rounds in which the new tests still
-  fail are much shorter. A task is never finished without a green whole suite. Regressions in earlier
-  features are found only in the round in which the task's own tests pass. Example for Playwright
-  (the QA agent puts the task id in every test title):
+- **`e2e_task_first`** - QA's check runs only the current task's e2e tests (commands below; `{task}`
+  becomes the task id). The whole e2e suite runs once, after Review, QA, UI and Security have passed and
+  before Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished
+  without a green whole suite. If it fails there, the task goes back to Dev and the next round runs the
+  whole suite already in QA's check, so UI and Security do not review a build with a known regression.
+  Regressions in earlier features are found later than without this setting. Example for Playwright (the
+  QA agent puts the task id in every test title):
 
   ```json
   "experimental": {
@@ -130,6 +132,9 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.5.1** - `e2e_task_first` runs the whole e2e suite once, in the new step `full-e2e` after
+  Security and before Docs, instead of in every round whose task tests pass. A failure there sends the
+  task back to Dev, and the next round runs the whole suite in QA's check again.
 - **0.5.0** - experimental `e2e_task_first` setting (see "Experimental settings"): QA's check runs
   the current task's e2e tests first and the whole suite only when they pass. Off unless set in
   `.satory/project.json`; the journal and Dev's feedback say when only the task's tests ran. The QA
