@@ -471,7 +471,7 @@ async function runTask(t) {
       qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote),
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
-      aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict}`,
+      aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) break
       if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)

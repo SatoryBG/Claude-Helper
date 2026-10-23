@@ -738,9 +738,10 @@ def cmd_step(p: Project, a) -> None:
             st["known_tests"] = sorted(known | names)
         gates = {"test": gate(p, tid, rnd, "test")}
         # experimental e2e_task_first: only this task's e2e tests (+ smoke) here; the whole suite runs in
-        # step full-e2e after Security - or here again when it failed there in the previous round
+        # step full-e2e after Security - or here again when it failed there in the previous round. Only for a
+        # workflow that runs that step (--split-e2e): an older one would otherwise finish without the whole suite.
         first = [c.replace("{task}", tid) for c in p.experimental("e2e_task_first")]
-        if first and not st.get("full_e2e_failed"):
+        if first and a.split_e2e and not st.get("full_e2e_failed"):
             quick = run_cmds(p, first, p.logs / f"{tid}-r{rnd}-e2e-task.log", p.env(tid, rnd))
             gates["e2e"] = {**quick, "scope": "task"}
         else:
@@ -1066,6 +1067,7 @@ def main() -> None:
     s.add_argument("--stage", default="reviewer")
     s.add_argument("--verdict")
     s.add_argument("--note-stdin", action="store_true")
+    s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (e2e_task_first)")
 
     s = sub.add_parser("wait")
     s.add_argument("id")

@@ -132,6 +132,9 @@ docs/JOURNAL.md         history of everything (append-only)
 
 ## Changelog
 
+- **0.5.2** - `step after-qa` splits the e2e tests only when the workflow says it runs `full-e2e`
+  (`--split-e2e`): a workflow started with an older script keeps running the whole suite in QA's check
+  instead of finishing a task without it.
 - **0.5.1** - `e2e_task_first` runs the whole e2e suite once, in the new step `full-e2e` after
   Security and before Docs, instead of in every round whose task tests pass. A failure there sends the
   task back to Dev, and the next round runs the whole suite in QA's check again.
