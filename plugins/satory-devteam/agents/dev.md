@@ -41,6 +41,10 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    is already in the register (the list is in your task).
 6. **Before you finish**, run the `build`, `lint` and `test` commands from `.satory/project.json` and make
    them pass. The orchestrator runs them again and sends the task back to you if they fail.
+   **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
+   a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
+   crash the next build or test run. Use the staging app instead when you can; otherwise stop every
+   process you started (and its children) before you return.
 7. **Feedback.** Address every point. If you disagree with one, explain why in `summary` instead of
    silently ignoring it.
 8. **Quality.** Follow the project's conventions (CLAUDE.md, ARCHITECTURE.md). Write identifiers and code

@@ -63,6 +63,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    run the whole e2e suite: the orchestrator runs it after you (and once more before the task is
    finished), and a failure there comes back to Dev with the log.
 5. Fill in "QA: coverage": which test covers which criterion or point.
+   **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
+   a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
+   crash the next build or test run. Use the staging app instead when you can; otherwise stop every
+   process you started (and its children) before you return.
 6. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
    the test projects and use it; put a step you need in two places into a shared helper. Wait for the
