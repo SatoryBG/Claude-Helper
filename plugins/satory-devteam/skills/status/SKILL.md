@@ -46,7 +46,7 @@ Talk to the user in the language they write in.
      say which ids they are and record the same answer for each.
    - Go from critical to minor. For each, show the title, the concrete scenario from `detail` and the
      refs in a few lines, then ask with AskUserQuestion: the `options` (the first is recommended), plus
-     "Later" (it stays open) and "Not needed" (dismissed). For `fix`/`test`: "Plan it" / "Later" /
+     "Later" (postponed) and "Not needed" (dismissed). For `fix`/`test`: "Plan it" / "Later" /
      "Not needed". Up to 4 questions per AskUserQuestion call.
    - Record each answer (the option or the user's own text, with a short reason if they gave one):
      ```bash
@@ -54,7 +54,11 @@ Talk to the user in the language they write in.
      <the answer>
      SATORY_EOF
      ```
-     For "Not needed" add `--status dismissed`; for "Later" record nothing.
+     For "Not needed" add `--status dismissed`; for "Later" add `--status deferred` with no note (it is
+     not counted as open; a flaky test that fails again or an agent raising the same item opens it
+     again). A critical item cannot be postponed: for "Later" record nothing, it stays open.
+   - The status shows the postponed ones (`questions.deferred`) apart from the open ones; go through
+     them again only when the user asks (`$SATORY question list --status deferred`).
    - Answers that change the requirements go into `docs/SPEC.md` (version + history row, the affected
      R-IDs; a decision becomes an acceptance criterion with concrete values). `main` changes only between
      two tasks, so write the SPEC through the queue: `$SATORY queue begin` (a worktree of main on a new

@@ -98,7 +98,9 @@ options with a recommended one. Answers that change the requirements go into the
 code become tasks automatically: between two tasks (and when it starts) the build runs the read-only
 `satory-devteam:planner`, and `satory plan add` puts its tasks ahead of the work that builds on them and
 marks the questions `planned` or, when the answer keeps the current behaviour, `resolved`. `/satory-devteam:release` warns about open critical
-questions. The register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
+questions. "Later" postpones an item (`deferred`): it is not counted as open and opens again when a
+flaky test fails once more or an agent raises the same item; critical items cannot be postponed. The
+register is `.satory/questions.json`, readable as `docs/QUESTIONS.md`; while a task runs,
 new items wait in `.satory/run/` and are written on main at the next task finish.
 
 ## Requests while the work runs
@@ -217,6 +219,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.9.2** - "Later" postpones a question (status `deferred`): not counted as open, shown apart in the
+  status, opened again when it comes back (a flaky test fails again, an agent raises it again).
 - **0.9.1** - progress you can follow: every event goes to `.satory/run/progress.log`, the build skill
   reports each one in the conversation, and `satory statusline` is a status line for Claude Code
   (offered by the setup skill).
