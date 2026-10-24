@@ -29,13 +29,28 @@ A task with **subtasks** in its description (a bundle of fixes) is checked whole
      query), **minor** when they are a few lines of plain wiring.
    - Duplication that was already there and the change only touches: **minor**, with the suggestion
      (it is not this task's to fix unless the task is about that code).
-7. **Efficiency**: a query in a loop (N+1), a whole table loaded to filter or count in memory, the same
-   work repeated inside a loop, a missing index for a new frequent lookup, needless re-renders, re-fetches
-   or round trips in the UI. **major** when it is slow at the data volume of the SPEC (NFRs) or grows
-   with the data, **minor** otherwise. No speculative micro-optimisation.
-8. **UI code** (if `docs/UI.md` exists): shared components and design tokens are used instead of ad-hoc
+7. **Efficiency** - **major** when it is slow at the data volume of the SPEC (NFRs) or grows with the
+   data, **minor** otherwise; no speculative micro-optimisation.
+   - Database: a query in a loop (N+1); filtering, sorting, counting or summing in memory what the
+     database can do; whole entities (with their includes) loaded where a projection of a few columns is
+     enough; change tracking on read-only queries; several collection includes that multiply the rows;
+     a missing index (and migration) for a new frequent filter, sort or join; several writes of one action
+     without a transaction or with a save each; an unbounded list that grows with the data; a query the
+     ORM cannot translate and runs on the client.
+   - Code: repeated work in a loop, large files loaded whole instead of streamed, blocking on async
+     calls, a cancellation token not passed on, a new HTTP client per call or no timeout.
+   - UI: re-fetches and round trips, request waterfalls, query keys that do not invalidate after a
+     change, a heavy dependency for a small need, needless re-renders of large tables.
+8. **Naming**: identifiers and comments in English - real English words, never another language in
+   Latin letters (`vnoska`, `cena`, `pechalba`): **major**. One name per concept across the code: a new
+   name for something the code already names (`deposit` here, `payIn` there) is **minor**, with the
+   existing name. Names say what a thing is (no `data2`, `tmp`, `doStuff`).
+9. **Robustness**: errors handled where they can be (not swallowed, not logged and ignored), resources
+   disposed, no secrets or personal data in logs, magic values (thresholds, limits, codes) as named
+   constants or configuration defined once.
+10. **UI code** (if `docs/UI.md` exists): shared components and design tokens are used instead of ad-hoc
    styles and duplicated markup. The visual result is checked by the UI reviewer, not by you.
-9. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
+11. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 
 ## Severity

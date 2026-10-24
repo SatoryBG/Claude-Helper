@@ -207,7 +207,7 @@ const HEALTH_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          title: { type: 'string' }, kind: { type: 'string', enum: ['duplication', 'efficiency', 'dead_code'] },
+          title: { type: 'string' }, kind: { type: 'string', enum: ['duplication', 'efficiency', 'naming', 'dead_code', 'consistency'] },
           impact: { type: 'string', enum: ['major', 'minor'] }, description: { type: 'string' },
           files: { type: 'array', items: { type: 'string' } }, ui: { type: 'boolean' },
         },
@@ -581,7 +581,7 @@ Milestone: ${m} - all its tasks are done:
 ${bullets(tasks.map(t => `${t.id} - ${t.title}`))}
 
 Review the whole code base on the current branch (everything built so far, not only this milestone)
-for duplicated logic, inefficient code and dead code.`
+for duplicated logic, inefficient code (database queries first), naming, dead code and consistency.`
 }
 
 // The code health findings of a milestone become one refactoring task (one subtask per finding) ahead of

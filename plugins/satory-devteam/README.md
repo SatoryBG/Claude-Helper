@@ -92,10 +92,14 @@ enforced or not tested - are collected as questions and **never stop the work**.
 
 The code is reviewed for reuse the same way. Dev looks for an existing function, component or query
 before writing one and extends it rather than copying it; the Reviewer searches the whole code base for
-what a change duplicates (a near copy of existing logic is `major`) and checks the efficiency (N+1
-queries, whole tables loaded into memory, repeated work, re-fetches); QA reuses the test helpers. After
+what a change duplicates (a near copy of existing logic is `major`), the efficiency - above all the
+database queries (N+1, work done in memory instead of the database, whole entities instead of
+projections, tracking on reads, missing indexes, writes without a transaction, unbounded lists), then the
+code (streams, async, HTTP clients) and the UI (re-fetches, waterfalls, cache keys) - the naming
+(identifiers in English, never another language in Latin letters, one name per concept) and the
+robustness (errors, resources, logs, magic values); QA reuses the test helpers. After
 every milestone `satory-devteam:code-health` reviews the whole code base for duplicated logic,
-inefficient and dead code that slipped through, and its findings become one refactoring task (one
+inefficient code, naming, dead code and inconsistencies that slipped through, and its findings become one refactoring task (one
 subtask per finding, behaviour unchanged) ahead of the work still to do. Turn that off with
 `"code_health_review": false`.
 
@@ -230,6 +234,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.1** - the reviews check the database queries in detail, the naming (English identifiers, no
+  other language in Latin letters, one name per concept), the robustness and magic values.
 - **0.10.0** - reuse and efficiency: Dev reuses and extends existing code, the Reviewer searches the
   whole code base for duplicates and checks efficiency, QA reuses test helpers; after every milestone
   the new `code-health` agent reviews the whole code and its findings become one refactoring task.

@@ -44,7 +44,9 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 7. **Feedback.** Address every point. If you disagree with one, explain why in `summary` instead of
    silently ignoring it.
 8. **Quality.** Follow the project's conventions (CLAUDE.md, ARCHITECTURE.md). Write identifiers and code
-   comments in English. Keep the code small and readable, with clear error handling. Secrets never go
+   comments in English: real English words, never another language in Latin letters (`deposit`, not
+   `vnoska`; `price`, not `cena`), and one name per concept across the code (the name the code already
+   uses for it). Only texts for the user are in their language, through the translations. Keep the code small and readable, with clear error handling. Secrets never go
    into code or git, only into configuration from the environment.
 9. **Reuse before you write.** Before a new function, component, hook, query, validation or mapping,
    search the code for one that already does it or nearly does it (by name and by what it does: `grep`
@@ -52,10 +54,21 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    or two, extend it (a parameter, an option, a shared helper) instead of writing a copy, and move the
    callers you touch to it. Two blocks in your change that differ only in values are one function. Do
    not change behaviour elsewhere while doing so: the existing tests must still pass.
-10. **Efficient by default.** No query in a loop (load what the loop needs at once), no loading a whole
-   table to filter it in memory when the database can, no repeated work inside a loop that can be done
-   once, no extra round trips or re-fetches in the UI. Keep it simple: optimise what the data volume in
-   the SPEC (NFRs) makes real, not hypothetical cases.
+10. **Efficient by default.** Keep it simple: optimise what the data volume in the SPEC (NFRs) makes
+   real, not hypothetical cases.
+   - **Database**: no query in a loop (load what the loop needs at once); filter, sort, count and sum in
+     the database, not in memory; read only the columns you need (a projection to the DTO), read-only
+     queries without change tracking; no several collection includes in one query that multiply the
+     rows; an index for every new frequent filter, sort or join (with its migration); several writes of
+     one action in one transaction and one save; a list that grows with the data is paged or limited.
+   - **Code**: no repeated work inside a loop that can be done once; streams for large files (import,
+     export) instead of loading them whole; async all the way (no blocking on async calls), with the
+     cancellation token passed on; HTTP clients reused, with timeouts.
+   - **UI**: no extra round trips or re-fetches (one query key per resource, invalidated after a
+     change), no request waterfalls that can run in parallel, no heavy dependency for a small need,
+     large tables and lists without needless re-renders.
+11. **No magic values.** A number or text with a meaning (a threshold, a limit, a code) is a named
+   constant or configuration, defined once.
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:
