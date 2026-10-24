@@ -1227,6 +1227,7 @@ def cmd_plan(p: Project, a) -> None:
               "language": p.config.get("language", "en"),
               "experimental": sorted(p.config.get("experimental", {})),
               "milestone_review": p.config.get("milestone_review", True) is not False,
+              "code_health_review": p.config.get("code_health_review", True) is not False,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
               "milestones": plan.get("milestones", []),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],

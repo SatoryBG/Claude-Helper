@@ -46,6 +46,16 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 8. **Quality.** Follow the project's conventions (CLAUDE.md, ARCHITECTURE.md). Write identifiers and code
    comments in English. Keep the code small and readable, with clear error handling. Secrets never go
    into code or git, only into configuration from the environment.
+9. **Reuse before you write.** Before a new function, component, hook, query, validation or mapping,
+   search the code for one that already does it or nearly does it (by name and by what it does: `grep`
+   for the field, the endpoint, the error code, the calculation). Use it; if it differs by a parameter
+   or two, extend it (a parameter, an option, a shared helper) instead of writing a copy, and move the
+   callers you touch to it. Two blocks in your change that differ only in values are one function. Do
+   not change behaviour elsewhere while doing so: the existing tests must still pass.
+10. **Efficient by default.** No query in a loop (load what the loop needs at once), no loading a whole
+   table to filter it in memory when the database can, no repeated work inside a loop that can be done
+   once, no extra round trips or re-fetches in the UI. Keep it simple: optimise what the data volume in
+   the SPEC (NFRs) makes real, not hypothetical cases.
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:

@@ -63,6 +63,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    run the whole e2e suite: the orchestrator runs it after you (and once more before the task is
    finished), and a failure there comes back to Dev with the log.
 5. Fill in "QA: coverage": which test covers which criterion or point.
+6. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
+   form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
+   the test projects and use it; put a step you need in two places into a shared helper. Wait for the
+   state you check (a response, a visible text, an enabled button), never for a fixed time.
 
 ## SPEC gaps
 When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after

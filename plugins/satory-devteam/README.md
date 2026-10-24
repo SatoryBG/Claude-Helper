@@ -35,7 +35,8 @@ keeps the task branches local.
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
 `satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs`, `satory-devteam:auditor`
-(milestone review), `satory-devteam:planner` (tasks for answered questions) and `satory-devteam:runner`
+(milestone review of the data rules), `satory-devteam:code-health` (milestone review of the code),
+`satory-devteam:planner` (tasks for answered questions) and `satory-devteam:runner`
 (a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
 deploy - because it has to wait for a Bash call that moved to the background).
 
@@ -88,6 +89,15 @@ enforced or not tested - are collected as questions and **never stop the work**.
 - **after every milestone** - `satory-devteam:auditor` reviews the data rules across everything built so
   far: questions, Dev's decisions to confirm, rules that are not enforced (`fix`) or not tested (`test`).
   Turn it off with `"milestone_review": false` in `.satory/project.json`.
+
+The code is reviewed for reuse the same way. Dev looks for an existing function, component or query
+before writing one and extends it rather than copying it; the Reviewer searches the whole code base for
+what a change duplicates (a near copy of existing logic is `major`) and checks the efficiency (N+1
+queries, whole tables loaded into memory, repeated work, re-fetches); QA reuses the test helpers. After
+every milestone `satory-devteam:code-health` reviews the whole code base for duplicated logic,
+inefficient and dead code that slipped through, and its findings become one refactoring task (one
+subtask per finding, behaviour unchanged) ahead of the work still to do. Turn that off with
+`"code_health_review": false`.
 
 Open `critical` questions hold the build at the next milestone boundary: the milestones already started
 are finished, but no new one starts until the critical questions are answered, so nothing is built on top
@@ -220,6 +230,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.0** - reuse and efficiency: Dev reuses and extends existing code, the Reviewer searches the
+  whole code base for duplicates and checks efficiency, QA reuses test helpers; after every milestone
+  the new `code-health` agent reviews the whole code and its findings become one refactoring task.
 - **0.9.5** - a newly flaky e2e test is reported in the progress too.
 - **0.9.4** - the status line text is bright cyan.
 - **0.9.3** - the status line text has an explicit colour, so it stays readable (`SATORY_STATUSLINE_COLOR`).

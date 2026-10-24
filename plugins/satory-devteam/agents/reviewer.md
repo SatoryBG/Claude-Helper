@@ -19,10 +19,23 @@ A task with **subtasks** in its description (a bundle of fixes) is checked whole
 4. **Correctness**: logic errors, edge cases, null/empty values, concurrency issues, error handling,
    transactions, resources.
 5. **Design and readability**: does it follow the architecture and conventions (CLAUDE.md, ARCHITECTURE.md,
-   ADRs)? Any duplication or needless complexity?
-6. **UI code** (if `docs/UI.md` exists): shared components and design tokens are used instead of ad-hoc
+   ADRs)? Any needless complexity?
+6. **Reuse and duplication** - look beyond the diff. For every new function, component, hook, query,
+   validation, mapping or constant in the change, search the code base (`grep` by name, by the field or
+   error code it handles, by the calculation) for one that already does the same or nearly the same.
+   - New code that repeats existing code, or differs from it only by a parameter or two: **major** -
+     name the existing one (file:line) and say how to reuse or extend it.
+   - Near-identical blocks inside the change: **major** when they hold logic (a rule, a calculation, a
+     query), **minor** when they are a few lines of plain wiring.
+   - Duplication that was already there and the change only touches: **minor**, with the suggestion
+     (it is not this task's to fix unless the task is about that code).
+7. **Efficiency**: a query in a loop (N+1), a whole table loaded to filter or count in memory, the same
+   work repeated inside a loop, a missing index for a new frequent lookup, needless re-renders, re-fetches
+   or round trips in the UI. **major** when it is slow at the data volume of the SPEC (NFRs) or grows
+   with the data, **minor** otherwise. No speculative micro-optimisation.
+8. **UI code** (if `docs/UI.md` exists): shared components and design tokens are used instead of ad-hoc
    styles and duplicated markup. The visual result is checked by the UI reviewer, not by you.
-7. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
+9. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 
 ## Severity

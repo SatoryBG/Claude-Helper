@@ -33,6 +33,7 @@ function parseArgs(raw) {
 const A = parseArgs(args)
 const MODELS = {
   dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus', planner: 'opus',
+  'code-health': 'opus',
   // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
   // Bash call that moved to the background instead of returning early, which haiku does not do reliably
   runner: 'haiku', runnerLong: 'sonnet',
@@ -195,6 +196,26 @@ const AUDIT_SCHEMA = {
     },
   },
   required: ['summary', 'items'],
+}
+const HEALTH_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    title: { type: 'string', description: 'The title of the refactoring task, in the documentation language' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' }, kind: { type: 'string', enum: ['duplication', 'efficiency', 'dead_code'] },
+          impact: { type: 'string', enum: ['major', 'minor'] }, description: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } }, ui: { type: 'boolean' },
+        },
+        required: ['title', 'kind', 'impact', 'description', 'files', 'ui'],
+      },
+    },
+  },
+  required: ['summary', 'title', 'items'],
 }
 const PLANNER_SCHEMA = {
   type: 'object',
@@ -553,16 +574,53 @@ code on the current branch). Already in the register - do not repeat them, even 
 ${known.length ? bullets(known.map(x => `${x.id} [${x.status}] ${x.title}`)) : '- (none)'}`
 }
 
-// After a milestone is finished: one read-only review of its data rules. Its items go to the register
-// of questions; the workflow goes on.
+function healthPrompt(m, tasks) {
+  return `Project: ${PROJECT}
+Documentation language: ${LANG}
+Milestone: ${m} - all its tasks are done:
+${bullets(tasks.map(t => `${t.id} - ${t.title}`))}
+
+Review the whole code base on the current branch (everything built so far, not only this milestone)
+for duplicated logic, inefficient code and dead code.`
+}
+
+// The code health findings of a milestone become one refactoring task (one subtask per finding) ahead of
+// the work still to do, so the whole cycle runs once for all of them; behaviour stays the same.
+async function healthTask(m, tasks, plan) {
+  const out = await spawn('code-health', healthPrompt(m, tasks),
+    { phase: 'Milestone review', label: `code health ${m}`, model: MODELS['code-health'], schema: HEALTH_SCHEMA })
+  if (!out) { log(`The code health review of ${m} returned no result.`); return }
+  const items = out.items || []
+  if (!items.length) { log(`🧹 ${m} code health: nothing to refactor`); return }
+  const next = plan.tasks.find(t => t.status === 'todo')
+  const keep = 'Behaviour unchanged: the existing unit and e2e tests pass without changing what they assert'
+  const task = {
+    ref: `refactor-${m}`, title: out.title,
+    milestone: next ? next.milestone : m, owner: 'dev', ui: items.some(x => x.ui), depends_on: [], requirements: [],
+    description: `${out.summary}\n\nA refactoring from the code health review of ${m}: the behaviour of the app must stay exactly the same.`,
+    acceptance: [keep], questions: [],
+    subtasks: items.map(x => ({ title: `${x.title} (${x.kind}, ${x.impact})`, description: `${x.description}\n\nFiles: ${x.files.join(', ') || '-'}`, acceptance: [keep], questions: [] })),
+    ...(next ? { insert_before: next.id } : {}),
+  }
+  const res = must(await sh(`plan add --source code-health-${m}`, {
+    phase: 'Milestone review', label: `refactoring task ${m}`,
+    note: JSON.stringify({ title: `refactoring after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
+  }), 'plan add')
+  log(`🧹 ${m} code health: ${items.length} finding(s) → ${res.added.join(', ')}`)
+}
+
+// After a milestone is finished: one read-only review of its data rules (its items go to the register of
+// questions) and one of the code health (its findings become a refactoring task); the workflow goes on.
 async function reviewMilestones(plan) {
-  if (plan.milestone_review === false) return
+  if (plan.milestone_review === false) return plan
   let reg
   try {
+    const st = must(await sh('status', { phase: 'Milestone review', label: 'branch' }), 'status')
+    if (/^satory\//.test(st.branch || '')) return plan  // a task is in progress: after it, on main
     reg = must(await sh('question list --brief', { phase: 'Milestone review', label: 'questions' }), 'question list')
   } catch (e) {
     log(`Milestone review skipped: ${e.message}`)
-    return
+    return plan
   }
   const order = [...new Set(plan.tasks.map(t => t.milestone).filter(Boolean))]
   for (const m of order) {
@@ -573,10 +631,17 @@ async function reviewMilestones(plan) {
       { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
     if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
     const n = (await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })).length
+    if (plan.code_health_review !== false) {
+      try {
+        await healthTask(m, tasks, plan)
+        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+      } catch (e) { log(`The code health review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
+    }
     await sh(`question reviewed ${m}`, { phase: 'Milestone review', label: `reviewed ${m}` })
     reg.milestones_reviewed.push(m)
     log(`🔎 ${m} reviewed: ${n} new item(s) - ${audit.summary.split('\n')[0]}`)
   }
+  return plan
 }
 
 function plannerPrompt(answered, plan) {
@@ -804,7 +869,7 @@ LANG = plan.language || 'en'
 if (plan.experimental && plan.experimental.length) log(`⚗ Experimental settings on: ${plan.experimental.join(', ')} (remove "experimental" from .satory/project.json to turn them off)`)
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
 
-await reviewMilestones(plan)
+plan = await reviewMilestones(plan)
 plan = await planAnswers(plan)
 
 const results = []
@@ -832,7 +897,7 @@ while (results.length < MAX_TASKS) {
     break
   }
   plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
-  await reviewMilestones(plan)
+  plan = await reviewMilestones(plan)
   plan = await planAnswers(plan)
 }
 
