@@ -234,6 +234,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.2** - a build, lint or test gate whose run crashed (killed by a signal, a runtime or test host
+  crash such as "Internal CLR error") runs once more before it fails, so a crash does not cost a round.
 - **0.10.1** - the reviews check the database queries in detail, the naming (English identifiers, no
   other language in Latin letters, one name per concept), the robustness and magic values.
 - **0.10.0** - reuse and efficiency: Dev reuses and extends existing code, the Reviewer searches the

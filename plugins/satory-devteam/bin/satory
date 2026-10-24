@@ -257,8 +257,23 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
     return {"ok": code == 0, "exit": code, "log": p.rel(log)}
 
 
+# a crash of the runtime or the test host, not a failing test: the gate runs once more before it fails
+CRASH = re.compile(r"Internal CLR error|^Fatal error\.|Segmentation fault|core dumped|Test host process crashed"
+                   r"|The active test run was aborted|FATAL ERROR: .*JavaScript heap", re.M)
+
+
 def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
-    return run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}.log", p.env(tid, rnd))
+    log = p.logs / f"{tid}-r{rnd}-{name}.log"
+    res = run_cmds(p, p.commands(name), log, p.env(tid, rnd))
+    if res["ok"] or res.get("skipped"):
+        return res
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    if not ((isinstance(res.get("exit"), int) and res["exit"] < 0) or CRASH.search(text)):
+        return res
+    progress(p, f"↻ {tid} r{rnd} {name}: the run crashed (exit {res.get('exit')}), running it once more")
+    again = run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}-rerun.log", p.env(tid, rnd))
+    again["crashed_first"] = res["log"]
+    return again
 
 
 E2E_COUNT = re.compile(r"^\s*(\d+) (passed|failed|flaky|skipped|did not run|interrupted)\b", re.M)
