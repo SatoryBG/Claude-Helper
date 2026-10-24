@@ -50,10 +50,10 @@ the task and round in progress, the last event, open questions, queued changes) 
 Read `~/.claude/settings.json`. If it has no `statusLine`, offer to add it (AskUserQuestion); if it has
 one, show it and offer to keep it or replace it. On yes, set (keeping the rest of the file):
 ```json
-"statusLine": {"type": "command", "command": "f=$(ls -d \"$HOME\"/.claude/plugins/cache/*/satory-devteam/*/bin/satory 2>/dev/null | sort -V | tail -n 1); [ -n \"$f\" ] && python3 \"$f\" statusline"}
+"statusLine": {"type": "command", "command": "python3 -c 'import json,os,sys,runpy;f=os.path.expanduser(\"~/.claude/plugins/installed_plugins.json\");p=[e[\"installPath\"] for k,v in json.load(open(f))[\"plugins\"].items() if k.startswith(\"satory-devteam@\") for e in v];sys.argv=[\"satory\",\"statusline\"];p and runpy.run_path(p[0]+\"/bin/satory\",run_name=\"__main__\")' 2>/dev/null"}
 ```
-The glob finds the installed version, so the line survives plugin updates. It shows from the next
-prompt on.
+It runs the installed version (from `~/.claude/plugins/installed_plugins.json`), so the line survives
+plugin updates. It shows from the next prompt on.
 
 ## 6. Finish
 Run `$SATORY doctor` again and show the result. If everything is fine, the next step is
