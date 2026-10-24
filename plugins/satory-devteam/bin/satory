@@ -1659,7 +1659,11 @@ def cmd_statusline(a) -> None:
         queued = len(list((p.run / "queue").glob("*.json"))) if (p.run / "queue").is_dir() else 0
         if queued:
             parts.append(f"🗂{queued}")
-        print(" · ".join(parts))
+        # an explicit colour, so the line stays readable whatever the terminal theme dims it to;
+        # SATORY_STATUSLINE_COLOR is an SGR code (default 97, bright white; "" for none)
+        color = os.environ.get("SATORY_STATUSLINE_COLOR", "97")
+        line = " · ".join(parts)
+        print(f"\033[{color}m{line}\033[0m" if color else line)
     except Exception:  # noqa: BLE001 - a status line prints nothing rather than an error
         pass
 
