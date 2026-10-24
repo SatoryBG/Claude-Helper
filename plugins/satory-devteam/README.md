@@ -220,6 +220,7 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.9.5** - a newly flaky e2e test is reported in the progress too.
 - **0.9.4** - the status line text is bright cyan.
 - **0.9.3** - the status line text has an explicit colour, so it stays readable (`SATORY_STATUSLINE_COLOR`).
 - **0.9.2** - "Later" postpones a question (status `deferred`): not counted as open, shown apart in the

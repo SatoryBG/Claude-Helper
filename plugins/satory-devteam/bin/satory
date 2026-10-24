@@ -412,6 +412,7 @@ def question_flaky(p: Project, test: str, source: str, task: str) -> None:
             "options": ["Plan it: make the test wait for the state it checks (QA), or fix the race in the app",
                         "Not needed"],
             "refs": [test.split(" › ")[1] if " › " in test else test]}, source, task, None)
+        progress(p, f"❓ {reg['items'][-1]['id']}: flaky e2e test ({source}) - {name.split(' › ')[-1]}")
     else:
         q.setdefault("occurrences", []).append(source)
         if q["status"] == "deferred":  # it happened again: back to the user
