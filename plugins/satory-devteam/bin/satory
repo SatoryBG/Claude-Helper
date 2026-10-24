@@ -1660,8 +1660,8 @@ def cmd_statusline(a) -> None:
         if queued:
             parts.append(f"🗂{queued}")
         # an explicit colour, so the line stays readable whatever the terminal theme dims it to;
-        # SATORY_STATUSLINE_COLOR is an SGR code (default 97, bright white; "" for none)
-        color = os.environ.get("SATORY_STATUSLINE_COLOR", "97")
+        # SATORY_STATUSLINE_COLOR is an SGR code (default 96, bright cyan; "" for none)
+        color = os.environ.get("SATORY_STATUSLINE_COLOR", "96")
         line = " · ".join(parts)
         print(f"\033[{color}m{line}\033[0m" if color else line)
     except Exception:  # noqa: BLE001 - a status line prints nothing rather than an error

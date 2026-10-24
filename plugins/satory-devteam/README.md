@@ -72,8 +72,8 @@ a round ends with its verdict, a task is done or blocked, new questions, plan an
 - `satory statusline` turns it into the Claude Code status line, e.g.
   `satory 29/41 · ▶ T-014 r3 · 17:40 ✓ T-014 r3 e2e: pass · ❓3 · 🗂1` (tasks done, the task and round in
   progress, the last event, open questions, queued changes). `/satory-devteam:setup` offers to add it
-  to `~/.claude/settings.json`; outside a satory project it prints nothing. The text is bright white;
-  `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `93` yellow, `""` for the terminal's own).
+  to `~/.claude/settings.json`; outside a satory project it prints nothing. The text is bright cyan;
+  `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `97` white, `""` for the terminal's own).
 - `/satory-devteam:status` shows the last events too.
 
 ## Questions for the user
@@ -220,7 +220,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
-- **0.9.3** - the status line text is bright white, so it stays readable (`SATORY_STATUSLINE_COLOR`).
+- **0.9.4** - the status line text is bright cyan.
+- **0.9.3** - the status line text has an explicit colour, so it stays readable (`SATORY_STATUSLINE_COLOR`).
 - **0.9.2** - "Later" postpones a question (status `deferred`): not counted as open, shown apart in the
   status, opened again when it comes back (a flaky test fails again, an agent raises it again).
 - **0.9.1** - progress you can follow: every event goes to `.satory/run/progress.log`, the build skill
