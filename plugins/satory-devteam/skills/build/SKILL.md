@@ -32,8 +32,19 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - `bin`: `${CLAUDE_PLUGIN_ROOT}/bin/satory`
    - `agentsDir`: `${CLAUDE_PLUGIN_ROOT}/agents`
    - `milestone`, `max`, `rounds`: only if given in `$ARGUMENTS` (form `key=value`)
-3. Tell the user briefly that the process runs in the background, progress is visible with `/workflows`,
-   the history is written to `docs/JOURNAL.md`, and they can keep working.
+3. Follow the progress in the conversation: start the **Monitor** tool with
+   `command` = `tail -n 0 -F <root>/.satory/run/progress.log 2>/dev/null`, `description` = "satory build
+   progress" and `timeout_ms` = 1800000. The CLI writes one line per event there: a task starts (▶), a
+   stage of a round ends (✓/✗ with the stage and round), a task is done (✓ … done in N round(s)) or
+   blocked (⛔), new questions (❓), plan and queue changes (🗂).
+   - On each event, write the user one short line in their language (what happened, in plain words; no
+     tool calls needed). Several events that arrive together are one line or a few short bullets.
+   - When the monitor expires and the workflow is still running, start it again the same way.
+   - When the workflow finishes, stop the monitor (TaskStop) and give the summary below.
+4. Tell the user briefly that the process runs in the background, that you will report each step here,
+   the details are visible with `/workflows`, the history is written to `docs/JOURNAL.md`, and they can
+   keep working. If `$SATORY statusline` is not in their Claude Code status line yet, mention that
+   `/satory-devteam:setup` can add it (a line like `satory 29/41 · ▶ T-014 r3 · … · ❓3`).
 
 ## 3. When the workflow finishes
 Summarise the result:

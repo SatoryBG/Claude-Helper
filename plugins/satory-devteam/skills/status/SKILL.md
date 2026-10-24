@@ -12,6 +12,7 @@ Talk to the user in the language they write in.
 
 1. `$SATORY status` and `$SATORY plan json`. Show briefly:
    - how many tasks are done, in progress, blocked and to do, and which one is next;
+   - what happened last: `tail -n 10 .satory/run/progress.log` (one line per event of the build);
    - staging and prod (URL, image, when), the remote;
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
    - the open questions for the user (`questions` in the status): how many, how many critical.

@@ -63,6 +63,18 @@ Projects with a UI get two extra safeguards:
 It is enabled with `"ui": { "review": true }` in `.satory/project.json`; per task, `"ui": false` in the
 plan skips it.
 
+## Following the progress
+
+The CLI writes one line per event to `.satory/run/progress.log` (gitignored): a task starts, a stage of
+a round ends with its verdict, a task is done or blocked, new questions, plan and queue changes.
+- `/satory-devteam:build` follows that file with a monitor and reports each event in the conversation in
+  a short line, while the session is open.
+- `satory statusline` turns it into the Claude Code status line, e.g.
+  `satory 29/41 · ▶ T-014 r3 · 17:40 ✓ T-014 r3 e2e: pass · ❓3 · 🗂1` (tasks done, the task and round in
+  progress, the last event, open questions, queued changes). `/satory-devteam:setup` offers to add it
+  to `~/.claude/settings.json`; outside a satory project it prints nothing.
+- `/satory-devteam:status` shows the last events too.
+
 ## Questions for the user
 
 Gaps in the data rules - what the SPEC does not say, what Dev decided on its own, what is defined but not
@@ -205,6 +217,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.9.1** - progress you can follow: every event goes to `.satory/run/progress.log`, the build skill
+  reports each one in the conversation, and `satory statusline` is a status line for Claude Code
+  (offered by the setup skill).
 - **0.9.0** - fixes are bundled: the planner makes one task with subtasks for all the answers that go to
   the same place in the plan (separate tasks only for fixes that wait for later work), so the whole cycle
   runs once for all of them, not once for each; several planner tasks for the same place are merged

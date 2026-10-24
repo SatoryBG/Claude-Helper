@@ -44,7 +44,18 @@ Based on `github` from doctor:
   `workflow`, GitHub refuses pushes of `.github/workflows/*`.
 - Then run `gh auth setup-git`, so git uses these credentials for push and clone.
 
-## 5. Finish
+## 5. Status line
+`$SATORY statusline` prints one line about the satory project of the current directory (tasks done,
+the task and round in progress, the last event, open questions, queued changes) and nothing elsewhere.
+Read `~/.claude/settings.json`. If it has no `statusLine`, offer to add it (AskUserQuestion); if it has
+one, show it and offer to keep it or replace it. On yes, set (keeping the rest of the file):
+```json
+"statusLine": {"type": "command", "command": "f=$(ls -d \"$HOME\"/.claude/plugins/cache/*/satory-devteam/*/bin/satory 2>/dev/null | sort -V | tail -n 1); [ -n \"$f\" ] && python3 \"$f\" statusline"}
+```
+The glob finds the installed version, so the line survives plugin updates. It shows from the next
+prompt on.
+
+## 6. Finish
 Run `$SATORY doctor` again and show the result. If everything is fine, the next step is
 `/satory-devteam:analyst <name or GitHub repo> <short description>`.
 Membership in the `docker` group takes effect for the regular user at the next login.

@@ -107,6 +107,7 @@ class Project:
         self.pending = self.run / "journal.pending.md"
         self.questions_path = self.dir / "questions.json"
         self.questions_pending = self.run / "questions.pending.json"
+        self.progress_path = self.run / "progress.log"
 
     @classmethod
     def find(cls, start: str | None) -> "Project":
@@ -451,6 +452,9 @@ def cmd_question(p: Project, a) -> None:
             added.append({"id": q["id"], "title": q["title"]})
         if added:
             questions_save(p, reg)
+            ids = [x["id"] for x in added]
+            progress(p, f"❓ {len(added)} new question(s) from {a.source or 'manual'}: "
+                        f"{', '.join(ids) if len(ids) <= 4 else f'{ids[0]}…{ids[-1]}'}")
         return emit({"ok": True, "added": [x["id"] for x in added], "added_items": added, "skipped": skipped})
     if a.action == "list":
         # the output goes through an agent's tool output, so it stays small: open items in full,
@@ -500,6 +504,25 @@ def cmd_question(p: Project, a) -> None:
 
 # ---------------------------------------------------------------- journal ---
 
+def progress(p: Project, line: str) -> None:
+    """One short line per event in .satory/run/progress.log (gitignored): what the build skill streams
+    into the conversation and the status line shows. Never fails the command that reports it."""
+    try:
+        p.run.mkdir(parents=True, exist_ok=True)
+        with open(p.progress_path, "a", encoding="utf-8") as f:
+            f.write(f"{now('%H:%M')} {' '.join(line.split())[:220]}\n")
+        if p.progress_path.stat().st_size > 256 * 1024:
+            lines = p.progress_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            p.progress_path.write_text("".join(lines[-500:]), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def first_line(text: str, limit: int = 140) -> str:
+    line = next((x.strip() for x in (text or "").splitlines() if x.strip()), "")
+    return line if len(line) <= limit else line[:limit - 1] + "…"
+
+
 def journal_pending(p: Project, tid: str, stage: str, rnd: int | None, verdict: str, note: str) -> None:
     """Entries go to a gitignored file while a task runs and are flushed into
     docs/JOURNAL.md on main, so they survive even when a task branch is abandoned."""
@@ -509,6 +532,9 @@ def journal_pending(p: Project, tid: str, stage: str, rnd: int | None, verdict: 
     p.pending.parent.mkdir(parents=True, exist_ok=True)
     with open(p.pending, "a", encoding="utf-8") as f:
         f.write(entry)
+    if stage != "docs":  # the finish reports the task as a whole
+        detail = first_line(note) if verdict in ("blocked", "unblocked", "release") or tid == "plan" else ""
+        progress(p, f"{mark} {tid}{f' r{rnd}' if rnd else ''} {stage}: {verdict}{f' - {detail}' if detail else ''}")
 
 
 def journal_flush(p: Project) -> None:
@@ -539,6 +565,10 @@ def merged_status(p: Project, t: dict) -> str:
     if status == "todo" and t["id"] in p.state["tasks"]:
         return "in_progress"
     return status
+
+
+def done_count(p: Project, plan: dict) -> str:
+    return f"{sum(t.get('status') == 'done' for t in plan['tasks'])}/{len(plan['tasks'])} tasks done"
 
 
 def validate_plan(plan: dict) -> list[str]:
@@ -1095,6 +1125,7 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     if branch:
         p.git("branch", "-D", branch)
     res["push_error"] = push_quiet(p, "origin", p.main)
+    progress(p, f"🗂 queued change applied: {item.get('message') or name}")
     return res
 
 
@@ -1231,6 +1262,8 @@ def cmd_task_start(p: Project, a) -> None:
         st["checkpoint"] = checkpoint(p, tid, "start")
     p.state["tasks"][tid] = st
     p.save_state()
+    again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
+    progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
           "rounds_used": st["rounds"], "resumed": resumed, "task_file": f"docs/tasks/{tid}.md",
           "known_tests": len(st["known_tests"])})
@@ -1460,6 +1493,9 @@ def cmd_task_finish(p: Project, a) -> None:
         p.state.setdefault("deploy", {})["main_image"] = staging.get("image")
         p.state["deploy"]["main_sha"] = commit
         p.save_state()
+    progress(p, f"✓ {tid} done in {st['rounds']} round(s) ({commit[:7]}){', pushed' if pushed else ''}"
+                f"{', staging updated' if staging.get('ok') and not staging.get('skipped') else ''}"
+                f" - {done_count(p, plan)}")
     emit({"ok": True, "commit": commit, "violations": violations, "pushed": pushed,
           "push_error": push_error, "staging": staging})
 
@@ -1569,6 +1605,49 @@ def cmd_status(p: Project, a) -> None:
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 
 
+def cmd_statusline(a) -> None:
+    """One plain line for the Claude Code status line. Claude Code passes the session as JSON on stdin;
+    outside a satory project, or on any error, it prints nothing (the status line must never break)."""
+    try:
+        data = {}
+        import select  # only for this command: wait briefly for the session JSON, never hang without it
+        if not sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.5)[0]:
+            raw = sys.stdin.read()
+            data = json.loads(raw) if raw.strip() else {}
+        start = a.project or (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
+        p = Project.find(start)
+        plan = p.plan()
+        tasks = plan["tasks"]
+        parts = [f"satory {sum(t.get('status') == 'done' for t in tasks)}/{len(tasks)}"]
+        running = list(p.state.get("tasks", {}))
+        for tid in running:
+            parts.append(f"▶ {tid} r{p.state['tasks'][tid].get('rounds', 0)}")
+        blocked = sum(t.get("status") == "blocked" for t in tasks)
+        if blocked:
+            parts.append(f"⛔{blocked}")
+        if not running:
+            nxt = next((t["id"] for t in tasks if t.get("status", "todo") == "todo"), None)
+            if nxt:
+                parts.append(f"next {nxt}")
+        if p.progress_path.exists():
+            with open(p.progress_path, "rb") as f:
+                f.seek(max(0, f.seek(0, 2) - 4096))
+                tail = f.read().decode("utf-8", "replace").splitlines()
+            if tail:
+                parts.append(first_line(tail[-1], 70))
+        items = questions_load(p)["items"]
+        open_q = sum(q["status"] == "open" for q in items)
+        critical = sum(q["status"] == "open" and q["severity"] == "critical" for q in items)
+        if open_q:
+            parts.append(f"❓{open_q}{f' ({critical} critical)' if critical else ''}")
+        queued = len(list((p.run / "queue").glob("*.json"))) if (p.run / "queue").is_dir() else 0
+        if queued:
+            parts.append(f"🗂{queued}")
+        print(" · ".join(parts))
+    except Exception:  # noqa: BLE001 - a status line prints nothing rather than an error
+        pass
+
+
 def cmd_doctor(a) -> None:
     def run(cmd: list[str]) -> subprocess.CompletedProcess | None:
         if not shutil.which(cmd[0]):
@@ -1667,6 +1746,7 @@ def main() -> None:
     sub.add_parser("where")
     sub.add_parser("workflow")
     sub.add_parser("status")
+    sub.add_parser("statusline", help="one plain line for the Claude Code status line (session JSON on stdin)")
     s = sub.add_parser("plan")
     s.add_argument("action", choices=["json", "validate", "render", "add"])
     s.add_argument("--note-stdin", action="store_true")
@@ -1723,6 +1803,8 @@ def main() -> None:
             return cmd_init(a)
         if a.cmd == "doctor":
             return cmd_doctor(a)
+        if a.cmd == "statusline":
+            return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
