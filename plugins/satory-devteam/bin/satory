@@ -1389,6 +1389,15 @@ def cmd_step(p: Project, a) -> None:
         listed, names = test_names(p, tid, rnd)
         known = set(st.get("known_tests", []))
         missing = sorted(known - names) if listed else []
+        # a case of a parameterised test carries its data in its name: an adaptation listed in "QA: adapted
+        # tests" that changes the data renames the case. It is allowed while the test method still has cases.
+        methods = {x.split("(", 1)[0] for x in names}
+        if adapted_used and missing:
+            renamed = [x for x in missing if "(" in x and x.split("(", 1)[0] in methods]
+            if renamed:
+                adapted_used.append(f"{len(renamed)} case(s) of parameterised tests with changed data: "
+                                    + "; ".join(renamed[:5]) + (" …" if len(renamed) > 5 else ""))
+                missing = [x for x in missing if x not in renamed]
         if missing:
             rules.append(f"{len(missing)} existing tests are missing (deleted or renamed): "
                          f"{', '.join(missing[:20])}")

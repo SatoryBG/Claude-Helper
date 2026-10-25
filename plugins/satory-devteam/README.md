@@ -234,6 +234,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.7** - an adapted parameterised test may get new data (its cases are renamed with it) while the
+  test keeps its cases; before, the renamed cases counted as deleted tests.
 - **0.10.6** - `/satory-devteam:status` ends with a table of the remaining tasks (status, what each waits
   for, where it comes from) and what will still be added.
 - **0.10.5** - with `roleFiles` the runner keeps its own definition (a default agent refused to record

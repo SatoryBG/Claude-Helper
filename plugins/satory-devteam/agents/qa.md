@@ -32,6 +32,9 @@ or contradicts the SPEC, the task fails and goes back to Dev.
   - change only the expectation that became wrong; keep every assertion that is still valid, never make
     a test weaker than the requirement, and never delete or rename a test (an adapted file may not get
     shorter: replace lines, do not remove them);
+  - a case of a parameterised test (`[InlineData]`, `test.each`) whose data the requirement now forbids
+    may get new data: its name changes with the data, which is allowed while the test keeps its cases;
+    say old → new data in the line of the file;
   - list every such file in the "QA: adapted tests" section of the task file (add the section if it is
     missing), one line per file: `` - `path/to/file`: test name(s); old → new expectation; source ``,
     where the source is an AC-ID, a SPEC version, a `docs/UI.md` section or the clarification from the
