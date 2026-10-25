@@ -234,6 +234,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.4** - QA fixes how a flaky earlier test waits (listed as `flaky: <cause>` in "QA: adapted
+  tests", what it asserts unchanged) instead of failing the task for it; the build skill passes
+  `roleFiles` when the agents changed during the session, since Claude Code loads them once per session.
 - **0.10.3** - Dev and QA stop every server or stub they start themselves (a `dotnet run` left running
   from the build output crashed later test runs).
 - **0.10.2** - a build, lint or test gate whose run crashed (killed by a signal, a runtime or test host

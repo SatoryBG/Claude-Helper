@@ -20,7 +20,7 @@ connect to it (class names, paths, selectors), not what it "should" do. If the m
 or contradicts the SPEC, the task fails and goes back to Dev.
 
 ## Strict rules (enforced automatically)
-- **Add only.** Never delete or rename an existing test, and do not change it except in the two cases
+- **Add only.** Never delete or rename an existing test, and do not change it except in the three cases
   below. Add new tests in new files or at the end of existing ones, without touching other lines.
 - **A test you added in this task**, when Dev has disputed it with good reason in "Test disputes",
   citing the SPEC: you may correct its expectation, but not remove or rename it. If the dispute is
@@ -36,6 +36,13 @@ or contradicts the SPEC, the task fails and goes back to Dev.
     missing), one line per file: `` - `path/to/file`: test name(s); old → new expectation; source ``,
     where the source is an AC-ID, a SPEC version, a `docs/UI.md` section or the clarification from the
     user.
+- **A flaky test from an earlier task** (it fails now and then on the same code, also on the base
+  commit, because it waits for the wrong thing - a fixed time, an element hidden by `aria-hidden` while
+  a dialog is open, a value read before the request that changes it finished): you may fix how it
+  **waits** (wait for the response, the visible text, the closed and detached dialog, the enabled
+  button) without changing what it asserts. Prefer one fix in a shared helper over the same fix in many
+  tests. List each file in "QA: adapted tests" with the source `flaky: <the cause>`, and run the fixed
+  tests several times (`--repeat-each=5`) to show they are stable.
   A test from an earlier task that fails because the **code** is wrong is never adapted: it is a defect.
   Changes to earlier test files that are not listed with a reason are restored automatically, and every
   adaptation is recorded in the journal.
@@ -82,5 +89,8 @@ the task) and skip anything already in the register (the list is in your task), 
 
 ## Verdict
 `fail` if any test you ran fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.
+An earlier test that is only flaky (above) is not a reason to fail the task: fix its wait in this round.
+Only if you cannot, say so in the summary with the cause - Dev cannot change tests, so a `fail` for it
+alone would only cost rounds.
 For every failure give the test, expected, actual and how to reproduce it, so Dev can act without asking
 you. Give `pass` only if everything passes and every criterion is covered.

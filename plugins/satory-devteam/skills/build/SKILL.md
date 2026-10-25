@@ -32,6 +32,9 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - `bin`: `${CLAUDE_PLUGIN_ROOT}/bin/satory`
    - `agentsDir`: `${CLAUDE_PLUGIN_ROOT}/agents`
    - `milestone`, `max`, `rounds`: only if given in `$ARGUMENTS` (form `key=value`)
+   - `roleFiles`: `true` when the plugin's agents changed since this Claude session started (an update or
+     a local edit): Claude Code loads the agent definitions once per session, so without it the agents
+     would follow their old rules. The roles are then read from `agentsDir`.
 3. Follow the progress in the conversation: start the **Monitor** tool with
    `command` = `tail -n 0 -F <root>/.satory/run/progress.log 2>/dev/null`, `description` = "satory build
    progress" and `timeout_ms` = 1800000. The CLI writes one line per event there: a task starts (▶), a
