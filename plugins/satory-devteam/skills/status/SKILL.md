@@ -74,5 +74,20 @@ Talk to the user in the language they write in.
    at the next task finish, or now with `$SATORY question flush` when on main).
    Open `critical` items keep the next milestone from starting (the started ones are finished): say so
    when there are any.
-5. If there are tasks to run, suggest `/satory-devteam:build`. For a defect the user found or a new idea,
+5. **The remaining tasks** - always last in the report, as one table (headers in the user's language),
+   from `$SATORY plan json`: every task that is not done, in plan order:
+
+   | # | Task | What it covers | Status | Waits for | Source |
+   |---|---|---|---|---|---|
+   | 1 | **T-052** | the title | in progress | - | the `source` field |
+   | 2 | **T-053** | … | to do | T-052 | Q-135 |
+
+   - `#` counts from 1; the task id in bold; "What it covers" is the title;
+   - "Status": in progress, to do or blocked (blocked with its reason in a few words);
+   - "Waits for": the `depends_on` tasks that are not done yet, or `-`;
+   - "Source": the `source` field (the plan, a request, the review of a milestone, the questions).
+   Under the table, in two short paragraphs: what will still be added (queued changes, answered
+   questions the planner has not turned into tasks yet, and where they will likely go) and what comes
+   after the last milestone (its code health review, then `/satory-devteam:release`).
+6. If there are tasks to run, suggest `/satory-devteam:build`. For a defect the user found or a new idea,
    point to `/satory-devteam:request` (it works while a build is running).

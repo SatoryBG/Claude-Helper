@@ -234,6 +234,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.6** - `/satory-devteam:status` ends with a table of the remaining tasks (status, what each waits
+  for, where it comes from) and what will still be added.
 - **0.10.5** - with `roleFiles` the runner keeps its own definition (a default agent refused to record
   another agent's note it could not verify, and the build stopped).
 - **0.10.4** - QA fixes how a flaky earlier test waits (listed as `flaky: <cause>` in "QA: adapted
