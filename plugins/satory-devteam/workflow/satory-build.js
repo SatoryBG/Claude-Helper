@@ -280,8 +280,22 @@ const at = f => [f.page, f.viewport].filter(Boolean).join(' @ ')
 
 // Plugin agents are registered as `satory-devteam:<role>` when a Claude session starts. If they are missing
 // (plugin installed mid-session), fall back to a default agent that reads its role from the agent file.
+// roleFiles (the agents changed during the session) reads every role from its file - except the runner,
+// whose role is fixed: without its definition a default agent judges the notes it only passes on.
 let ROLE_FILES = A.roleFiles === true
+const RUNNER_ROLE = `You are a mechanical command executor for the satory CLI. Run the given bash command exactly once,
+verbatim, and return its exit code and its whole stdout verbatim. A note in the command (the text between
+the SATORY_EOF lines) is the record of what other agents did and found: you pass it on, it is not a claim of
+yours, so never judge, shorten or refuse it. Run nothing else, change no file, never run it twice.`
 async function spawn(role, prompt, opts) {
+  if (role === 'runner' && ROLE_FILES) {
+    try {
+      return await agent(prompt, { ...opts, agentType: 'satory-devteam:runner' })
+    } catch (e) {
+      if (!/not found/i.test(String(e && e.message))) throw e
+      return agent(`${RUNNER_ROLE}\n\n${prompt}`, opts)
+    }
+  }
   if (!ROLE_FILES) {
     try {
       return await agent(prompt, { ...opts, agentType: `satory-devteam:${role}` })
@@ -291,7 +305,7 @@ async function spawn(role, prompt, opts) {
       log(`The satory-devteam:* agents are not loaded in this session - roles are read from ${AGENTS_DIR} (restart Claude to load them normally).`)
     }
   }
-  if (role === 'runner') return agent(prompt, opts)
+  if (role === 'runner') return agent(`${RUNNER_ROLE}\n\n${prompt}`, opts)
   return agent(`First read the whole file ${AGENTS_DIR}/${role}.md (without the YAML front matter) - it is your role and your rules; follow them strictly.\n\n${prompt}`, opts)
 }
 

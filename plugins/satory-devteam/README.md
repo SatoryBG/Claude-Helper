@@ -234,6 +234,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.5** - with `roleFiles` the runner keeps its own definition (a default agent refused to record
+  another agent's note it could not verify, and the build stopped).
 - **0.10.4** - QA fixes how a flaky earlier test waits (listed as `flaky: <cause>` in "QA: adapted
   tests", what it asserts unchanged) instead of failing the task for it; the build skill passes
   `roleFiles` when the agents changed during the session, since Claude Code loads them once per session.
