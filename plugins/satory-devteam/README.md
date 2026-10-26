@@ -234,6 +234,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **0.10.8** - QA runs only the unit tests of the task and of the code it changes (filtered), not the
+  whole unit suite: the check after QA runs the whole suite anyway, so a round no longer runs it up to
+  three extra times (about 5 minutes each in a mid-size project).
 - **0.10.7** - an adapted parameterised test may get new data (its cases are renamed with it) while the
   test keeps its cases; before, the renamed cases counted as deleted tests.
 - **0.10.6** - `/satory-devteam:status` ends with a table of the remaining tasks (status, what each waits

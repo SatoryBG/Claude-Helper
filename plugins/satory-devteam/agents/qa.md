@@ -68,10 +68,13 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 3. **UI regression guards** (when `docs/UI.md` exists and the task adds or changes a page): for every such
    page add permanent e2e tests that (a) run `@axe-core/playwright` and fail on `serious` or `critical`
    violations, and (b) fail if the page scrolls horizontally at any viewport listed in `docs/UI.md`.
-4. Run the `test` command from `.satory/project.json` (the unit tests) and the e2e tests you added or
-   changed in this round, plus the e2e files of earlier tasks the change obviously touches. Do **not**
-   run the whole e2e suite: the orchestrator runs it after you (and once more before the task is
-   finished), and a failure there comes back to Dev with the log.
+4. Run the unit tests you added or changed in this round and the unit tests of the code this task
+   changes, filtered to those classes or files (e.g. `dotnet test --project <test project> -- --filter-class
+   "<namespace>.*"`, `npx vitest run <path>`, `mvnw test -Dtest=<pattern>`), plus the e2e tests you added
+   or changed and the e2e files of earlier tasks the change obviously touches. Do **not** run the whole
+   unit suite (the `test` command from `.satory/project.json`) or the whole e2e suite: the orchestrator
+   runs both after you (the whole e2e suite once more before the task is finished), and a failure there
+   comes back to Dev with the log.
 5. Fill in "QA: coverage": which test covers which criterion or point.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
