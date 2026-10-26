@@ -243,6 +243,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.0.2** - a gate run that failed on the environment (a package restore or network error such as
+  "Restore operation failed", NU1301, ECONNRESET) also runs once more before it fails.
 - **1.0.1** - `experimental.e2e_task_first` is no longer read; use `commands.e2e_task`.
 - **1.0.0** - running only the task's e2e tests and the smoke tests in QA's check, with the whole e2e
   suite once after Security, is no longer experimental but always on (see "Tests in a round"). The

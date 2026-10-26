@@ -270,7 +270,9 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
 
 # a crash of the runtime or the test host, not a failing test: the gate runs once more before it fails
 CRASH = re.compile(r"Internal CLR error|^Fatal error\.|Segmentation fault|core dumped|Test host process crashed"
-                   r"|The active test run was aborted|FATAL ERROR: .*JavaScript heap", re.M)
+                   r"|The active test run was aborted|FATAL ERROR: .*JavaScript heap"
+                   r"|Restore operation failed|Unable to load the service index|error NU1301|ECONNRESET|ETIMEDOUT",
+                   re.M)
 
 
 def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
