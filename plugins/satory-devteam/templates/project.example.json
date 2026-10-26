@@ -26,6 +26,9 @@
     "e2e": [
       "cd e2e && npx playwright test --reporter=line"
     ],
+    "e2e_task": [
+      "cd e2e && npx playwright test --reporter=line --grep \"{task}|@smoke\""
+    ],
     "e2e_retry": [
       "cd e2e && npx playwright test --last-failed --reporter=line"
     ],

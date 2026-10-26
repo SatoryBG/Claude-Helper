@@ -52,8 +52,8 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 - You write only under `paths.tests` (from `.satory/project.json`) and in the "QA: coverage" and
   "QA: adapted tests" sections of the task file. Everything else is reverted automatically.
 - Test names are stable, unique and descriptive (which criterion they check). Every e2e test of the
-  task has the task id in its full title (e.g. `test.describe('T-011 ...')`) - the experimental
-  `e2e_task_first` setting selects a task's tests by it.
+  task has the task id in its full title (e.g. `test.describe('T-011 ...')`): the check after you runs
+  only this task's e2e tests (and the smoke tests), selected by it.
 - Do not touch `.satory/` (except temporary files in `.satory/run/qa/`) or `docs/JOURNAL.md`.
   Do not commit.
 

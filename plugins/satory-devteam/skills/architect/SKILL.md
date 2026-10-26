@@ -74,6 +74,9 @@ its own screen. Decide it now:
 See `project.example.json`. Fill in `stack` and `paths.tests`: globs that cover **all** test code,
 including `e2e/**`. Also fill in `commands`:
 - `build`, `lint`, `test`, `e2e`
+- `e2e_task` (optional): the e2e command for one task's tests plus the smoke tests, `{task}` becomes the
+  task id. For Playwright it is derived from `e2e` (`--grep "{task}|@smoke"`), so set it only when that
+  does not fit
 - `test_list`: one stable test identifier per line and nothing else
 - `security`
 

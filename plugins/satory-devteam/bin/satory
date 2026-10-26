@@ -155,6 +155,17 @@ class Project:
         """Opt-in trial settings under "experimental" in project.json; removing the block turns them off."""
         return as_list(self.config.get("experimental", {}).get(name))
 
+    def e2e_task_commands(self, tid: str) -> list[str]:
+        """The e2e commands for one task's own tests plus the smoke tests ({task} becomes the task id):
+        commands.e2e_task, the older experimental.e2e_task_first, or - for Playwright - the e2e commands
+        with --grep "{task}|@smoke" appended. Empty when none can be derived: then the whole suite runs."""
+        cmds = self.commands("e2e_task") or self.experimental("e2e_task_first")
+        if not cmds:
+            e2e = self.commands("e2e")
+            if e2e and all(re.search(r"playwright test(?!.*(\||--grep|\s-g\s))[^|]*$", c) for c in e2e):
+                cmds = [c + ' --grep "{task}|@smoke"' for c in e2e]
+        return [c.replace("{task}", tid) for c in cmds]
+
     def env(self, tid: str = "", rnd: int = 0) -> dict:
         env = dict(os.environ)
         env.update({"SATORY_PROJECT_ROOT": str(self.root), "SATORY_TASK": tid,
@@ -1411,10 +1422,10 @@ def cmd_step(p: Project, a) -> None:
         if listed:
             st["known_tests"] = sorted(known | names)
         gates = {"test": gate(p, tid, rnd, "test")}
-        # experimental e2e_task_first: only this task's e2e tests (+ smoke) here; the whole suite runs in
-        # step full-e2e after Security - or here again when it failed there in the previous round. Only for a
-        # workflow that runs that step (--split-e2e): an older one would otherwise finish without the whole suite.
-        first = [c.replace("{task}", tid) for c in p.experimental("e2e_task_first")]
+        # only this task's e2e tests (+ smoke) here; the whole suite runs in step full-e2e after Security -
+        # or here again when it failed in the previous round. Only for a workflow that runs that step
+        # (--split-e2e): an older one would otherwise finish without the whole suite.
+        first = p.e2e_task_commands(tid)
         if first and a.split_e2e and not st.get("full_e2e_failed"):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
         else:
@@ -1426,7 +1437,7 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
-                  f"{' (experimental: only this task and smoke tests; the whole suite runs after Security)' if g.get('scope') == 'task' else ''}"
+                  f"{' (only this task and smoke tests; the whole suite runs after Security)' if g.get('scope') == 'task' else ''}"
                   for k, g in gates.items()]
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
@@ -1450,7 +1461,7 @@ def cmd_step(p: Project, a) -> None:
         emit({"ok": all(s["ok"] or s.get("missing_tool") for s in scans), "scans": scans})
 
     elif a.step == "full-e2e":
-        # experimental e2e_task_first: the whole suite, once Review, QA, UI and Security have passed
+        # the whole e2e suite, once Review, QA, UI and Security have passed
         g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
         st["full_e2e_failed"] = not g["ok"]
         guard(p, ck, lambda path, status: "test run artifact")
@@ -1811,7 +1822,7 @@ def main() -> None:
     s.add_argument("--stage", default="reviewer")
     s.add_argument("--verdict")
     s.add_argument("--note-stdin", action="store_true")
-    s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (e2e_task_first)")
+    s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (the whole e2e suite after Security)")
 
     s = sub.add_parser("question")
     s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "flush"])

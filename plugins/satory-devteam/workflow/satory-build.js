@@ -9,7 +9,7 @@ export const meta = {
     { title: 'QA', detail: 'staging, new tests, the whole test suite' },
     { title: 'UI', detail: 'browser review against docs/UI.md: viewports, accessibility, consistency' },
     { title: 'Security', detail: 'scanners + audit' },
-    { title: 'Full tests', detail: 'the whole e2e suite (experimental e2e_task_first only)' },
+    { title: 'Full tests', detail: 'the whole e2e suite, once QA, UI and Security have passed' },
     { title: 'Docs', detail: 'documentation, merge, push, staging' },
     { title: 'Milestone review', detail: 'data rules across the finished milestone; questions for the user' },
     { title: 'Planning', detail: 'tasks for the questions the user answered' },
@@ -809,7 +809,7 @@ async function runTask(t) {
       continue
     }
 
-    // ---- Full e2e (experimental e2e_task_first) ------------------------
+    // ---- Full e2e (QA ran only this task's e2e tests and the smoke tests) ----
     if (aq.gates && aq.gates.e2e && aq.gates.e2e.scope === 'task') {
       const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)

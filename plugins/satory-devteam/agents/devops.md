@@ -12,7 +12,8 @@ the first task: the project skeleton. The same rules as for the Developer apply 
   `@playwright/test`, Chromium). `baseURL` comes from `process.env.SATORY_BASE_URL`. If `ui.review` in
   `.satory/project.json` is true, also add `@axe-core/playwright` to `e2e/` (QA and the UI reviewer use it
   for accessibility checks). You may create NEW files under `paths.tests` (projects, configuration, one
-  smoke test), but you may not change existing tests.
+  smoke test with `@smoke` in its title - the check after QA runs it with each task's own e2e tests), but
+  you may not change existing tests.
 - **Commands in `.satory/project.json`**: only you may edit it. Every command must actually work.
   `test_list` must print one stable, unique test identifier per line and nothing else, because satory
   compares the lists to guarantee that a test never disappears. Verify this.

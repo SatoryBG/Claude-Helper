@@ -155,24 +155,33 @@ register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a te
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
+## Tests in a round
+
+A round does not run the whole test suite more than it has to. Dev runs `build`, `lint` and `test`
+before handing over. QA runs only the unit and e2e tests it added or changed and the ones of the code the
+task touches. The check after QA runs the whole unit suite (`test`) and only this task's e2e tests plus
+the smoke tests. The whole e2e suite runs once, after Review, QA, UI and Security have passed and before
+Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished without
+a green whole suite. If it fails there, the task goes back to Dev and the next round runs the whole suite
+already in QA's check, so UI and Security do not review a build with a known regression.
+
+The task's e2e tests are selected by `commands.e2e_task` in `.satory/project.json` (`{task}` becomes the
+task id). For Playwright it is derived from `commands.e2e` by appending `--grep "{task}|@smoke"`: QA puts
+the task id in every e2e test title and the devops agent tags the smoke test `@smoke`. Set it when that
+does not fit, e.g. smoke tests without the tag:
+
+```json
+"e2e_task": ["cd e2e && npx playwright test --reporter=line --grep \"{task}|smoke\\.spec\""]
+```
+
+With no `e2e_task` and an e2e command that is not a plain Playwright run, the whole suite runs in QA's
+check as before. The older `experimental.e2e_task_first` is still read as `e2e_task`.
+
 ## Experimental settings
 
 Trial settings live in an `"experimental"` block of `.satory/project.json`. The workflow lists the ones
 that are on when it starts; delete the key (or the whole block) to go back to the normal behaviour.
-
-- **`e2e_task_first`** - QA's check runs only the current task's e2e tests (commands below; `{task}`
-  becomes the task id). The whole e2e suite runs once, after Review, QA, UI and Security have passed and
-  before Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished
-  without a green whole suite. If it fails there, the task goes back to Dev and the next round runs the
-  whole suite already in QA's check, so UI and Security do not review a build with a known regression.
-  Regressions in earlier features are found later than without this setting. Example for Playwright (the
-  QA agent puts the task id in every test title):
-
-  ```json
-  "experimental": {
-    "e2e_task_first": ["cd e2e && npx playwright test --reporter=line --grep \"{task}|@smoke\""]
-  }
-  ```
+There are none at the moment.
 
 ## Installation
 
@@ -234,6 +243,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.0.0** - running only the task's e2e tests and the smoke tests in QA's check, with the whole e2e
+  suite once after Security, is no longer experimental but always on (see "Tests in a round"). The
+  command comes from `commands.e2e_task`, is derived for Playwright, and the older
+  `experimental.e2e_task_first` still works. The devops agent tags the smoke test `@smoke`.
 - **0.10.8** - QA runs only the unit tests of the task and of the code it changes (filtered), not the
   whole unit suite: the check after QA runs the whole suite anyway, so a round no longer runs it up to
   three extra times (about 5 minutes each in a mid-size project).
