@@ -660,6 +660,7 @@ ${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
 // The UX findings of a milestone become one improvement task (one subtask per finding) ahead of the work
 // still to do. It is done without asking the user, like the refactoring: the user comments if they disagree.
 async function uxTask(m, tasks, plan) {
+  await sh(`question ux-reviewed ${m}`, { phase: 'Milestone review', label: `ux reviewed ${m}` })
   const draft = await spawn('ux-review', uxPrompt(m, tasks, plan),
     { phase: 'Milestone review', label: `UX review ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })
   if (!draft) { log(`The UX review of ${m} returned no result.`); return }
@@ -1012,9 +1013,21 @@ log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per ta
 plan = await reviewMilestones(plan)
 plan = await planAnswers(plan)
 
-// uxReview=true: one UX review of the whole app now (at the first boundary between tasks, on main), without
-// waiting for the end of the milestone
+// One UX review of the whole app at the first boundary between tasks, without waiting for the end of the
+// milestone: when asked (uxReview=true), or to catch up when finished milestones were never UX-reviewed
+// (e.g. the project was started with an older plugin)
 let uxPending = A.uxReview === true
+if (!uxPending && UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
+  try {
+    const reg = must(await sh('question list --brief', { phase: 'Prepare', label: 'reviews' }), 'question list')
+    const done = [...new Set(plan.tasks.map(t => t.milestone).filter(Boolean))]
+      .filter(m => plan.tasks.filter(t => t.milestone === m).every(t => t.status === 'done'))
+    if (done.length && !(reg.ux_reviewed || []).length) {
+      uxPending = true
+      log(`🎨 The finished milestones (${done.join(', ')}) were never UX-reviewed: one review of the whole app runs at the next boundary`)
+    }
+  } catch (e) { /* the regular review after the milestone still runs */ }
+}
 async function uxNow() {
   if (!uxPending || !UI_REVIEW || !plan.has_deploy) return
   const st = must(await sh('status', { phase: 'Milestone review', label: 'branch' }), 'status')

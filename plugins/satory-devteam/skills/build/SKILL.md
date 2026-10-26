@@ -32,8 +32,9 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - `bin`: `${CLAUDE_PLUGIN_ROOT}/bin/satory`
    - `agentsDir`: `${CLAUDE_PLUGIN_ROOT}/agents`
    - `milestone`, `max`, `rounds`: only if given in `$ARGUMENTS` (form `key=value`)
-   - `uxReview`: `true` when the user asks for a UX review of the whole app now: it runs at the first
-     boundary between two tasks instead of waiting for the end of the milestone
+   - `uxReview`: `true` only when the user asks for one more UX review of the whole app now. Not needed
+     otherwise: it runs after every milestone, and once at the next boundary by itself when finished
+     milestones were never UX-reviewed
    - `roleFiles`: `true` when the plugin's agents changed since this Claude session started (an update or
      a local edit): Claude Code loads the agent definitions once per session, so without it the agents
      would follow their old rules. The roles are then read from `agentsDir`.

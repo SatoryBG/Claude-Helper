@@ -359,6 +359,7 @@ def questions_load(p: Project) -> dict:
     reg = load_json(path, {"items": [], "milestones_reviewed": []})
     reg.setdefault("items", [])
     reg.setdefault("milestones_reviewed", [])
+    reg.setdefault("ux_reviewed", [])
     return reg
 
 
@@ -515,7 +516,7 @@ def cmd_question(p: Project, a) -> None:
         return emit({"ok": True, "items": items, "open": len(open_items),
                      "critical_open": sum(q["severity"] == "critical" for q in open_items),
                      "deferred": sum(q["status"] == "deferred" for q in reg["items"]),
-                     "milestones_reviewed": reg["milestones_reviewed"]})
+                     "milestones_reviewed": reg["milestones_reviewed"], "ux_reviewed": reg["ux_reviewed"]})
     if a.action == "answer":
         q = question_find(reg, a.target)
         if a.status and a.status not in ("answered", "deferred", "dismissed", "planned", "resolved"):
@@ -533,6 +534,9 @@ def cmd_question(p: Project, a) -> None:
     elif a.action == "reviewed":
         if a.target not in reg["milestones_reviewed"]:
             reg["milestones_reviewed"].append(a.target)
+    elif a.action == "ux-reviewed":
+        if a.target not in reg["ux_reviewed"]:
+            reg["ux_reviewed"].append(a.target)
     elif a.action == "flush":
         if p.current_branch() != p.main:
             return emit({"ok": False, "error": f"not on {p.main}; the questions are written at the next task finish"})
@@ -1865,7 +1869,7 @@ def main() -> None:
     s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (the whole e2e suite after Security)")
 
     s = sub.add_parser("question")
-    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "flush"])
+    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "ux-reviewed", "flush"])
     s.add_argument("target", nargs="?", help="question id (answer, plan) or milestone (reviewed)")
     s.add_argument("--source")
     s.add_argument("--task")

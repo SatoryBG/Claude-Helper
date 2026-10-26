@@ -111,8 +111,8 @@ concrete better design that Dev builds in the same task and writes into `docs/UI
 milestone of an app with a UI on staging, `satory-devteam:ux-review` walks every page, menu and dialog;
 its findings become one improvement task, done without asking (comment if you disagree). It runs in two
 passes: the proposals, then a critique as a senior product designer that improves, replaces or drops each
-one; both use the session's design skills (e.g. `dataviz`) when available. `/satory-devteam:build
-uxReview=true` runs it at the next boundary instead of the end of the milestone. Turn it off with
+one; both use the session's design skills (e.g. `dataviz`) when available. When finished milestones were never UX-reviewed (a project started with an older plugin), one review
+runs by itself at the next boundary; `/satory-devteam:build uxReview=true` asks for one more now. Turn it off with
 `"ux_review": false`.
 
 Nothing the reviews find is lost: the minor and nit findings of the Reviewer and the UI reviewer and the
@@ -260,6 +260,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.2.1** - the UX review catches up by itself: finished milestones that were never UX-reviewed get
+  one review of the whole app at the next boundary, without `uxReview=true`.
 - **1.2.0** - nothing found is lost: the non-blocking findings of the Reviewer, the UI reviewer and
   Security become a polish task after every milestone; Security proposes hardening; the UX review runs
   twice (proposals, then a designer's critique) with the session's design skills, and `uxReview=true`
