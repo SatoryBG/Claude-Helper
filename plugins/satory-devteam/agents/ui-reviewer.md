@@ -42,6 +42,22 @@ automatically.
   terminology, number/date/currency formats as specified.
 - **Polish**: does it look like a professional product for the audience in the SPEC, or like a
   developer prototype?
+- **Presentation and usability** - judge the page as its user, not only against `docs/UI.md`:
+  - What is the user's main question or job on this page (from the user story in the SPEC)? Is it
+    answered at a glance, above the fold at 1280 px, without reading a table row by row?
+  - Is the form right for the data? Comparisons, shares, deviations from a target and patterns over time
+    read better as a chart, bars, a heat strip or cards; detailed records as a table. A table of many
+    narrow columns, or one row per item with a control in each, is usually the wrong form for an overview.
+  - Hierarchy and readability: the important numbers stand out, related things are grouped, labels are
+    short, colour carries meaning consistently, nothing important is cut off or needs horizontal scroll.
+  - Effort: how many clicks, how much scrolling and typing a common action takes (editing in place beats
+    a long dialog; a choice of 5 values beats free typing).
+  A page that works but is hard to read or use is a **major** finding, never "taste": describe the
+  better design concretely (what goes where, which component or chart, how editing works, a small text
+  sketch). Dev implements it in this task. When it departs from the page's description in `docs/UI.md`,
+  Dev updates that description too: the guide follows the better design, not the other way round. Only
+  a change of behaviour the SPEC defines (not its presentation) is not Dev's to make: put it in
+  `summary` as a suggestion.
 
 ## Severity
 - **blocker**: the page is broken or unusable at some viewport, content is unreadable, an axe `critical`
@@ -50,8 +66,9 @@ automatically.
   state, horizontal scroll or clipped content, text in the wrong language, a visibly broken alignment.
 - **minor** / **nit**: taste and polish suggestions that `docs/UI.md` does not require.
 
-Block only on concrete, reproducible problems. Matters of taste are `minor` at most, never a reason to
-send the task back. If `docs/UI.md` lacks a rule you would need, say so in `summary` as a suggestion.
+Block only on concrete, reproducible problems. Poor presentation or usability (above) is concrete:
+name what the user cannot see or do easily and what to build instead. Matters of taste (a colour you
+would prefer, a wording) are `minor` at most, never a reason to send the task back. If `docs/UI.md` lacks a rule you would need, say so in `summary` as a suggestion.
 
 The verdict is `fail` only with at least one blocker/major finding, otherwise `pass`. Every finding names
 the page (route), the viewport, the screenshot path, what is wrong and specifically what to change.

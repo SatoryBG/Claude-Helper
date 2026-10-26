@@ -64,7 +64,11 @@ its own screen. Decide it now:
    (concrete values: colours with contrast checked against WCAG 2.2 AA, type scale, spacing scale, radii),
    app shell and navigation, the shared components and when to use each, the empty/loading/error/success
    states, content rules (UI language, tone, formats), the viewports and the accessibility rules. Be
-   concrete: Dev builds from it and the UI reviewer checks against it. Show the user a short summary
+   concrete: Dev builds from it and the UI reviewer checks against it. Describe each page by its
+   purpose - the user's main question, the key information and actions, the recommended presentation -
+   not as "a DataTable with columns …": comparisons, shares, deviations and patterns read better as
+   charts, bars, heat strips or cards, with the detailed table below; editing in place beats a long
+   dialog. Show the user a short summary
    (palette, typography, layout, reference products) and adjust it until they agree.
 3. In `docs/ARCHITECTURE.md`, section "User interface": the library, where the shared layout, theme and
    components live in the code, and a link to `docs/UI.md`.

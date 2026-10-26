@@ -33,7 +33,7 @@ function parseArgs(raw) {
 const A = parseArgs(args)
 const MODELS = {
   dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus', planner: 'opus',
-  'code-health': 'opus',
+  'code-health': 'opus', 'ux-review': 'opus',
   // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
   // Bash call that moved to the background instead of returning early, which haiku does not do reliably
   runner: 'haiku', runnerLong: 'sonnet',
@@ -212,6 +212,27 @@ const HEALTH_SCHEMA = {
           files: { type: 'array', items: { type: 'string' } }, ui: { type: 'boolean' },
         },
         required: ['title', 'kind', 'impact', 'description', 'files', 'ui'],
+      },
+    },
+  },
+  required: ['summary', 'title', 'items'],
+}
+const UX_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    title: { type: 'string', description: 'The title of the improvement task, in the documentation language' },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          kind: { type: 'string', enum: ['presentation', 'flow', 'readability', 'consistency', 'navigation'] },
+          impact: { type: 'string', enum: ['major', 'minor'] }, description: { type: 'string' },
+          pages: { type: 'array', items: { type: 'string' } }, ui: { type: 'boolean' },
+        },
+        required: ['title', 'kind', 'impact', 'description', 'pages', 'ui'],
       },
     },
   },
@@ -623,8 +644,47 @@ async function healthTask(m, tasks, plan) {
   log(`🧹 ${m} code health: ${items.length} finding(s) → ${res.added.join(', ')}`)
 }
 
+function uxPrompt(m, tasks, plan) {
+  const todo = plan.tasks.filter(t => t.status !== 'done')
+  return `Project: ${PROJECT}
+Documentation language: ${LANG}
+Milestone: ${m} - all its tasks are done:
+${bullets(tasks.map(t => `${t.id} - ${t.title}`))}
+
+The app runs on staging: the URL is deploy.environments.staging.url in .satory/project.json. Walk every
+page, menu and dialog of the whole app (not only this milestone) and find what should be presented or work
+better. Already planned - do not propose it again:
+${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
+}
+
+// The UX findings of a milestone become one improvement task (one subtask per finding) ahead of the work
+// still to do. It is done without asking the user, like the refactoring: the user comments if they disagree.
+async function uxTask(m, tasks, plan) {
+  const out = await spawn('ux-review', uxPrompt(m, tasks, plan),
+    { phase: 'Milestone review', label: `UX review ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA })
+  if (!out) { log(`The UX review of ${m} returned no result.`); return }
+  const items = out.items || []
+  if (!items.length) { log(`🎨 ${m} UX review: nothing to improve`); return }
+  const next = plan.tasks.find(t => t.status === 'todo')
+  const keep = 'Behaviour unchanged: what is calculated, validated and saved stays as the SPEC says; tests that assert the old presentation are adapted by QA'
+  const task = {
+    ref: `ux-${m}`, title: out.title,
+    milestone: next ? next.milestone : m, owner: 'dev', ui: true, depends_on: [], requirements: [],
+    description: `${out.summary}\n\nUX improvements from the review of the whole app after ${m}. Update the page descriptions in docs/UI.md to the new design.`,
+    acceptance: [keep], questions: [],
+    subtasks: items.map(x => ({ title: `${x.title} (${x.kind}, ${x.impact})`, description: `${x.description}\n\nPages: ${x.pages.join(', ') || '-'}`, acceptance: [keep], questions: [] })),
+    ...(next ? { insert_before: next.id } : {}),
+  }
+  const res = must(await sh(`plan add --source ux-review-${m}`, {
+    phase: 'Milestone review', label: `UX task ${m}`,
+    note: JSON.stringify({ title: `UX improvements after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
+  }), 'plan add')
+  log(`🎨 ${m} UX review: ${items.length} improvement(s) → ${res.added.join(', ')}`)
+}
+
 // After a milestone is finished: one read-only review of its data rules (its items go to the register of
-// questions) and one of the code health (its findings become a refactoring task); the workflow goes on.
+// questions), one of the code health (its findings become a refactoring task) and, for an app with a UI on
+// staging, one of the UX of the whole app (its findings become an improvement task); the workflow goes on.
 async function reviewMilestones(plan) {
   if (plan.milestone_review === false) return plan
   let reg
@@ -650,6 +710,12 @@ async function reviewMilestones(plan) {
         await healthTask(m, tasks, plan)
         plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The code health review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
+    }
+    if (UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
+      try {
+        await uxTask(m, tasks, plan)
+        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+      } catch (e) { log(`The UX review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
     }
     await sh(`question reviewed ${m}`, { phase: 'Milestone review', label: `reviewed ${m}` })
     reg.milestones_reviewed.push(m)

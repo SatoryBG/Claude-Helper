@@ -35,7 +35,7 @@ keeps the task branches local.
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
 `satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs`, `satory-devteam:auditor`
-(milestone review of the data rules), `satory-devteam:code-health` (milestone review of the code),
+(milestone review of the data rules), `satory-devteam:code-health` (milestone review of the code), `satory-devteam:ux-review` (milestone review of the UX of the whole app),
 `satory-devteam:planner` (tasks for answered questions) and `satory-devteam:runner`
 (a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
 deploy - because it has to wait for a Bash call that moved to the background).
@@ -102,6 +102,15 @@ every milestone `satory-devteam:code-health` reviews the whole code base for dup
 inefficient code, naming, dead code and inconsistencies that slipped through, and its findings become one refactoring task (one
 subtask per finding, behaviour unchanged) ahead of the work still to do. Turn that off with
 `"code_health_review": false`.
+
+The user experience is reviewed as well, not only the conformance to `docs/UI.md`. Dev designs a page
+before building it (the user's main question, the presentation chosen and why, in the mini-spec) and
+prefers charts, bars, heat strips or cards for comparisons and patterns over wide tables. The UI reviewer
+judges each changed page as its user: a page that works but is hard to read or use is `major`, with a
+concrete better design that Dev builds in the same task and writes into `docs/UI.md`. After every
+milestone of an app with a UI on staging, `satory-devteam:ux-review` walks every page, menu and dialog;
+its findings become one improvement task, done without asking (comment if you disagree). Turn it off
+with `"ux_review": false`.
 
 Open `critical` questions hold the build at the next milestone boundary: the milestones already started
 are finished, but no new one starts until the critical questions are answered, so nothing is built on top
@@ -243,6 +252,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.1.0** - UX, not only conformance: Dev designs a page first, the UI reviewer judges presentation and
+  usability and asks for a better design (and Dev updates `docs/UI.md`), the architect describes pages by
+  purpose; after every milestone the new `ux-review` agent walks the whole app and its findings become an
+  improvement task, done without asking.
 - **1.0.2** - a gate run that failed on the environment (a package restore or network error such as
   "Restore operation failed", NU1301, ECONNRESET) also runs once more before it fails.
 - **1.0.1** - `experimental.e2e_task_first` is no longer read; use `commands.e2e_task`.

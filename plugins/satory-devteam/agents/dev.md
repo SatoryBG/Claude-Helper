@@ -76,6 +76,13 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:
+- **Design first.** For a new page or a substantial change of one, add a "Design" part to the mini-spec
+  before the code: the user's main question or job on the page (from the SPEC), the presentation you
+  chose and why, and the alternatives you set aside. Choose the form for the data: comparisons, shares,
+  deviations and patterns as charts, bars, heat strips or cards; detailed records as a table below
+  them; editing in place or in a compact form rather than a long dialog. The main answer is visible
+  without scrolling at 1280 px. `docs/UI.md` describes the page's purpose; where it prescribes a weaker
+  form, build the better one and update the page's description in `docs/UI.md`.
 - Build with the shared layout, components and design tokens described there. No ad-hoc colours, font
   sizes, spacing or one-off component styles. If a reusable component is missing, add it to the shared
   components and document it in `docs/UI.md` (section "Components").
