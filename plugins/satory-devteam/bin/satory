@@ -1173,6 +1173,42 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     return res
 
 
+# The non-blocking findings (minor/nit of the Reviewer and the UI reviewer, low/info of Security) of the
+# passing round of every task: they become one polish task after the milestone instead of being forgotten.
+
+def cmd_polish(p: Project, a) -> None:
+    path = p.run / "polish.json"
+    reg = load_json(path, {"items": []})
+    if a.action == "add":
+        try:
+            new = json.loads(sys.stdin.read() or "[]")
+        except json.JSONDecodeError as e:
+            raise SatoryError(f"polish add expects a JSON list on stdin: {e}")
+        seen = {(x["source"], x["issue"]) for x in reg["items"]}
+        added = 0
+        for item in new:
+            issue = str(item.get("issue", "")).strip()
+            if not issue or (a.source or "", issue) in seen:
+                continue
+            reg["items"].append({"task": a.task, "source": a.source or "", "severity": str(item.get("severity", "")),
+                                 "where": str(item.get("where", "")), "issue": issue,
+                                 "fix": str(item.get("fix", "")).strip(), "planned": None})
+            added += 1
+        write_json(path, reg)
+        if added:
+            progress(p, f"🧽 {added} small improvement(s) from {a.source} noted for the polish task")
+        return emit({"ok": True, "added": added})
+    if a.action == "list":
+        items = [x for x in reg["items"] if not x.get("planned")]
+        return emit({"ok": True, "items": items, "count": len(items)})
+    if a.action == "planned":
+        for x in reg["items"]:
+            if not x.get("planned"):
+                x["planned"] = a.task
+        write_json(path, reg)
+        return emit({"ok": True})
+
+
 def cmd_queue(p: Project, a) -> None:
     """Changes to main while a task runs (documents on their own branch + a plan change) wait here and are
     applied between two tasks, in order. With no task running, on a clean main, they are applied at once."""
@@ -1257,6 +1293,7 @@ def cmd_plan(p: Project, a) -> None:
               "milestone_review": p.config.get("milestone_review", True) is not False,
               "code_health_review": p.config.get("code_health_review", True) is not False,
               "ux_review": p.config.get("ux_review", True) is not False,
+              "polish_task": p.config.get("polish_task", True) is not False,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
               "milestones": plan.get("milestones", []),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
@@ -1839,6 +1876,12 @@ def main() -> None:
     s.add_argument("--full", action="store_true", help="list: every field of every item")
     s.add_argument("--note-stdin", action="store_true")
 
+    s = sub.add_parser("polish")
+    s.add_argument("action", choices=["add", "list", "planned"])
+    s.add_argument("--task", help="add: the task the findings come from; planned: the polish task")
+    s.add_argument("--source", help="add: who found them, e.g. 'reviewer T-012 r3'")
+    s.add_argument("--note-stdin", action="store_true")
+
     s = sub.add_parser("queue")
     s.add_argument("action", choices=["begin", "add", "list", "apply"])
     s.add_argument("--branch", help="add: the branch with the documents of the change")
@@ -1868,7 +1911,7 @@ def main() -> None:
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
-                    "queue": cmd_queue}
+                    "queue": cmd_queue, "polish": cmd_polish}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock}[a.action](p, a)

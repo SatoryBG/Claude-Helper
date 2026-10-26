@@ -660,9 +660,22 @@ ${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
 // The UX findings of a milestone become one improvement task (one subtask per finding) ahead of the work
 // still to do. It is done without asking the user, like the refactoring: the user comments if they disagree.
 async function uxTask(m, tasks, plan) {
-  const out = await spawn('ux-review', uxPrompt(m, tasks, plan),
-    { phase: 'Milestone review', label: `UX review ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA })
-  if (!out) { log(`The UX review of ${m} returned no result.`); return }
+  const draft = await spawn('ux-review', uxPrompt(m, tasks, plan),
+    { phase: 'Milestone review', label: `UX review ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })
+  if (!draft) { log(`The UX review of ${m} returned no result.`); return }
+  // a second, independent pass as a senior product designer: it challenges every proposal, improves it or
+  // replaces it with a better design, merges overlaps and adds what the first pass missed
+  const out = !(draft.items || []).length ? draft : (await spawn('ux-review', `${uxPrompt(m, tasks, plan)}
+
+## Critique round
+Another reviewer proposed the improvements below. Act as a senior product designer reviewing them: look at the
+pages yourself (screenshots in .satory/run/ui/ux-${m}/ and your own), then for each proposal keep it, make it
+concrete and better (a stronger layout, a better chart or component, fewer steps), replace it with a clearly
+better design, or drop it if it does not help the user's main job. Merge overlapping ones and add what was
+missed. Return the final list in the same form.
+
+${JSON.stringify(draft, null, 1)}`,
+    { phase: 'Milestone review', label: `UX critique ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })) || draft
   const items = out.items || []
   if (!items.length) { log(`🎨 ${m} UX review: nothing to improve`); return }
   const next = plan.tasks.find(t => t.status === 'todo')
@@ -680,6 +693,33 @@ async function uxTask(m, tasks, plan) {
     note: JSON.stringify({ title: `UX improvements after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
   }), 'plan add')
   log(`🎨 ${m} UX review: ${items.length} improvement(s) → ${res.added.join(', ')}`)
+}
+
+// The small improvements noted during the milestone's tasks (minor findings of the Reviewer and the UI
+// reviewer, hardening suggestions of Security) become one polish task, done without asking.
+async function polishTask(m, plan) {
+  const list = must(await sh('polish list', { phase: 'Milestone review', label: `polish items ${m}` }), 'polish list')
+  const items = list.items || []
+  if (!items.length) return
+  const next = plan.tasks.find(t => t.status === 'todo')
+  const bySource = {}
+  for (const x of items) (bySource[`${x.task} - ${x.source.split('-')[0]}`] ||= []).push(x)
+  const keep = 'Behaviour unchanged unless an item says otherwise; skip an item the code already does, and say so in the mini-spec'
+  const task = {
+    ref: `polish-${m}`, title: `Polish after ${m}: ${items.length} small improvements from the reviews`,
+    milestone: next ? next.milestone : m, owner: 'dev', ui: items.some(x => x.source.startsWith('ui')), depends_on: [], requirements: [],
+    description: `The small improvements the Reviewer, the UI reviewer and Security noted during ${m} without sending the tasks back (minor/nit findings, hardening suggestions). Do each, or skip it with a reason when it no longer applies.`,
+    acceptance: [keep], questions: [],
+    subtasks: Object.entries(bySource).map(([k, xs]) => ({ title: k, acceptance: [keep], questions: [],
+      description: bullets(xs.map(x => `[${x.severity}] ${x.where}: ${x.issue} → ${x.fix}`)) })),
+    ...(next ? { insert_before: next.id } : {}),
+  }
+  const res = must(await sh(`plan add --source polish-${m}`, {
+    phase: 'Milestone review', label: `polish task ${m}`,
+    note: JSON.stringify({ title: `polish after ${m}`, summary: task.description, tasks: [task], depends: [], resolved: [] }),
+  }), 'plan add')
+  await sh(`polish planned --task ${res.added[0] || '-'}`, { phase: 'Milestone review', label: `polish planned ${m}` })
+  log(`🧽 ${m} polish: ${items.length} small improvement(s) → ${res.added.join(', ')}`)
 }
 
 // After a milestone is finished: one read-only review of its data rules (its items go to the register of
@@ -710,6 +750,12 @@ async function reviewMilestones(plan) {
         await healthTask(m, tasks, plan)
         plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The code health review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
+    }
+    if (plan.polish_task !== false) {
+      try {
+        await polishTask(m, plan)
+        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+      } catch (e) { log(`The polish task of ${m} failed (${e.message}).`) }
     }
     if (UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
       try {
@@ -776,6 +822,7 @@ async function runTask(t) {
     ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.'
     : ''
   let reviewedAt = null, prevReview = null, prevUi = null, lastStage = ''
+  const polish = {}  // stage -> non-blocking findings of its last passing round, for the polish task
 
   while (round < MAX_ROUNDS) {
     round++
@@ -809,6 +856,8 @@ async function runTask(t) {
       { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
     reviewedAt = ad.checkpoint
     prevReview = rev
+    polish.reviewer = { tag, items: rev.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
+      .map(f => ({ severity: f.severity, where: where(f), issue: f.issue, fix: f.fix })) }
     if (revBlocking) {
       lastStage = 'review'
       feedback = reviewFeedback(rev) + devViolations
@@ -854,6 +903,8 @@ async function runTask(t) {
       must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiBlocking.length ? 'fail' : 'pass'}`,
         { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`)
       prevUi = ui
+      polish.ui = { tag, items: ui.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
+        .map(f => ({ severity: f.severity, where: at(f), issue: f.issue, fix: f.fix })) }
       if (uiBlocking.length) {
         lastStage = 'ui'
         feedback = uiFeedback(ui, uiBlocking)
@@ -867,6 +918,8 @@ async function runTask(t) {
       { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
     if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
     const secBlocking = sec.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity))
+    polish.security = { tag, items: sec.findings.filter(f => f.severity === 'low' || f.severity === 'info')
+      .map(f => ({ severity: f.severity, where: `${f.category} ${where(f)}`, issue: f.issue, fix: f.fix })) }
     must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secBlocking.length ? 'fail' : 'pass'}`,
       { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`)
     if (secBlocking.length) {
@@ -905,6 +958,13 @@ ${bullets(gateLines(full.gates))}`
         note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
     `finish ${t.id}`)
     log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
+    for (const [stage, p] of Object.entries(polish)) {
+      if (!p.items.length) continue
+      try {
+        await sh(`polish add --task ${t.id} --source ${stage}-${p.tag.replace(' ', '-')}`,
+          { phase: 'Docs', label: `polish ${stage} ${t.id}`, note: JSON.stringify(p.items) })
+      } catch (e) { log(`Could not note the small improvements from ${stage}: ${e.message}`) }
+    }
     return { id: t.id, title: t.title, status: 'done', rounds: round, commit: fin.commit, pushed: fin.pushed,
              push_error: fin.push_error, staging: fin.staging }
   }
@@ -952,6 +1012,23 @@ log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per ta
 plan = await reviewMilestones(plan)
 plan = await planAnswers(plan)
 
+// uxReview=true: one UX review of the whole app now (at the first boundary between tasks, on main), without
+// waiting for the end of the milestone
+let uxPending = A.uxReview === true
+async function uxNow() {
+  if (!uxPending || !UI_REVIEW || !plan.has_deploy) return
+  const st = must(await sh('status', { phase: 'Milestone review', label: 'branch' }), 'status')
+  if (/^satory\//.test(st.branch || '')) return
+  uxPending = false
+  const next = plan.tasks.find(t => t.status === 'todo')
+  const m = next ? next.milestone : (plan.milestones || []).slice(-1).map(x => x.id)[0]
+  try {
+    await uxTask(m, plan.tasks.filter(t => t.milestone === m && t.status === 'done'), plan)
+    plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+  } catch (e) { log(`The UX review failed (${e.message}).`) }
+}
+await uxNow()
+
 const results = []
 const attempted = new Set()
 let stopped = null, waiting = null
@@ -979,6 +1056,7 @@ while (results.length < MAX_TASKS) {
   plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
   plan = await reviewMilestones(plan)
   plan = await planAnswers(plan)
+  await uxNow()
 }
 
 let questions = null

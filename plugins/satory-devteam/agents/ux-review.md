@@ -25,6 +25,19 @@ root). The app is at `SATORY_BASE_URL`. Read `docs/SPEC.md` (the user stories sa
    How many clicks, how much scrolling and typing do the common actions take? Is the same thing shown
    and done the same way on every page? Does the navigation make sense?
 
+## Design guidance
+If the Skill tool lists design skills in this session (for example `dataviz` for charts, dashboards,
+stat tiles and colour use, or a frontend or UI design skill), load the ones that fit before you judge or
+propose a design, and apply their method: the form for the data, hierarchy, colour with meaning,
+consistency across pages. Name the principle behind each proposal.
+
+## Aim high
+You are the app's product designer, not a checklist. For each page imagine the best version a user of
+this kind of product would love to use - what would a strong finance or dashboard product do here? -
+and propose that, concretely, when it clearly beats what is there. Prefer a few substantial
+improvements (a better layout, the right visualization, a much shorter flow) over many cosmetic ones.
+You may be run twice: first to propose, then to critique and improve the proposals (the task says so).
+
 ## What you return
 `items`, the most valuable first, at most about 10, each a concrete improvement:
 - `title` (one line), `kind`: `presentation`, `flow`, `readability`, `consistency` or `navigation`,

@@ -59,6 +59,12 @@ automatically.
   a change of behaviour the SPEC defines (not its presentation) is not Dev's to make: put it in
   `summary` as a suggestion.
 
+## Design guidance
+If the Skill tool lists design skills in this session (for example `dataviz` for charts, dashboards,
+stat tiles and colour use, or a frontend or UI design skill), load the ones that fit before you judge or
+propose a design, and apply their method: the form for the data, hierarchy, colour with meaning,
+consistency across pages. Name the principle behind each proposal.
+
 ## Severity
 - **blocker**: the page is broken or unusable at some viewport, content is unreadable, an axe `critical`
   violation, a flow cannot be completed with the keyboard.

@@ -109,8 +109,16 @@ prefers charts, bars, heat strips or cards for comparisons and patterns over wid
 judges each changed page as its user: a page that works but is hard to read or use is `major`, with a
 concrete better design that Dev builds in the same task and writes into `docs/UI.md`. After every
 milestone of an app with a UI on staging, `satory-devteam:ux-review` walks every page, menu and dialog;
-its findings become one improvement task, done without asking (comment if you disagree). Turn it off
-with `"ux_review": false`.
+its findings become one improvement task, done without asking (comment if you disagree). It runs in two
+passes: the proposals, then a critique as a senior product designer that improves, replaces or drops each
+one; both use the session's design skills (e.g. `dataviz`) when available. `/satory-devteam:build
+uxReview=true` runs it at the next boundary instead of the end of the milestone. Turn it off with
+`"ux_review": false`.
+
+Nothing the reviews find is lost: the minor and nit findings of the Reviewer and the UI reviewer and the
+low/info findings of Security (including its hardening suggestions: headers, CSP, limits, safe
+defaults) of every task's passing round are kept in `.satory/run/polish.json` and become one polish task
+after the milestone, done without asking. Turn it off with `"polish_task": false`.
 
 Open `critical` questions hold the build at the next milestone boundary: the milestones already started
 are finished, but no new one starts until the critical questions are answered, so nothing is built on top
@@ -252,6 +260,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.2.0** - nothing found is lost: the non-blocking findings of the Reviewer, the UI reviewer and
+  Security become a polish task after every milestone; Security proposes hardening; the UX review runs
+  twice (proposals, then a designer's critique) with the session's design skills, and `uxReview=true`
+  runs it now.
 - **1.1.0** - UX, not only conformance: Dev designs a page first, the UI reviewer judges presentation and
   usability and asks for a better design (and Dev updates `docs/UI.md`), the architect describes pages by
   purpose; after every milestone the new `ux-review` agent walks the whole app and its findings become an
