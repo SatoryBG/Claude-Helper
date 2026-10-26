@@ -157,9 +157,9 @@ class Project:
 
     def e2e_task_commands(self, tid: str) -> list[str]:
         """The e2e commands for one task's own tests plus the smoke tests ({task} becomes the task id):
-        commands.e2e_task, the older experimental.e2e_task_first, or - for Playwright - the e2e commands
-        with --grep "{task}|@smoke" appended. Empty when none can be derived: then the whole suite runs."""
-        cmds = self.commands("e2e_task") or self.experimental("e2e_task_first")
+        commands.e2e_task or - for Playwright - the e2e commands with --grep "{task}|@smoke" appended.
+        Empty when none can be derived: then the whole suite runs."""
+        cmds = self.commands("e2e_task")
         if not cmds:
             e2e = self.commands("e2e")
             if e2e and all(re.search(r"playwright test(?!.*(\||--grep|\s-g\s))[^|]*$", c) for c in e2e):

@@ -1,6 +1,6 @@
 {
   "name": "satory-devteam",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A team of AI agents that builds small software projects autonomously: business analyst, architect, Dev, Code Reviewer, QA (Playwright), UI reviewer, Security auditor and technical writer - with deterministic guards, an append-only journal and local staging/prod environments in Docker.",
   "author": {
     "name": "Ivailo Tanusheff"

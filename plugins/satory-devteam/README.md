@@ -175,7 +175,7 @@ does not fit, e.g. smoke tests without the tag:
 ```
 
 With no `e2e_task` and an e2e command that is not a plain Playwright run, the whole suite runs in QA's
-check as before. The older `experimental.e2e_task_first` is still read as `e2e_task`.
+check as before.
 
 ## Experimental settings
 
@@ -243,10 +243,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.0.1** - `experimental.e2e_task_first` is no longer read; use `commands.e2e_task`.
 - **1.0.0** - running only the task's e2e tests and the smoke tests in QA's check, with the whole e2e
   suite once after Security, is no longer experimental but always on (see "Tests in a round"). The
-  command comes from `commands.e2e_task`, is derived for Playwright, and the older
-  `experimental.e2e_task_first` still works. The devops agent tags the smoke test `@smoke`.
+  command comes from `commands.e2e_task` and is derived for Playwright. The devops agent tags the smoke
+  test `@smoke`.
 - **0.10.8** - QA runs only the unit tests of the task and of the code it changes (filtered), not the
   whole unit suite: the check after QA runs the whole suite anyway, so a round no longer runs it up to
   three extra times (about 5 minutes each in a mid-size project).
