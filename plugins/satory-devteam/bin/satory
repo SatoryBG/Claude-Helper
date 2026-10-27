@@ -365,6 +365,18 @@ def questions_load(p: Project) -> dict:
 
 def questions_save(p: Project, reg: dict) -> None:
     write_json(p.questions_pending, reg)
+    register_file(p, reg)
+
+
+def register_file(p: Project, reg: dict) -> Path:
+    """A compact copy of the register (id, status, title) that the agents read with their tools, so the
+    workflow never has to pass a long list through an agent's output."""
+    path = p.run / "register.md"
+    lines = ["# Register of questions (generated - id [status] title)", ""]
+    lines += [f"- {q['id']} [{q['status']}] {q['title']}" for q in reg["items"] if q["status"] != "dismissed"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def question_key(title: str) -> str:
@@ -537,6 +549,9 @@ def cmd_question(p: Project, a) -> None:
     elif a.action == "ux-reviewed":
         if a.target not in reg["ux_reviewed"]:
             reg["ux_reviewed"].append(a.target)
+    elif a.action == "register":
+        path = register_file(p, reg)
+        return emit({"ok": True, "path": p.rel(path), "count": sum(q["status"] != "dismissed" for q in reg["items"])})
     elif a.action == "flush":
         if p.current_branch() != p.main:
             return emit({"ok": False, "error": f"not on {p.main}; the questions are written at the next task finish"})
@@ -1295,6 +1310,8 @@ def cmd_plan(p: Project, a) -> None:
               "language": p.config.get("language", "en"),
               "experimental": sorted(p.config.get("experimental", {})),
               "milestone_review": p.config.get("milestone_review", True) is not False,
+              "milestones_reviewed": questions_load(p)["milestones_reviewed"],
+              "ux_reviewed": questions_load(p)["ux_reviewed"],
               "code_health_review": p.config.get("code_health_review", True) is not False,
               "ux_review": p.config.get("ux_review", True) is not False,
               "polish_task": p.config.get("polish_task", True) is not False,
@@ -1869,7 +1886,7 @@ def main() -> None:
     s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (the whole e2e suite after Security)")
 
     s = sub.add_parser("question")
-    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "ux-reviewed", "flush"])
+    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "ux-reviewed", "register", "flush"])
     s.add_argument("target", nargs="?", help="question id (answer, plan) or milestone (reviewed)")
     s.add_argument("--source")
     s.add_argument("--task")

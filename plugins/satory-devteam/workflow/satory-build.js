@@ -424,10 +424,14 @@ function context(t, start) {
 // What is already in the register of questions, so an agent does not report it again in other words.
 // The note is read once per round; the items Dev, the Reviewer and QA add during the round are appended
 // with withAdded, so the next agent of the round sees them too (otherwise each reports the same gap).
+// The register is long, so it is not passed through an agent's output: the CLI writes a compact copy that
+// the agent reads itself.
 async function registerNote() {
   try {
-    const reg = must(await sh('question list --brief', { phase: 'Dev', label: 'register' }), 'question list')
-    return withAdded('', reg.items.filter(x => x.status !== 'dismissed'))
+    const reg = must(await sh('question register', { phase: 'Dev', label: 'register' }), 'question register')
+    return `\n\n## Already in the register of questions\nRead ${reg.path} (${reg.count} items: id, status, title) ` +
+      `before you report a question or a gap, and do not report any of them again, not even reworded, from another ` +
+      `angle or in another language; report only what is new. Added during this round:`
   } catch (e) {
     return ''
   }
@@ -599,14 +603,14 @@ async function addQuestions(items, kind, source, { task, milestone, phase }) {
   }
 }
 
-function auditPrompt(m, tasks, known) {
+function auditPrompt(m, tasks, register) {
   return `Project: ${PROJECT}
 Milestone: ${m} - all its tasks are done:
 ${bullets(tasks.map(t => `${t.id} - ${t.title} (docs/tasks/${t.id}.md)`))}
 
 Review the data rules of this milestone together with everything built before it (the whole SPEC and the
-code on the current branch). Already in the register - do not repeat them, even reworded:
-${known.length ? bullets(known.map(x => `${x.id} [${x.status}] ${x.title}`)) : '- (none)'}`
+code on the current branch). Already in the register - read ${register} and do not repeat any of them, even
+reworded.`
 }
 
 function healthPrompt(m, tasks) {
@@ -732,7 +736,8 @@ async function reviewMilestones(plan) {
   try {
     const st = must(await sh('status', { phase: 'Milestone review', label: 'branch' }), 'status')
     if (/^satory\//.test(st.branch || '')) return plan  // a task is in progress: after it, on main
-    reg = must(await sh('question list --brief', { phase: 'Milestone review', label: 'questions' }), 'question list')
+    reg = must(await sh('question register', { phase: 'Milestone review', label: 'questions' }), 'question register')
+    reg.milestones_reviewed = [...(plan.milestones_reviewed || [])]
   } catch (e) {
     log(`Milestone review skipped: ${e.message}`)
     return plan
@@ -742,7 +747,7 @@ async function reviewMilestones(plan) {
     const tasks = plan.tasks.filter(t => t.milestone === m)
     if (reg.milestones_reviewed.includes(m) || !tasks.every(t => t.status === 'done')) continue
     if (MILESTONE && m !== MILESTONE) continue
-    const audit = await spawn('auditor', auditPrompt(m, tasks, reg.items),
+    const audit = await spawn('auditor', auditPrompt(m, tasks, reg.path),
       { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
     if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
     const n = (await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })).length
@@ -1019,10 +1024,9 @@ plan = await planAnswers(plan)
 let uxPending = A.uxReview === true
 if (!uxPending && UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
   try {
-    const reg = must(await sh('question list --brief', { phase: 'Prepare', label: 'reviews' }), 'question list')
     const done = [...new Set(plan.tasks.map(t => t.milestone).filter(Boolean))]
       .filter(m => plan.tasks.filter(t => t.milestone === m).every(t => t.status === 'done'))
-    if (done.length && !(reg.ux_reviewed || []).length) {
+    if (done.length && !(plan.ux_reviewed || []).length) {
       uxPending = true
       log(`🎨 The finished milestones (${done.join(', ')}) were never UX-reviewed: one review of the whole app runs at the next boundary`)
     }

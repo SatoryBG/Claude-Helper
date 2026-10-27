@@ -260,6 +260,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.2.2** - the register of questions is no longer passed through an agent's output (with ~190 items it
+  came back cut, so the UX catch-up was skipped and the agents could not see the register): the CLI writes
+  `.satory/run/register.md` and the agents read it; `plan json` gives the reviewed milestones.
 - **1.2.1** - the UX review catches up by itself: finished milestones that were never UX-reviewed get
   one review of the whole app at the next boundary, without `uxReview=true`.
 - **1.2.0** - nothing found is lost: the non-blocking findings of the Reviewer, the UI reviewer and
