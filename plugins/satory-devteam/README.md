@@ -271,6 +271,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.3.1** - a few failing unit tests (up to `unit_retry_max`, 3) run once more before the test gate
+  fails; passing then counts, and they go to the register as flaky, as the e2e tests do.
 - **1.3.0** - the design step: a UX audit, design directions as mockups, the chosen design for every page
   (`docs/design/`, `docs/UI.md`) and the tasks that build it, by the new `designer` agent and the UX
   reviewer as critic; it runs by itself once the UI foundation is built, and on request with the new

@@ -275,6 +275,24 @@ CRASH = re.compile(r"Internal CLR error|^Fatal error\.|Segmentation fault|core d
                    re.M)
 
 
+UNIT_FAILED = re.compile(r"^\s*(?:failed|FAIL|×|✗)\s+(.+?)(?:\s+\(\d[\d.]*\s*m?s\))?\s*$", re.M)
+
+
+def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str) -> dict:
+    """A few failing unit tests are run once more (the whole command, it is quick): passing then counts as
+    passing, and the tests go to the register as flaky, as for e2e. Many failures are a real failure."""
+    names = sorted({m.strip() for m in UNIT_FAILED.findall(text)})[:20]
+    if not names or len(names) > int(p.config.get("unit_retry_max", 3)):
+        return res
+    progress(p, f"↻ {tid} r{rnd} test: {len(names)} unit test(s) failed, running the tests once more")
+    again = run_cmds(p, p.commands("test"), p.logs / f"{tid}-r{rnd}-test-retry.log", p.env(tid, rnd))
+    if not again["ok"]:
+        return res
+    for test in names:
+        question_flaky(p, f"unit › {test}", f"test {tid} r{rnd}", tid)
+    return {**again, "flaky": names, "retry_log": again["log"], "log": res["log"]}
+
+
 def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
     res = run_cmds(p, p.commands(name), log, p.env(tid, rnd))
@@ -282,6 +300,8 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
         return res
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if not ((isinstance(res.get("exit"), int) and res["exit"] < 0) or CRASH.search(text)):
+        if name == "test":
+            return unit_retry(p, tid, rnd, res, text)
         return res
     progress(p, f"↻ {tid} r{rnd} {name}: the run crashed (exit {res.get('exit')}), running it once more")
     again = run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}-rerun.log", p.env(tid, rnd))
