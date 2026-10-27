@@ -1228,6 +1228,30 @@ def cmd_polish(p: Project, a) -> None:
         return emit({"ok": True})
 
 
+# The design of the app (docs/design/: AUDIT.md, DESIGN.md, mockups): the build runs the design step at a
+# boundary between tasks when the app has a UI but no design yet, or when the user asks for a new one.
+
+def cmd_design(p: Project, a) -> None:
+    req = p.run / "design.request.json"
+    if a.action == "request":
+        brief = read_note(a).strip()
+        write_json(req, {"requested": now(), "brief": brief, "choice": a.choice or None})
+        progress(p, f"🎨 design requested{f' (direction {a.choice})' if a.choice else ''}: the build runs it at the next boundary")
+        return emit({"ok": True})
+    if a.action == "log":
+        progress(p, f"🎨 {read_note(a).strip()}")
+        return emit({"ok": True})
+    if a.action == "done":
+        if req.exists():
+            req.unlink()
+        return emit({"ok": True})
+    design = p.root / "docs" / "design"
+    directions = sorted(x.name for x in (design / "directions").iterdir() if x.is_dir()) if (design / "directions").is_dir() else []
+    mockups = sorted(x.name for x in (design / "mockups").glob("*.html")) if (design / "mockups").is_dir() else []
+    emit({"ok": True, "has_design": (design / "DESIGN.md").exists(), "request": load_json(req, {}) or None,
+          "directions": directions, "mockups": mockups})
+
+
 def cmd_queue(p: Project, a) -> None:
     """Changes to main while a task runs (documents on their own branch + a plan change) wait here and are
     applied between two tasks, in order. With no task running, on a clean main, they are applied at once."""
@@ -1315,6 +1339,9 @@ def cmd_plan(p: Project, a) -> None:
               "code_health_review": p.config.get("code_health_review", True) is not False,
               "ux_review": p.config.get("ux_review", True) is not False,
               "polish_task": p.config.get("polish_task", True) is not False,
+              "design_step": p.config.get("design_step", True) is not False,
+              "has_design": (p.root / "docs" / "design" / "DESIGN.md").exists(),
+              "design_request": load_json(p.run / "design.request.json", {}) or None,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
               "milestones": plan.get("milestones", []),
               "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
@@ -1897,6 +1924,11 @@ def main() -> None:
     s.add_argument("--full", action="store_true", help="list: every field of every item")
     s.add_argument("--note-stdin", action="store_true")
 
+    s = sub.add_parser("design")
+    s.add_argument("action", choices=["request", "status", "done", "log"])
+    s.add_argument("--choice", help="request: the direction to use (its folder name under docs/design/directions)")
+    s.add_argument("--note-stdin", action="store_true")
+
     s = sub.add_parser("polish")
     s.add_argument("action", choices=["add", "list", "planned"])
     s.add_argument("--task", help="add: the task the findings come from; planned: the polish task")
@@ -1932,7 +1964,7 @@ def main() -> None:
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
-                    "queue": cmd_queue, "polish": cmd_polish}
+                    "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock}[a.action](p, a)

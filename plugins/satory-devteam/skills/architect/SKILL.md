@@ -68,7 +68,9 @@ its own screen. Decide it now:
    purpose - the user's main question, the key information and actions, the recommended presentation -
    not as "a DataTable with columns …": comparisons, shares, deviations and patterns read better as
    charts, bars, heat strips or cards, with the detailed table below; editing in place beats a long
-   dialog. Show the user a short summary
+   dialog. The detailed visual design comes later from the design step of the build (the `designer`
+   agent: directions as mockups, then the whole app in `docs/design/`), which runs once the UI foundation
+   is built; `docs/UI.md` here sets the stack, the library, the accessibility rules and a first direction. Show the user a short summary
    (palette, typography, layout, reference products) and adjust it until they agree.
 3. In `docs/ARCHITECTURE.md`, section "User interface": the library, where the shared layout, theme and
    components live in the code, and a link to `docs/UI.md`.

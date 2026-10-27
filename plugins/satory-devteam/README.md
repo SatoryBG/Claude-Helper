@@ -29,13 +29,14 @@ keeps the task branches local.
 | `/satory-devteam:build [milestone=M2] [max=N] [rounds=33]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
 | `/satory-devteam:status` | How far the project has got, the blocked tasks and your answers to them. |
 | `/satory-devteam:request [what you found or want]` | A new input at any time - a defect, a change, an idea: the analyst puts it into the SPEC, the architect into the architecture and the plan. No restart of a running build. |
+| `/satory-devteam:design [brief \| show \| use <direction>]` | A new design of the app as a UX consultant makes it - audit, directions as mockups, every page designed, the tasks that build it; the build runs it at the next boundary. `show` shows the result. |
 | `/satory-devteam:release [version]` | Production after explicit approval. Production gets the same Docker image that passed staging. |
 
 ## Agents
 
 `satory-devteam:dev`, `satory-devteam:devops`, `satory-devteam:reviewer`, `satory-devteam:qa`,
 `satory-devteam:ui-reviewer`, `satory-devteam:security`, `satory-devteam:docs`, `satory-devteam:auditor`
-(milestone review of the data rules), `satory-devteam:code-health` (milestone review of the code), `satory-devteam:ux-review` (milestone review of the UX of the whole app),
+(milestone review of the data rules), `satory-devteam:code-health` (milestone review of the code), `satory-devteam:ux-review` (milestone review of the UX of the whole app), `satory-devteam:designer` (the design of the app: directions, mockups, design document),
 `satory-devteam:planner` (tasks for answered questions) and `satory-devteam:runner`
 (a mechanical executor of the CLI; haiku for quick steps, sonnet for the long ones - build, tests,
 deploy - because it has to wait for a Bash call that moved to the background).
@@ -114,6 +115,16 @@ passes: the proposals, then a critique as a senior product designer that improve
 one; both use the session's design skills (e.g. `dataviz`) when available. When finished milestones were never UX-reviewed (a project started with an older plugin), one review
 runs by itself at the next boundary; `/satory-devteam:build uxReview=true` asks for one more now. Turn it off with
 `"ux_review": false`.
+
+The app is designed as a UX consultant would do it. Once the UI foundation is built (and whenever
+`/satory-devteam:design` asks for it), the build runs the design step at a boundary between tasks: an audit of
+the running app by usability heuristics and visual quality (`docs/design/AUDIT.md`), 2-3 design directions
+as HTML mockups of the dashboard and a detail page (`docs/design/directions/`), a critic's choice of the
+strongest (or the user's, with `/satory-devteam:design use <direction>`), every page designed in it
+(`docs/design/mockups/`, `docs/design/DESIGN.md`, `docs/UI.md`), a critique and a revision, and the tasks
+that build it, ahead of the remaining work. Dev builds each page to its mockup and the UI reviewer checks
+it against the mockup. `/satory-devteam:design show` shows the result. Turn it off with
+`"design_step": false`.
 
 Nothing the reviews find is lost: the minor and nit findings of the Reviewer and the UI reviewer and the
 low/info findings of Security (including its hardening suggestions: headers, CSP, limits, safe
@@ -260,6 +271,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.3.0** - the design step: a UX audit, design directions as mockups, the chosen design for every page
+  (`docs/design/`, `docs/UI.md`) and the tasks that build it, by the new `designer` agent and the UX
+  reviewer as critic; it runs by itself once the UI foundation is built, and on request with the new
+  `/satory-devteam:design`. Dev builds to the mockups and the UI reviewer checks against them.
 - **1.2.2** - the register of questions is no longer passed through an agent's output (with ~190 items it
   came back cut, so the UX catch-up was skipped and the agents could not see the register): the CLI writes
   `.satory/run/register.md` and the agents read it; `plan json` gives the reviewed milestones.

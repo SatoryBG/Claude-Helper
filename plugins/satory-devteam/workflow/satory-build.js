@@ -13,6 +13,7 @@ export const meta = {
     { title: 'Docs', detail: 'documentation, merge, push, staging' },
     { title: 'Milestone review', detail: 'data rules across the finished milestone; questions for the user' },
     { title: 'Planning', detail: 'tasks for the questions the user answered' },
+    { title: 'Design', detail: 'UX audit, design directions, the chosen design as mockups and UI guide, its tasks' },
   ],
 }
 
@@ -33,7 +34,7 @@ function parseArgs(raw) {
 const A = parseArgs(args)
 const MODELS = {
   dev: 'opus', devops: 'opus', reviewer: 'opus', qa: 'opus', 'ui-reviewer': 'opus', security: 'opus', docs: 'sonnet', auditor: 'opus', planner: 'opus',
-  'code-health': 'opus', 'ux-review': 'opus',
+  'code-health': 'opus', 'ux-review': 'opus', designer: 'opus',
   // runnerLong runs the steps that can take tens of minutes (build, tests, deploy): it has to wait for a
   // Bash call that moved to the background instead of returning early, which haiku does not do reliably
   runner: 'haiku', runnerLong: 'sonnet',
@@ -237,6 +238,51 @@ const UX_SCHEMA = {
     },
   },
   required: ['summary', 'title', 'items'],
+}
+const DESIGN_AUDIT_SCHEMA = {
+  type: 'object',
+  properties: { summary: { type: 'string' }, file: { type: 'string' }, problems: { type: 'array', items: { type: 'string' } } },
+  required: ['summary', 'file', 'problems'],
+}
+const DIRECTIONS_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    directions: {
+      type: 'array', minItems: 2, maxItems: 3,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'A short folder name, e.g. "a-calm"' }, name: { type: 'string' },
+          idea: { type: 'string' }, references: { type: 'string' }, look: { type: 'string', description: 'Palette, type, density, shapes' },
+        },
+        required: ['id', 'name', 'idea', 'references', 'look'],
+      },
+    },
+  },
+  required: ['summary', 'directions'],
+}
+const MOCKUP_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' }, files: { type: 'array', items: { type: 'string' } },
+    screenshots: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['summary', 'files', 'screenshots'],
+}
+const CHOICE_SCHEMA = {
+  type: 'object',
+  properties: { choice: { type: 'string' }, reasons: { type: 'string' }, improvements: { type: 'array', items: { type: 'string' } } },
+  required: ['choice', 'reasons', 'improvements'],
+}
+const FULL_DESIGN_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string' },
+    pages: { type: 'array', items: { type: 'object', properties: { route: { type: 'string' }, file: { type: 'string' }, purpose: { type: 'string' } }, required: ['route', 'file', 'purpose'] } },
+    screenshots: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['summary', 'pages', 'screenshots'],
 }
 const PLANNER_SCHEMA = {
   type: 'object',
@@ -1018,6 +1064,163 @@ log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per ta
 plan = await reviewMilestones(plan)
 plan = await planAnswers(plan)
 
+// ------------------------------------------------------------------- design --
+// The design step, as a UX consultant would do it: an audit of the running app, 2-3 design directions as
+// mockups, the choice (the user's, or a critic's), the whole app designed in that direction (mockups,
+// docs/design/DESIGN.md, docs/UI.md), a critique and a revision, and the tasks that build it. The documents
+// go through the queue (a worktree of main), so they and the tasks land on main together. Runs at a
+// boundary between tasks: when the app has a UI but no design yet, or when the user asked for one.
+
+const designNote = text => sh('design log', { phase: 'Design', label: 'design progress', note: text }).catch(() => null)
+
+function designCtx(dir) {
+  return `Project: ${PROJECT}
+Documentation language: ${LANG}
+Write the design documents under ${dir} (a worktree of main: ${dir}/docs/design/, ${dir}/docs/UI.md) and the
+screenshots under ${PROJECT}/.satory/run/ui/design/. Read the project files (docs/SPEC.md, docs/UI.md, the code) in
+${PROJECT}. The app runs on staging: deploy.environments.staging.url in ${PROJECT}/.satory/project.json.`
+}
+
+async function designFlow(plan, why) {
+  const req = plan.design_request || {}
+  const brief = req.brief ? `\n\nThe user's brief for the design: ${req.brief}` : ''
+  const qb = must(await sh('queue begin', { phase: 'Design', label: 'design worktree' }), 'queue begin')
+  const dir = qb.dir
+  const ctx = designCtx(dir)
+  await designNote(`design step started (${why}): audit, directions, the chosen design, its tasks`)
+
+  // 1. audit of the running app
+  const audit = await spawn('ux-review', `${ctx}
+
+## Design audit
+Audit the whole running app as a UX consultant before a redesign: every page, menu, dialog and form, with
+realistic data, at 375/768/1280 px, light and dark. Judge it by the established usability heuristics (visibility
+of status, match with the user's world, control, consistency, error prevention, recognition over recall,
+efficiency, aesthetic and minimalist design, error recovery, help) and by visual quality (hierarchy, typography,
+spacing, colour, density, charts). Write ${dir}/docs/design/AUDIT.md: per page, what works, the problems ranked
+by severity with the screenshot paths, and the five most important things a redesign must achieve. Return the
+file, a summary and the key problems.${brief}`,
+    { phase: 'Design', label: 'design audit', model: MODELS['ux-review'], schema: DESIGN_AUDIT_SCHEMA, effort: 'max' })
+  if (!audit) throw new Error('the design audit returned no result')
+
+  // 2. directions (unless the user chose one of the existing ones)
+  let choice = req.choice || null, reasons = 'the user chose it', improvements = []
+  if (!choice) {
+    const dirs = await spawn('designer', `${ctx}
+
+## Step: design directions
+Read ${dir}/docs/design/AUDIT.md. Define 3 clearly different design directions for this app (different visual
+language, density and emphasis, each one a credible, polished product for this user), with the references they
+draw on. Do not mock them up yet - return them.${brief}`,
+      { phase: 'Design', label: 'design directions', model: MODELS.designer, schema: DIRECTIONS_SCHEMA, effort: 'max' })
+    if (!dirs) throw new Error('the designer returned no directions')
+    const mocks = await parallel(dirs.directions.map(d => () => spawn('designer', `${ctx}
+
+## Step: mock up one direction
+Direction "${d.id}" - ${d.name}: ${d.idea}
+References: ${d.references}
+Look: ${d.look}
+
+Mock up this direction for the two pages that show it best - the dashboard and the detail page of an instrument -
+as ${dir}/docs/design/directions/${d.id}/dashboard.html and ${dir}/docs/design/directions/${d.id}/detail.html (the
+rules for mockups are in your role), with an index.html linking both. Screenshots at 1280 and 375 px, light and
+dark, under ${PROJECT}/.satory/run/ui/design/${d.id}/. Return the files, the screenshots and a summary.`,
+      { phase: 'Design', label: `direction ${d.id}`, model: MODELS.designer, schema: MOCKUP_SCHEMA, effort: 'high' })))
+    const ready = dirs.directions.map((d, i) => ({ ...d, mock: mocks[i] })).filter(d => d.mock)
+    if (!ready.length) throw new Error('no direction was mocked up')
+    await designNote(`${ready.length} design directions: ${ready.map(d => `${d.id} (${d.name})`).join(', ')} - in docs/design/directions/`)
+    const pick = await spawn('ux-review', `${ctx}
+
+## Design critique: choose the direction
+As a senior product designer, compare these directions for this app and its user. Open every mockup screenshot
+with Read (and the HTML when needed). Choose the strongest for the user's jobs - clarity of the key numbers,
+speed of the common tasks, visual quality, accessibility, how it scales to all pages - and list the concrete
+improvements it still needs.
+
+${ready.map(d => `- ${d.id} - ${d.name}: ${d.idea}\n  Files: ${d.mock.files.join(', ')}\n  Screenshots: ${d.mock.screenshots.join(', ')}`).join('\n')}${brief}`,
+      { phase: 'Design', label: 'choose direction', model: MODELS['ux-review'], schema: CHOICE_SCHEMA, effort: 'max' })
+    if (!pick) throw new Error('the critique returned no choice')
+    choice = pick.choice; reasons = pick.reasons; improvements = pick.improvements
+  }
+  await designNote(`direction chosen: ${choice} - ${reasons.split('\n')[0]}`)
+
+  // 3. the whole app in the chosen direction
+  const full = await spawn('designer', `${ctx}
+
+## Step: design the whole app in direction "${choice}"
+Start from ${dir}/docs/design/directions/${choice}/ (when it exists) and ${dir}/docs/design/AUDIT.md.
+${improvements.length ? `Improve on these points from the critique:\n${bullets(improvements)}\n` : ''}
+Design every page and the shared parts (navigation, dialogs, forms, empty/loading/error states):
+- ${dir}/docs/design/mockups/<page>.html for every route of the app, plus dialogs.html and states.html;
+- ${dir}/docs/design/DESIGN.md: the principles, the rationale, the patterns borrowed, the design tokens (exact
+  values, light and dark, contrast checked), typography, spacing, components, and per page its purpose, layout,
+  interactions and states, each linking its mockup;
+- ${dir}/docs/UI.md updated to this design (tokens, components, page descriptions referencing the mockups; bump its
+  version); keep the stack, the component library and the accessibility rules.
+Screenshots of every mockup at 1280 and 375 px, light and dark. Return the pages, the screenshots and a summary.${brief}`,
+    { phase: 'Design', label: `design ${choice}`, model: MODELS.designer, schema: FULL_DESIGN_SCHEMA, effort: 'max' })
+  if (!full) throw new Error('the designer returned no design')
+
+  // 4. critique and revision
+  const crit = await spawn('ux-review', `${ctx}
+
+## Design critique of the full design
+Review the mockups in ${dir}/docs/design/mockups/ (screenshots: ${full.screenshots.slice(0, 40).join(', ')}) and
+${dir}/docs/design/DESIGN.md as a senior product designer: is every page excellent for its job, consistent with the
+rest, accessible, buildable with the stack? Return only what should still change, concretely.`,
+    { phase: 'Design', label: 'design critique', model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })
+  if (crit && (crit.items || []).length) {
+    await spawn('designer', `${ctx}
+
+## Step: revise after the critique
+Apply these points to the mockups, DESIGN.md and UI.md in ${dir}, retake the affected screenshots, and return
+the pages, the screenshots and a summary:
+${bullets(crit.items.map(x => `${x.title}: ${x.description}`))}`,
+      { phase: 'Design', label: 'design revision', model: MODELS.designer, schema: FULL_DESIGN_SCHEMA, effort: 'high' })
+  }
+
+  // 5. the tasks that build it, landed on main with the documents
+  const todo = plan.tasks.filter(t => t.status !== 'done')
+  const next = todo[0]
+  const tasks = await spawn('planner', `Project: ${PROJECT}
+Documentation language: ${LANG}
+
+## Plan the implementation of the new design
+The app is redesigned: read ${dir}/docs/design/DESIGN.md, the mockups in ${dir}/docs/design/mockups/ and
+${dir}/docs/UI.md (all new), and the current code in ${PROJECT}. Plan the tasks that build this design, by area
+(first the foundation: tokens, typography, app shell and shared components; then the pages), each with subtasks,
+"ui": true, behaviour unchanged (what is calculated, validated and saved stays as the SPEC says), description
+naming the mockup files to match and the old tests QA will adapt. Milestone: ${next ? next.milestone : '(the last one)'};
+insert_before: ${next ? next.id : '(none - append)'}; no questions (use []). Tasks not done yet:
+${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone}] ${t.title}`)) : '- (none)'}`,
+    { phase: 'Design', label: 'design tasks', model: MODELS.planner, schema: PLANNER_SCHEMA })
+  if (!tasks) throw new Error('the planner returned no tasks for the design')
+  const added = must(await sh(`queue add --branch ${q(qb.branch)} --dir ${q(dir)} --source design --message ${q(`docs: design (${choice})`)}`,
+    { phase: 'Design', label: 'design to main', note: JSON.stringify({ title: `design (${choice})`, summary: full.summary, tasks: tasks.tasks, depends: tasks.depends || [], resolved: [] }) }), 'queue add')
+  await sh('design done', { phase: 'Design', label: 'design done' })
+  await sh('question ux-reviewed design', { phase: 'Design', label: 'ux reviewed' })
+  await designNote(`design ready: docs/design/ (DESIGN.md, mockups, AUDIT.md); ${tasks.tasks.length} task(s) build it${added.applied && added.applied.added ? `: ${added.applied.added.join(', ')}` : ''}`)
+}
+
+let designFailed = false
+async function designNow() {
+  if (designFailed || !UI_REVIEW || !plan.has_deploy || plan.design_step === false) return
+  const uiDone = plan.tasks.some(t => t.ui && t.status === 'done')
+  const wanted = plan.design_request || (!plan.has_design && uiDone)
+  if (!wanted) return
+  const st = must(await sh('status', { phase: 'Design', label: 'branch' }), 'status')
+  if (/^satory\//.test(st.branch || '')) return
+  try {
+    await designFlow(plan, plan.design_request ? 'asked for' : 'the app has a UI but no design yet')
+    uxPending = false
+  } catch (e) {
+    designFailed = true
+    log(`The design step failed (${e.message}); the build goes on, run it again with /satory-devteam:design.`)
+    await designNote(`design step failed: ${e.message}`)
+  }
+  plan = must(await sh('plan json', { phase: 'Design', label: 'plan' }), 'plan json')
+}
+
 // One UX review of the whole app at the first boundary between tasks, without waiting for the end of the
 // milestone: when asked (uxReview=true), or to catch up when finished milestones were never UX-reviewed
 // (e.g. the project was started with an older plugin)
@@ -1044,6 +1247,7 @@ async function uxNow() {
     plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
   } catch (e) { log(`The UX review failed (${e.message}).`) }
 }
+await designNow()
 await uxNow()
 
 const results = []
@@ -1073,6 +1277,7 @@ while (results.length < MAX_TASKS) {
   plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
   plan = await reviewMilestones(plan)
   plan = await planAnswers(plan)
+  await designNow()
   await uxNow()
 }
 

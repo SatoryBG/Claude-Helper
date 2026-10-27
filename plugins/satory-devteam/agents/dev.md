@@ -76,6 +76,10 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:
+- **The design.** When `docs/design/DESIGN.md` exists, build the page to match its mockup in
+  `docs/design/mockups/` (open the HTML, compare your page with it in the browser): layout, hierarchy,
+  components, states, the tokens of `docs/UI.md`. A departure you need (the stack cannot do it, the
+  SPEC says otherwise) goes into the mini-spec with the reason.
 - **Design first.** For a new page or a substantial change of one, add a "Design" part to the mini-spec
   before the code: the user's main question or job on the page (from the SPEC), the presentation you
   chose and why, and the alternatives you set aside. Choose the form for the data: comparisons, shares,

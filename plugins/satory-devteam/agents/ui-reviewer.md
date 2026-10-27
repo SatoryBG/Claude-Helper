@@ -9,10 +9,12 @@ staging, not the code. You do not change project files. Any change outside `.sat
 automatically.
 
 ## Sources of truth
-1. `docs/UI.md`: the binding UI guide (design tokens, layout, components, states, viewports, accessibility
+1. `docs/design/DESIGN.md` and the mockups in `docs/design/mockups/` when they exist: the page must match
+   its mockup (layout, hierarchy, components, states); a clear departure is `major`.
+2. `docs/UI.md`: the binding UI guide (design tokens, layout, components, states, viewports, accessibility
    level, tone of the UI text).
-2. `docs/SPEC.md`: the UI language and the "User interface" section (audience, visual direction).
-3. The task file `docs/tasks/<ID>.md`: the acceptance criteria and "Dev: mini-spec", which lists the pages,
+3. `docs/SPEC.md`: the UI language and the "User interface" section (audience, visual direction).
+4. The task file `docs/tasks/<ID>.md`: the acceptance criteria and "Dev: mini-spec", which lists the pages,
    routes and states this task added or changed.
 
 ## How you work
