@@ -1422,13 +1422,16 @@ def cmd_task_start(p: Project, a) -> None:
         shutil.rmtree(p.run / "findings" / tid, ignore_errors=True)
     p.state["tasks"][tid] = st
     p.save_state()
+    for k in ("reviewer", "ui", "security", "qa"):  # check notes of 1.4.x; the findings are in the register now
+        (st.get("reviews") or {}).pop(k, None)
     open_findings = []
     if resumed:
-        blocking = [f for f in findings_load(p, tid)["items"] if f["status"] in FINDING_OPEN and finding_blocks(f)]
-        for stage in dict.fromkeys(f["stage"] for f in blocking):
-            open_findings.append({"stage": stage, "round": max(f["round"] for f in blocking if f["stage"] == stage),
-                                  "verdict": "open findings",
-                                  "note": "\n".join(f"- {finding_line(f)}" for f in blocking if f["stage"] == stage)})
+        still = [f for f in findings_load(p, tid)["items"] if f["status"] in FINDING_OPEN]
+        still.sort(key=lambda f: not finding_blocks(f))
+        for stage in dict.fromkeys(f["stage"] for f in still):
+            mine = [f for f in still if f["stage"] == stage]
+            open_findings.append({"stage": stage, "round": max(f["round"] for f in mine), "verdict": "open findings",
+                                  "note": "\n".join(f"- {finding_line(f)}" + ("" if finding_blocks(f) else " (optional)") for f in mine)})
         open_findings += [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items() if v.get("verdict") in REVIEW_FAIL]
     context_error = refresh_context(p, tid)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
@@ -1479,7 +1482,7 @@ def bullet_end(lines: list[str], i: int, indent: int) -> int:
     return end
 
 
-def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",)) -> dict:
+def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",), crit: tuple[str, ...] = ("AC",)) -> dict:
     """The requirements model of docs/SPEC.md, independent of its wording. The format (checked by `satory spec
     check`): a requirement is a heading `### R-001 - Title` with its criteria as bullets `- **AC-001.1** - ...`
     under it; a cross-cutting requirement (prefix NFR by default) is a bullet `- **NFR-001 - Title.** ...` or a
@@ -1492,6 +1495,10 @@ def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",)) -> dict:
     reqs = []  # requirement headings: (start, end, id)
     for k, (i, level, text) in enumerate(heads):
         m = ID_HEAD.match(text)
+        lead = REQ_ID.match(text)
+        if not m and lead and lead.group(0).split("-")[0] not in NOT_REQ:
+            errors.append(f"line {i + 1}: heading {text[:60]!r} starts with an id but is not `### <ID> - Title`"
+                          + (" (a criterion is a bullet `- **AC-001.1** - ...`)" if "." in lead.group(0) else ""))
         if not m or m.group(1).split("-")[0] in NOT_REQ:
             continue
         rid = m.group(1)
@@ -1500,22 +1507,31 @@ def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",)) -> dict:
         items.append({"id": rid, "kind": kind, "title": m.group(2).strip(), "parent": None, "start": i, "end": end})
         if kind == "requirement":
             reqs.append((i, end, rid))
+    req_prefixes = {rid.split("-")[0] for _, _, rid in reqs}
+    known_prefixes = req_prefixes | set(cross) | set(crit)
     fence = False
     for i, line in enumerate(lines):
         if line.lstrip().startswith("```"):
             fence = not fence
             continue
-        m = None if fence else ID_BULLET.match(line)
-        if not m or m.group(2).split("-")[0] in NOT_REQ:
+        if fence:
             continue
+        num = re.match(r"^\s*\d+[.)]\s+\*\*([A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?)\b", line)
+        if num and num.group(1).split("-")[0] in known_prefixes:
+            errors.append(f"line {i + 1}: {num.group(1)} is in a numbered list; write it as a bullet `- **{num.group(1)}** - ...`")
+        m = ID_BULLET.match(line)
+        if not m or m.group(2).split("-")[0] not in known_prefixes:
+            continue  # other bold words (SHA-256, TLS-1.2, Q-001, T-010) are not requirements
         bid, indent = m.group(2), len(m.group(1))
         title = re.sub(r"^\s*-\s*", "", m.group(3)).strip().rstrip(".") or line[m.end():].strip(" -")[:120]
         end = bullet_end(lines, i, indent)
         parent = next((rid for a0, b0, rid in reversed(reqs) if a0 < i < b0), None)
         if "." in bid:
+            if bid.split("-")[0] not in crit:
+                continue
             if not parent:
                 errors.append(f"line {i + 1}: criterion {bid} is not under a requirement heading")
-            elif bid.split(".")[0].split("-")[1] != parent.split("-")[1]:
+            elif int(bid.split(".")[0].split("-")[1]) != int(parent.split("-")[1]):
                 warnings.append(f"line {i + 1}: criterion {bid} is under {parent} (numbers differ)")
             items.append({"id": bid, "kind": "criterion", "title": title, "parent": parent, "start": i, "end": end})
         else:
@@ -1545,6 +1561,14 @@ def cross_prefixes(p: Project) -> tuple[str, ...]:
     return tuple(p.config.get("spec", {}).get("cross_cutting_prefixes") or ["NFR"])
 
 
+def crit_prefixes(p: Project) -> tuple[str, ...]:
+    return tuple(p.config.get("spec", {}).get("criterion_prefixes") or ["AC"])
+
+
+def spec_model(p: Project, lines: list[str]) -> dict:
+    return parse_spec(lines, cross_prefixes(p), crit_prefixes(p))
+
+
 def task_req_ids(t: dict, model: dict) -> list[str]:
     """The requirement ids a task refers to, in order: its `requirements`, then every id in its text, with
     ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. Ids the SPEC does not define are
@@ -1554,6 +1578,7 @@ def task_req_ids(t: dict, model: dict) -> list[str]:
                       *[f"{x.get('title') or ''}\n{x.get('description') or ''}\n" + "\n".join(x.get("acceptance") or [])
                         for x in subs]])
     known = [it["id"] for it in model["items"]]
+    prefixes = {x.split("-")[0] for x in known}
     explicit = list(t.get("requirements") or [])
     found: list[str] = []
     for m in REQ_RANGE.finditer(text):
@@ -1563,14 +1588,17 @@ def task_req_ids(t: dict, model: dict) -> list[str]:
     for m in REQ_WILD.finditer(text):
         found += [x for x in known if x.startswith(m.group(1) + ".")]
     found += REQ_ID.findall(REQ_WILD.sub(" ", text))
-    return list(dict.fromkeys([*explicit, *(x for x in found if x in known)]))
+    # an id the SPEC does not define but with a prefix it uses is kept, so the digest reports it as not found
+    return list(dict.fromkeys([*explicit, *(x for x in found if x.split("-")[0] in prefixes)]))
 
 
 def spec_sections(lines: list[str], ids: list[str], model: dict | None = None) -> tuple[list[tuple[int, int]], list[str]]:
     """Line ranges of the SPEC text for the ids (a requirement with its whole section, a criterion or a
     cross-cutting item with its paragraph), merged and in document order, and the ids not found."""
     model = model or parse_spec(lines)
-    by_id = {it["id"]: it for it in model["items"]}
+    by_id: dict[str, dict] = {}
+    for it in model["items"]:
+        by_id.setdefault(it["id"], it)  # the first definition wins over a later duplicate
     ranges, missing = [], []
     for rid in ids:
         it = by_id.get(rid)
@@ -1636,7 +1664,7 @@ def write_context(p: Project, tid: str) -> dict:
     spec = p.root / "docs" / "SPEC.md"
     if spec.exists():
         lines = spec.read_text(encoding="utf-8").splitlines()
-        model = parse_spec(lines, cross_prefixes(p))
+        model = spec_model(p, lines)
         ids = task_req_ids(t, model)
         if ids:
             ranges, missing = spec_sections(lines, ids, model)
@@ -1721,12 +1749,14 @@ def cmd_spec(p: Project, a) -> None:
         raise SatoryError("docs/SPEC.md does not exist")
     text = spec.read_text(encoding="utf-8")
     lines = text.splitlines()
-    model = parse_spec(lines, cross_prefixes(p))
+    model = spec_model(p, lines)
     plan = p.plan()
     covered: set[str] = set()
     for t in plan["tasks"]:
         covered.update(task_req_ids(t, model))
-    by_id = {it["id"]: it for it in model["items"]}
+    by_id: dict[str, dict] = {}
+    for it in model["items"]:
+        by_id.setdefault(it["id"], it)
     uncovered = [it["id"] for it in model["items"] if it["kind"] == "requirement" and it["id"] not in covered
                  and not any(c in covered for c in by_id if by_id[c].get("parent") == it["id"])]
     m = re.search(r"\*\*(?:Version|Версия):\*\*\s*(\d+)", text)
@@ -1751,6 +1781,8 @@ def cmd_spec(p: Project, a) -> None:
 # check that raised it decides. The non-blocking ones still open when the task finishes go to the polish task.
 
 FINDING_BLOCKING = {"security": ("critical", "high", "medium")}
+FINDING_SEVERITIES = {"security": ("info", "low", "medium", "high", "critical")}
+DEFAULT_SEVERITIES = ("nit", "minor", "major", "blocker")
 FINDING_OPEN = ("open", "disputed")
 
 
@@ -1823,8 +1855,13 @@ def cmd_finding(p: Project, a) -> None:
                 warnings.append(f"{f['id']} belongs to {f['stage']}, not {stage}")
                 continue
             status, note = str(v.get("status", "")).strip(), str(v.get("note") or "").strip()
-            if status == "worse" and v.get("severity"):
-                f["severity"] = str(v["severity"])
+            if status == "worse":
+                scale = FINDING_SEVERITIES.get(stage, DEFAULT_SEVERITIES)
+                new_sev = str(v.get("severity") or "")
+                if new_sev in scale and f["severity"] in scale and scale.index(new_sev) > scale.index(f["severity"]):
+                    f["severity"] = new_sev
+                elif new_sev:
+                    warnings.append(f"{f['id']}: severity {new_sev!r} is not higher than {f['severity']!r} on the {stage} scale - kept")
             if status in ("fixed", "dismissed"):
                 f["status"] = status
             elif status in ("open", "worse"):
@@ -1849,7 +1886,11 @@ def cmd_finding(p: Project, a) -> None:
                 continue
             fid = f"F-{reg['next']}"
             reg["next"] += 1
-            f = {"id": fid, "stage": stage, "round": rnd, "severity": str(n.get("severity") or "minor"), "title": title,
+            sev = str(n.get("severity") or "")
+            if sev not in FINDING_SEVERITIES.get(stage, DEFAULT_SEVERITIES):
+                warnings.append(f"new finding with severity {sev!r} - recorded as {FINDING_SEVERITIES.get(stage, DEFAULT_SEVERITIES)[-2]}")
+                sev = FINDING_SEVERITIES.get(stage, DEFAULT_SEVERITIES)[-2]  # unknown: blocking, to be safe
+            f = {"id": fid, "stage": stage, "round": rnd, "severity": sev, "title": title,
                  "where": where, "detail": detail, "fix": str(n.get("fix") or "").strip(), "status": "open",
                  "history": [{"round": rnd, "by": stage, "event": "raised"}]}
             reg["items"].append(f)
@@ -2032,8 +2073,10 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
-        save_review(p, st, "qa checks", rnd, "pass" if gates_ok else "fail",
-                    "\n".join(extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
+        head = (note or "").split("\n\n")[0].strip()[:800]
+        save_review(p, st, "qa checks", rnd, verdict,
+                    "\n".join([f"- QA verdict: {a.verdict or '-'}" + (f"; summary: {head}" if head else ""), *extra,
+                               *[f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]]))
         if gates["e2e"].get("scope") != "task":  # the whole suite ran here: its result is in the qa entry
             (st.get("reviews") or {}).pop("full e2e", None)
         p.save_state()

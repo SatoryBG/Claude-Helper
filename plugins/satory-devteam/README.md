@@ -213,7 +213,8 @@ again. A round keeps both small without leaving out a check:
   a status (open, fixed, disputed, dismissed, polish). The digest has the short list (one line each); the
   full record and history of each is in `.satory/run/findings/<task>/<id>.md`. In round > 1 a check gets
   its open findings and verifies each one (`verified`: fixed / open / worse with the new severity /
-  dismissed) instead of reporting it again; an unverified blocking finding stays open. Dev fixes each one
+  dismissed, never a lower severity) instead of reporting it again; a check that leaves a blocking one
+  unverified is asked once more, and if it still does not answer, the finding stays open. Dev fixes each one
   or disputes it (`finding_disputes`), and the check that raised it decides. A task goes back while a
   check has a blocking finding open. The non-blocking ones still open at the finish go to the polish task;
   after an interruption or an unblock the open ones are Dev's feedback.
@@ -321,10 +322,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 - **1.5.0** - a register of findings per task (`satory finding`): stable ids, statuses, one-line list
   in the digest and a full record with history per finding; checks verify their open findings instead of
   reporting them again, Dev fixes or disputes each one, an unverified blocking finding stays open, the
-  open non-blocking ones go to the polish task, and the open ones survive an interruption and an unblock.
+  open non-blocking ones go to the polish task (before the merge), and the open ones survive an
+  interruption and an unblock: the checks get them by id in the first round after it.
   The SPEC has a fixed format checked by `satory spec check`, and the digests are built from its model
   (`.satory/run/requirements.json`); NFRs as headings or bullets, criteria with their requirement's
-  heading, open questions never taken for requirements. Digest errors are logged in every step.
+  heading, open questions and bold words like SHA-256 never taken for requirements, ids in a wrong form
+  reported as errors, the first definition of a duplicate id kept. Digest errors are logged in every step.
 - **1.4.2** - fixes after a second review: the task's explicit requirements are never filtered out (a
   missing one is reported); the NFRs and the other cross-cutting SPEC sections are in every digest; an
   unblock clears the old findings with the round counter; the whole e2e suite in QA clears its earlier

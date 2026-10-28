@@ -32,7 +32,8 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    a test from an earlier task whose expectation this task's requirements contradict (e.g. it checks a
    placeholder page the task replaces): QA may adapt it, so dispute it - do not block with a question.
 2. **Do not touch** `.satory/` (except your notes in `.satory/run/notes/`, rule 12) or `docs/JOURNAL.md`,
-   and do not read the journal. Do not commit, switch
+   and do not read the journal. The register of findings (`.satory/run/findings/`) is kept by satory:
+   read it, never edit it - answer a finding by fixing it or in `finding_disputes`. Do not commit, switch
    branches or push. The orchestrator does that.
 3. **Mini-spec.** Keep the "Dev: mini-spec" section of `docs/tasks/<ID>.md` up to date in every round.
    QA writes tests from it without reading the code, so it must be precise and complete. Include every

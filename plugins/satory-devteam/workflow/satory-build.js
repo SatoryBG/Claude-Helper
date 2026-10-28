@@ -79,7 +79,7 @@ const GAP_ITEMS = {
 // The check's verdict on each of its own open findings in the register (listed in its task)
 const VERIFIED = {
   type: 'array',
-  description: 'One entry for every open finding of yours listed in the task (F-ids): fixed, still open, worse (with the new severity) or dismissed (a dispute you accept, or it no longer applies - with the reason)',
+  description: 'One entry for every open finding of yours listed in the task (F-ids): fixed, still open, worse (with the new, higher severity) or dismissed (a dispute you accept, or it no longer applies - with the reason). Empty when the task lists none.',
   items: {
     type: 'object',
     properties: {
@@ -130,7 +130,7 @@ const REVIEW_SCHEMA = {
     verified: VERIFIED,
     spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
-  required: ['verdict', 'summary', 'findings'],
+  required: ['verdict', 'summary', 'findings', 'verified'],
 }
 const QA_SCHEMA = {
   type: 'object',
@@ -159,7 +159,7 @@ const QA_SCHEMA = {
     verified: VERIFIED,
     spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
-  required: ['verdict', 'summary', 'mini_spec_complete', 'tests_added', 'failures', 'findings'],
+  required: ['verdict', 'summary', 'mini_spec_complete', 'tests_added', 'failures', 'findings', 'verified'],
 }
 const UI_SCHEMA = {
   type: 'object',
@@ -183,7 +183,7 @@ const UI_SCHEMA = {
     },
     verified: VERIFIED,
   },
-  required: ['verdict', 'summary', 'pages_checked', 'findings'],
+  required: ['verdict', 'summary', 'pages_checked', 'findings', 'verified'],
 }
 const SEC_SCHEMA = {
   type: 'object',
@@ -206,7 +206,7 @@ const SEC_SCHEMA = {
     },
     verified: VERIFIED,
   },
-  required: ['verdict', 'summary', 'findings'],
+  required: ['verdict', 'summary', 'findings', 'verified'],
 }
 const AUDIT_SCHEMA = {
   type: 'object',
@@ -549,20 +549,18 @@ build/lint/test must pass. Do not commit.`
 // made since it ran: it verifies each one instead of reporting it again. After an interrupted build they are
 // not in memory: the digest lists the findings of the task.
 let RESUMED = false  // the task in progress was resumed after an interrupted build
-const fline = f => `${f.id} [${f.severity}] ${f.title}${f.where ? ` (${f.where})` : ''}` +
+const fline = f => `${f.id} [${f.severity}] ${f.title}${f.where ? ` (${f.where})` : ''}${f.unverified ? ' - NOT VERIFIED by you last time' : ''}` +
   (f.status === 'disputed' ? ` - DISPUTED by Dev${f.dispute ? `: ${f.dispute}` : ', see its record'}` : '')
-function openBlock(open, round) {
-  if (open && open.length) {
-    return `\n\n## Your open findings in this task - verify each one in \`verified\` (fixed / open / worse / dismissed)\n` +
-      `Full records: .satory/run/findings/<task>/<id>.md. Report as new only problems that are not in this list.\n${bullets(open.map(fline))}`
-  }
-  return RESUMED && round > 1
-    ? '\n\n## Your open findings\nThe build was interrupted: the context digest lists the findings of this task ("Findings of this task"). Verify each open one of yours in `verified`. There is no diff of what changed since your last review, so review the whole scope.'
-    : ''
+function openBlock(open, round, sinceRef) {
+  if (!open || !open.length) return ''
+  return `\n\n## Your open findings in this task - verify each one in \`verified\` (fixed / open / worse / dismissed)\n` +
+    `Full records: .satory/run/findings/<task>/<id>.md. Report as new only problems that are not in this list.` +
+    (RESUMED && !sinceRef ? ' The build was interrupted: there is no diff of what changed since your last review, so review the whole scope.' : '') +
+    `\n${bullets(open.map(fline))}`
 }
 
 function reviewPrompt(ctx, round, base, reviewedAt, openRev, dev) {
-  const prev = openBlock(openRev, round)
+  const prev = openBlock(openRev, round, reviewedAt)
   const disputes = dev.disputes.length
     ? `\n## Dev disputes tests\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
   return `${ctx}
@@ -587,11 +585,11 @@ ${env}
 
 Scope of the changes: \`git diff ${base}..HEAD\`
 Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the orchestrator runs it after you.
-Dev reports: ${dev.summary}${disputes}${openBlock(openQa, round)}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+Dev reports: ${dev.summary}${disputes}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
 function uiPrompt(ctx, round, base, staging, dev, openUi, uiReviewedAt) {
-  const prev = openBlock(openUi, round)
+  const prev = openBlock(openUi, round, uiReviewedAt)
   return `${ctx}
 Round: ${round}.
 The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).
@@ -603,7 +601,7 @@ Dev reports: ${dev.summary}${prev}`
 function secPrompt(ctx, round, base, scan, openSec, secReviewedAt) {
   const scans = (scan.scans || []).map(s =>
     `\`${s.cmd}\` → ${s.missing_tool ? 'TOOL IS MISSING' : s.ok ? 'OK' : `problems found (exit ${s.exit})`} - log: ${s.log}`)
-  const prev = openBlock(openSec, round)
+  const prev = openBlock(openSec, round, secReviewedAt)
   return `${ctx}
 Round: ${round}.
 
@@ -925,12 +923,31 @@ async function runTask(t) {
   let reviewedAt = null, uiReviewedAt = null, secReviewedAt = null, lastStage = ''
   const open = {}  // check -> its open findings in the register after its last run (for the next round's prompt)
   // records a check's new findings and its verdict on its open ones; returns the register's view of the check
-  const record = async (stage, items, verified, phase) => {
+  const ROLE = { reviewer: ['reviewer', REVIEW_SCHEMA], qa: ['qa', QA_SCHEMA], ui: ['ui-reviewer', UI_SCHEMA], security: ['security', SEC_SCHEMA] }
+  const recordOnce = async (stage, items, verified, phase, label) => {
     const res = must(await sh(`finding record ${t.id} --stage ${stage} --round ${round}`,
-      { phase, label: `findings ${stage} ${t.id} r${round}`, note: JSON.stringify({ new: items, verified: verified || [] }) }), `findings ${stage}`)
+      { phase, label, note: JSON.stringify({ new: items, verified: verified || [] }) }), `findings ${stage}`)
     for (const w of res.warnings || []) log(`⚠ ${t.id} r${round} ${stage}: ${w}`)
-    open[stage] = res.open || []
     return res
+  }
+  const record = async (stage, items, verified, phase) => {
+    let res = await recordOnce(stage, items, verified, phase, `findings ${stage} ${t.id} r${round}`)
+    const missed = (res.blocking || []).filter(f => (res.unverified || []).includes(f.id))
+    if (missed.length) {  // a blocking finding the check did not verify would send the task back: ask once
+      const [role, schema] = ROLE[stage]
+      const again = await spawn(role, `${ctx}\nRound: ${round}.\n\nYou did not verify these open findings of yours. ` +
+        `Check each one now and return it in \`verified\` (fixed / open / worse / dismissed); return no new findings.\n${bullets(missed.map(fline))}`,
+        { phase, label: `${stage} verify ${t.id} r${round}`, model: MODELS[role], schema })
+      if (again && (again.verified || []).length) res = await recordOnce(stage, [], again.verified, phase, `findings ${stage} verify ${t.id} r${round}`)
+    }
+    open[stage] = (res.open || []).map(f => ({ ...f, unverified: (res.unverified || []).includes(f.id) }))
+    return res
+  }
+  if (RESUMED) {  // the checks verify their open findings from the register in the first round after a resume
+    try {
+      const l = must(await sh(`finding list ${t.id} --open`, { phase: 'Dev', label: `open findings ${t.id}` }), 'finding list')
+      for (const f of l.items || []) (open[f.stage] = open[f.stage] || []).push(f)
+    } catch (e) { log(`Could not read the open findings of ${t.id}: ${e.message}`) }
   }
 
   while (round < MAX_ROUNDS) {
@@ -999,7 +1016,10 @@ async function runTask(t) {
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) { contextLog(aq); break }
       flakyLog(aq.gates, tag)
-      if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
+      if (attempt >= QA_ATTEMPTS) {
+        await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA').catch(() => null)
+        return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
+      }
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
         `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
         `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
@@ -1071,15 +1091,15 @@ ${bullets(gateLines(full.gates))}`
       if (docsCheck.ok) break
       docsNote = `The previous attempt did not add an entry for ${t.id} to CHANGELOG.md under [Unreleased]. This is mandatory - add it.`
     }
+    try {  // the non-blocking findings still open go to the polish task (before the merge: nothing is lost if it stops)
+      await sh(`finding polish ${t.id} --round ${round}`, { phase: 'Docs', label: `polish ${t.id}` })
+    } catch (e) { log(`Could not note the small improvements of ${t.id}: ${e.message}`) }
     const docsSummary = docs ? `${docs.summary}\n\n${bullets(docs.files)}` : 'The technical writer returned no result.'
     const fin = must(await sh(`task finish ${t.id}`,
       { phase: 'Docs', label: `merge+push ${t.id}`, long: true,
         note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
     `finish ${t.id}`)
     log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
-    try {  // the non-blocking findings still open go to the polish task after the milestone
-      await sh(`finding polish ${t.id} --round ${round}`, { phase: 'Docs', label: `polish ${t.id}` })
-    } catch (e) { log(`Could not note the small improvements of ${t.id}: ${e.message}`) }
     return { id: t.id, title: t.title, status: 'done', rounds: round, commit: fin.commit, pushed: fin.pushed,
              push_error: fin.push_error, staging: fin.staging }
   }
