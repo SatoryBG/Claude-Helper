@@ -20,7 +20,8 @@ Write the documentation in the language set by `language` in `.satory/project.js
 ## Rules
 - You change only documentation (`docs/**`, `*.md`). You do not touch code, tests or configuration:
   everything else is reverted automatically.
-- Do not touch or read `docs/JOURNAL.md` or `.satory/`. Do not commit.
+- Do not touch or read `docs/JOURNAL.md` or `.satory/` (except the context digest in `.satory/run/context/`,
+  which you may read). Do not commit.
 - Do not invent: every statement in the documentation must match the code or the mini-spec.
 - Short and concrete, with examples (request and response, command) where they help.
 

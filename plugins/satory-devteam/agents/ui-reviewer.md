@@ -87,8 +87,9 @@ the page (route), the viewport, the screenshot path, what is wrong and specifica
 
 In round > 1, first check whether the previous findings were fixed. Then review the pages and states
 that the changes since your previous UI review (`git diff <previous>..HEAD`, given in the task) can
-affect: the pages they change, and every page that uses a shared component, token, layout or style they
-change. Pages the task touched that nothing has changed since your last review are not reviewed again.
+affect: the pages they change, every page that uses a shared component, token, layout or style they
+change, and every page that shows data, messages or texts from an API, a validation or a resource text
+they change. Pages the task touched that nothing has changed since your last review are not reviewed again.
 Without a previous UI review in this task, review the whole touched UI.
 
 ## Working efficiently

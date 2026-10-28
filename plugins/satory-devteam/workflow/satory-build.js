@@ -461,7 +461,7 @@ function context(t, start) {
     `Project: ${PROJECT}`,
     `Task: ${t.id} - ${t.title} (owner: ${t.owner})`,
     `Task file: docs/tasks/${t.id}.md`,
-    `Context digest: .satory/run/context/${t.id}.md - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the mockups, the files changed so far, the notes from earlier rounds and the last findings of each review. The documents stay the source of truth.`,
+    `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds and the last findings of each check. The documents stay the source of truth.`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
     `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
@@ -511,7 +511,7 @@ build/lint/test must pass. Do not commit.`
 // interrupted build they are not in memory: the digest has the last findings of each review.
 let RESUMED = false  // the task in progress was resumed after an interrupted build
 const RESUMED_PREV = round => RESUMED && round > 1
-  ? '\n\n## Previous findings\nThe build was interrupted: if the context digest lists your last findings in this task ("Last findings of each review"), check that they were addressed.'
+  ? '\n\n## Previous findings\nThe build was interrupted: if the context digest lists your last findings in this task ("Last findings of each check"), check that they were addressed. There is no diff of what changed since then, so review the whole scope.'
   : ''
 
 function reviewPrompt(ctx, round, base, reviewedAt, prevReview, dev) {
@@ -882,21 +882,26 @@ async function runTask(t) {
   RESUMED = !!start.resumed
   const role = t.owner === 'devops' ? 'devops' : 'dev'
   let round = start.rounds_used || 0
+  const open = (start.open_findings || []).map(f => `### ${f.stage} (round ${f.round}, ${f.verdict})\n${f.note}`)
   let feedback = start.resumed
-    ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.'
+    ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.' +
+      (open.length ? `\n\nThe last checks that failed before the interruption - address every point that is still open (your last round may already have fixed some):\n\n${open.join('\n\n')}` : '')
     : ''
   let reviewedAt = null, prevReview = null, prevUi = null, uiReviewedAt = null, prevSec = null, secReviewedAt = null, lastStage = ''
-  const polish = {}  // stage -> non-blocking findings of its last passing round, for the polish task
+  // stage -> the non-blocking findings of all its rounds, for the polish task. Accumulated, because a review
+  // in round > 1 looks only at what changed: an earlier minor finding elsewhere is not repeated, not lost.
+  const polish = {}
+  const notePolish = (stage, tag, items) => {
+    const p = polish[stage] || (polish[stage] = { tag, items: [] })
+    p.tag = tag
+    for (const x of items) if (!p.items.some(y => y.where === x.where && y.issue === x.issue)) p.items.push(x)
+  }
 
   while (round < MAX_ROUNDS) {
     round++
     const tag = `${t.id} r${round}`
 
     // ---- Dev ----------------------------------------------------------
-    // the context digest of this round (requirements, tables of contents, changed files, notes, last findings)
-    try {
-      must(await sh(`task context ${t.id}`, { phase: 'Dev', label: `context ${tag}` }), `context ${tag}`)
-    } catch (e) { log(`Could not write the context digest of ${tag}: ${e.message}`) }
     let known = await registerNote()
     const dev = await spawn(role, devPrompt(ctx, round, feedback) + known,
       { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
@@ -924,8 +929,8 @@ async function runTask(t) {
       { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
     reviewedAt = ad.checkpoint
     prevReview = rev
-    polish.reviewer = { tag, items: rev.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
-      .map(f => ({ severity: f.severity, where: where(f), issue: f.issue, fix: f.fix })) }
+    notePolish('reviewer', tag, rev.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
+      .map(f => ({ severity: f.severity, where: where(f), issue: f.issue, fix: f.fix })))
     if (revBlocking) {
       lastStage = 'review'
       feedback = reviewFeedback(rev) + devViolations
@@ -972,8 +977,8 @@ async function runTask(t) {
         { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`)
       prevUi = ui
       uiReviewedAt = aq.checkpoint
-      polish.ui = { tag, items: ui.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
-        .map(f => ({ severity: f.severity, where: at(f), issue: f.issue, fix: f.fix })) }
+      notePolish('ui', tag, ui.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
+        .map(f => ({ severity: f.severity, where: at(f), issue: f.issue, fix: f.fix })))
       if (uiBlocking.length) {
         lastStage = 'ui'
         feedback = uiFeedback(ui, uiBlocking)
@@ -989,8 +994,8 @@ async function runTask(t) {
     prevSec = sec
     secReviewedAt = aq.checkpoint
     const secBlocking = sec.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity))
-    polish.security = { tag, items: sec.findings.filter(f => f.severity === 'low' || f.severity === 'info')
-      .map(f => ({ severity: f.severity, where: `${f.category} ${where(f)}`, issue: f.issue, fix: f.fix })) }
+    notePolish('security', tag, sec.findings.filter(f => f.severity === 'low' || f.severity === 'info')
+      .map(f => ({ severity: f.severity, where: `${f.category} ${where(f)}`, issue: f.issue, fix: f.fix })))
     must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secBlocking.length ? 'fail' : 'pass'}`,
       { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`)
     if (secBlocking.length) {
@@ -1222,8 +1227,12 @@ ${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone}] ${t.title}`)) : 
 }
 
 let designFailed = false
+// A task in progress (even one not checked out, e.g. resumed later) is finished first: documents that land on
+// main in the middle of a task would change the ground under it (its tests compare the code with the guide).
+const taskInProgress = () => plan.tasks.some(t => t.status === 'in_progress')
+
 async function designNow() {
-  if (designFailed || !UI_REVIEW || !plan.has_deploy || plan.design_step === false) return
+  if (designFailed || !UI_REVIEW || !plan.has_deploy || plan.design_step === false || taskInProgress()) return
   const uiDone = plan.tasks.some(t => t.ui && t.status === 'done')
   const wanted = plan.design_request || (!plan.has_design && uiDone)
   if (!wanted) return
@@ -1255,7 +1264,7 @@ if (!uxPending && UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
   } catch (e) { /* the regular review after the milestone still runs */ }
 }
 async function uxNow() {
-  if (!uxPending || !UI_REVIEW || !plan.has_deploy) return
+  if (!uxPending || !UI_REVIEW || !plan.has_deploy || taskInProgress()) return
   const st = must(await sh('status', { phase: 'Milestone review', label: 'branch' }), 'status')
   if (/^satory\//.test(st.branch || '')) return
   uxPending = false

@@ -1126,7 +1126,9 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
     for dep in data.get("depends", []):
         t = p.task(plan, dep.get("task", ""))
         if status[t["id"]] != "todo":
-            raise SatoryError(f"{t['id']} has started; only tasks to do get new dependencies")
+            # a started task is not held back: it finishes first and the new tasks come after it
+            data.setdefault("_skipped_depends", []).append(t["id"])
+            continue
         for d in dep.get("add", []):
             d = resolve(d)
             if d not in t.setdefault("depends_on", []):
@@ -1411,45 +1413,97 @@ def cmd_task_start(p: Project, a) -> None:
         st = {"branch": branch, "base": base, "rounds": (st or {}).get("rounds", 0),
               "known_tests": sorted(names), "test_list_ok": listed, "started": now()}
         st["checkpoint"] = checkpoint(p, tid, "start")
+    if not resumed:  # a fresh start: the notes and the digest of an abandoned branch would mislead
+        for f in [*(p.run / "notes").glob(f"{tid}-*.md"), p.run / "context" / f"{tid}.md"]:
+            f.unlink(missing_ok=True)
     p.state["tasks"][tid] = st
     p.save_state()
+    open_findings = [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items()
+                     if resumed and v.get("verdict") in REVIEW_FAIL]
+    context_error = refresh_context(p, tid)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
     progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
           "rounds_used": st["rounds"], "resumed": resumed, "task_file": f"docs/tasks/{tid}.md",
-          "known_tests": len(st["known_tests"])})
+          "known_tests": len(st["known_tests"]), "open_findings": open_findings, "context_error": context_error})
 
 
 # ---------------------------------------------------------- context digest ---
 
 # Ids of requirements a task refers to (R-012, NFR-006, AC-004.2, UC-3 ...); task and question ids are not.
 REQ_ID = re.compile(r"\b(?!(?:T|Q|ADR)-)[A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?(?!\d|\.\d)")
+REQ_RANGE = re.compile(r"\b([A-Z]{1,5}-\d{1,3})\.(\d{1,3})\s*[-–]\s*(?:\1\.)?(\d{1,3})\b")
+REQ_WILD = re.compile(r"\b([A-Z]{1,5}-\d{1,3})\.\*")
 ADR_ID = re.compile(r"\bADR-(\d{1,4})\b")
 DIGEST_DOCS = ["docs/SPEC.md", "docs/ARCHITECTURE.md", "docs/UI.md", "docs/design/DESIGN.md"]
 HEADING = re.compile(r"^(#{1,4})\s+(.*\S)\s*$")
 
 
+def headings(lines: list[str]) -> list[tuple[int, int, str]]:
+    """(index, level, text) of the markdown headings, outside fenced code blocks."""
+    out, fence = [], False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else HEADING.match(line)
+        if m:
+            out.append((i, len(m.group(1)), m.group(2)))
+    return out
+
+
+def spec_ids(lines: list[str]) -> list[str]:
+    """The ids the SPEC defines: those a heading starts with or a bold bullet names."""
+    ids = [m.group(0) for _, _, h in headings(lines) if (m := REQ_ID.match(h))]
+    ids += [m.group(1) for line in lines if (m := re.match(r"^\s*[-*]\s+\*\*([A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?)\b", line))]
+    return list(dict.fromkeys(ids))
+
+
+def task_req_ids(t: dict, lines: list[str]) -> list[str]:
+    """The requirement ids a task refers to, in order: its `requirements`, then every id in its text, with
+    ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. Ids whose prefix the SPEC does
+    not use (a hash name like SHA-256, a process number) are left out."""
+    subs = t.get("subtasks") or []
+    text = "\n".join([t.get("title") or "", t.get("description") or "", *(t.get("acceptance") or []),
+                      *[f"{x.get('title') or ''}\n{x.get('description') or ''}\n" + "\n".join(x.get("acceptance") or [])
+                        for x in subs]])
+    known = spec_ids(lines)
+    prefixes = {x.split("-")[0] for x in known}
+    found: list[str] = list(t.get("requirements") or [])
+    for m in REQ_RANGE.finditer(text):
+        lo, hi = int(m.group(2)), int(m.group(3))
+        if lo <= hi <= lo + 50:
+            found += [f"{m.group(1)}.{n}" for n in range(lo, hi + 1)]
+    for m in REQ_WILD.finditer(text):
+        found += [x for x in known if x.startswith(m.group(1) + ".")] or [m.group(1)]
+    found += REQ_ID.findall(REQ_WILD.sub(" ", text))
+    return [x for x in dict.fromkeys(found) if x.split("-")[0] in prefixes]
+
+
 def spec_sections(lines: list[str], ids: list[str]) -> tuple[list[tuple[int, int]], list[str]]:
     """Line ranges (0-based, end exclusive) of the SPEC text for the ids: a heading that starts with the id
-    takes its whole section, a bullet that names it (`- **AC-004.2**`) its paragraph. Returns the ranges in
-    document order and the ids that were not found."""
+    takes its whole section, a bullet that names it (`- **AC-004.2**`) its paragraph with its nested lines.
+    Returns the ranges in document order and the ids that were not found."""
+    heads = headings(lines)
     ranges, missing = [], []
     for rid in ids:
         pat = re.compile(rf"(?<![\w.-]){re.escape(rid)}(?![\w.]|-\d)")
         found = None
-        for i, line in enumerate(lines):
-            m = HEADING.match(line)
-            if m and pat.match(m.group(2)):
-                level = len(m.group(1))
-                end = next((j for j in range(i + 1, len(lines))
-                            if (h := HEADING.match(lines[j])) and len(h.group(1)) <= level), len(lines))
+        for k, (i, level, text) in enumerate(heads):
+            if pat.match(text):
+                end = next((j for j, lv, _ in heads[k + 1:] if lv <= level), len(lines))
                 found = (i, end)
                 break
         if not found:
             for i, line in enumerate(lines):
-                if re.match(r"^\s*[-*]\s+\*\*", line) and pat.search(line.split("**")[1] if "**" in line else ""):
+                m = re.match(r"^(\s*)[-*]\s+\*\*([^*]+)\*\*", line)
+                if m and pat.match(m.group(2)):
+                    indent = len(m.group(1))
                     end = i + 1
-                    while end < len(lines) and lines[end].strip() and not re.match(r"^\s*[-*]\s|^#", lines[end]):
+                    while end < len(lines) and lines[end].strip():
+                        ln = lines[end]
+                        if HEADING.match(ln) or (re.match(r"^\s*[-*]\s", ln) and len(ln) - len(ln.lstrip()) <= indent):
+                            break  # a sibling bullet or a heading ends it; nested lines belong to it
                         end += 1
                     found = (i, end)
                     break
@@ -1468,83 +1522,103 @@ def spec_sections(lines: list[str], ids: list[str]) -> tuple[list[tuple[int, int
 
 def doc_toc(lines: list[str]) -> list[str]:
     """Headings of levels 2-3 with their line numbers (1-based), for reading a document by section."""
-    out, fence = [], False
-    for i, line in enumerate(lines, 1):
-        if line.startswith("```"):
-            fence = not fence
-        m = None if fence else HEADING.match(line)
-        if m and len(m.group(1)) in (2, 3):
-            out.append(f"{'  ' if len(m.group(1)) == 3 else ''}- L{i}: {m.group(2)}")
-    return out
+    return [f"{'  ' if level == 3 else ''}- L{i + 1}: {text}" for i, level, text in headings(lines) if level in (2, 3)]
 
 
-def cmd_task_context(p: Project, a) -> None:
-    """A digest of what one task needs, written to .satory/run/context/<task>.md before every round: the full
-    text of the requirements it refers to, the tables of contents of the documents with line numbers (to read
-    them by section), the mockups it names, the files changed on its branch, the agents' notes from earlier
-    rounds and the last findings of each review. The documents stay the source of truth; this is a map."""
-    tid = a.task
+REVIEW_FAIL = ("fail", "changes_requested", "gate-fail")
+
+
+def write_context(p: Project, tid: str) -> dict:
+    """Writes the context digest of a task to .satory/run/context/<task>.md: the full text of the
+    requirements it refers to, the tables of contents of the documents with line numbers (to read them by
+    section), the ADRs and mockups it names, the files changed on its branch, the agents' notes and the last
+    findings of each review. The CLI rewrites it whenever the work changes (task start, after Dev, after QA,
+    after each review), so every agent sees the current state. The documents stay the source of truth."""
+    out = p.run / "context" / f"{tid}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)  # a failed rewrite never leaves the previous round's digest behind
     t = p.task(p.plan(), tid)
     st = p.state["tasks"].get(tid) or {}
-    text = "\n".join([t.get("title", ""), t.get("description", ""), *t.get("acceptance", []),
-                      *[f"{x.get('title', '')}\n{x.get('description', '')}\n" + "\n".join(x.get("acceptance", []))
-                        for x in t.get("subtasks", [])]])
-    ids = list(dict.fromkeys([*t.get("requirements", []), *REQ_ID.findall(text)]))
     parts = [f"# Context digest - {tid}: {t.get('title', '')}", "",
-             "Written by satory before every round. It is a map, not a replacement: the documents remain the "
-             "source of truth. Read a document by section (Read with offset/limit from the line numbers below) "
-             "and the whole of it only when the task really spans it.", ""]
-    missing: list[str] = []
+             "Written by satory whenever the work on the task changes. It is a map, not a replacement: the "
+             "documents remain the source of truth. Read a document by section (Read with offset/limit from the "
+             "line numbers below) and the whole of it only when the task really spans it.", ""]
+    ids, missing = [], []
     spec = p.root / "docs" / "SPEC.md"
-    if spec.exists() and ids:
+    if spec.exists():
         lines = spec.read_text(encoding="utf-8").splitlines()
-        ranges, missing = spec_sections(lines, ids)
-        parts += [f"## Requirements of this task (full text from docs/SPEC.md: {', '.join(ids)})", ""]
-        for a0, b0 in ranges:
-            parts += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
-        if missing:
-            parts += [f"Not found in docs/SPEC.md (look them up): {', '.join(missing)}", ""]
+        ids = task_req_ids(t, lines)
+        if ids:
+            ranges, missing = spec_sections(lines, ids)
+            parts += [f"## Requirements of this task (text from docs/SPEC.md: {', '.join(ids)})", ""]
+            for a0, b0 in ranges:
+                parts += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
+            if missing:
+                parts += [f"Not found in docs/SPEC.md: {', '.join(missing)}", ""]
     parts += ["## Tables of contents", ""]
     for rel in DIGEST_DOCS:
         f = p.root / rel
         if f.exists():
             lines = f.read_text(encoding="utf-8").splitlines()
             parts += [f"### {rel} ({len(lines)} lines)", *doc_toc(lines), ""]
+    text = "\n".join([t.get("description") or "", *(t.get("acceptance") or []),
+                      *[f"{x.get('description') or ''}" for x in (t.get("subtasks") or [])]])
     adr_dir = p.root / "docs" / "adr"
     adrs = [f for n in dict.fromkeys(ADR_ID.findall(text)) for f in sorted(adr_dir.glob(f"{int(n):03d}-*.md"))[:1]] \
         if adr_dir.is_dir() else []
     if adrs:
         parts += ["## ADRs named by the task", "", *[f"- {p.rel(f)}" for f in adrs], ""]
-    mockups = sorted(set(re.findall(r"docs/design/mockups/[\w./-]+\.html", text)))
     mdir = p.root / "docs" / "design" / "mockups"
-    if mockups or mdir.is_dir():
-        parts += ["## Mockups", ""]
-        if mockups:
-            parts += ["Named by the task:", *[f"- {m}" for m in mockups]]
-        if mdir.is_dir():
-            parts += ["All pages: " + ", ".join(sorted(x.name for x in mdir.glob("*.html")))]
-        parts += [""]
+    if mdir.is_dir():
+        pages = sorted(x.name for x in mdir.glob("*.html"))
+        named = [x for x in pages if re.search(rf"(?<![\w-]){re.escape(x)}", text)]
+        parts += ["## Mockups (docs/design/mockups/)", ""]
+        if named:
+            parts += ["Named by the task: " + ", ".join(named)]
+        parts += ["All pages: " + ", ".join(pages), ""]
     if st.get("base"):
-        changed = [x for x in p.git("diff", "--name-only", st["base"], "HEAD").splitlines()
+        changed = [x for x in p.git("diff", "--name-only", st["base"]).splitlines()
+                   + p.git("ls-files", "--others", "--exclude-standard").splitlines()
                    if x and not x.startswith((".satory/", "docs/tasks/"))]
+        changed = list(dict.fromkeys(changed))
         if changed:
             parts += [f"## Files changed on this task's branch so far ({len(changed)})", "",
                       *[f"- {x}" for x in changed[:120]], *(["- ..."] if len(changed) > 120 else []), ""]
     notes_dir = p.run / "notes"
     notes = sorted(notes_dir.glob(f"{tid}-*.md")) if notes_dir.is_dir() else []
     if notes:
-        parts += ["## Notes from earlier rounds (read your own first)", "", *[f"- {p.rel(x)}" for x in notes], ""]
+        parts += ["## Notes from earlier rounds (each role reads only its own)", "",
+                  *[f"- {p.rel(x)}" for x in notes], ""]
     reviews = st.get("reviews") or {}
     if reviews:
-        parts += ["## Last findings of each review in this task", ""]
+        rounds = st.get("rounds", 0)
+        parts += ["## Last findings of each check in this task", ""]
         for stage, r in reviews.items():
-            parts += [f"### {stage} (round {r.get('round')}, {r.get('verdict') or '-'})", r.get("note", "").strip(), ""]
-    out = p.run / "context" / f"{tid}.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
+            stale = f"; not re-checked since round {r.get('round')}" if (r.get("round") or 0) < rounds else ""
+            parts += [f"### {stage} (round {r.get('round')}, {r.get('verdict') or '-'}{stale})", r.get("note", "").strip(), ""]
     body = "\n".join(parts).rstrip() + "\n"
     out.write_text(body, encoding="utf-8")
-    emit({"ok": True, "path": p.rel(out), "chars": len(body), "requirements": ids, "missing": missing,
-          "notes": [p.rel(x) for x in notes]})
+    return {"path": p.rel(out), "chars": len(body), "requirements": ids, "missing": missing,
+            "notes": [p.rel(x) for x in notes]}
+
+
+def refresh_context(p: Project, tid: str) -> str | None:
+    """write_context for the steps: an error is returned, never raised (the digest must not fail a step)."""
+    try:
+        write_context(p, tid)
+        return None
+    except Exception as e:  # noqa: BLE001 - any failure only costs the digest
+        return f"context digest: {e}"
+
+
+def save_review(p: Project, st: dict, stage: str, rnd: int, verdict: str, note: str) -> None:
+    """The last findings of a check, kept in the state: the digest shows them and a resumed task gets the
+    open ones as its feedback, so they survive an interrupted build."""
+    st.setdefault("reviews", {})[stage] = {"round": rnd, "verdict": verdict, "note": (note or "")[:6000]}
+
+
+def cmd_task_context(p: Project, a) -> None:
+    emit({"ok": True, **write_context(p, a.task)})
 
 
 def guard(p: Project, ref: str, allowed) -> list[str]:
@@ -1584,8 +1658,13 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   for k, g in gates.items()]
         journal_pending(p, tid, a.owner, rnd, "ok" if ok else "gate-fail", join_note(note, extra))
+        if not ok:
+            save_review(p, st, "build/lint", rnd, "gate-fail", "\n".join(extra))
+        else:
+            (st.get("reviews") or {}).pop("build/lint", None)
         p.save_state()
-        emit({"ok": ok, "violations": violations, "gates": gates, "checkpoint": st["checkpoint"]})
+        emit({"ok": ok, "violations": violations, "gates": gates, "checkpoint": st["checkpoint"],
+              "context_error": refresh_context(p, tid)})
 
     elif a.step == "pre-qa":
         res = deploy(p, "staging", label=f"{tid}-r{rnd}")
@@ -1677,10 +1756,11 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
+        save_review(p, st, "qa", rnd, verdict, join_note(note, extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
         p.save_state()
         emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used,
               "tests": {"listed": listed, "count": len(names), "missing": []},
-              "gates": gates, "checkpoint": st["checkpoint"]})
+              "gates": gates, "checkpoint": st["checkpoint"], "context_error": refresh_context(p, tid)})
 
     elif a.step == "security-scan":
         scans = []
@@ -1703,8 +1783,9 @@ def cmd_step(p: Project, a) -> None:
         extra = [f"- Whole e2e suite: {'✓' if g['ok'] else '✗ - back to Dev; the next round runs it again in QA'}"]
         extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
+        save_review(p, st, "full e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra + [f"- Log: {g.get('log')}"]))
         p.save_state()
-        emit({"ok": g["ok"], "gates": {"e2e": g}})
+        emit({"ok": g["ok"], "gates": {"e2e": g}, "context_error": refresh_context(p, tid)})
 
     elif a.step == "docs-check":
         changed = changed_files(p, ck)
@@ -1720,10 +1801,9 @@ def cmd_step(p: Project, a) -> None:
             p.git("clean", "-fdq")
         extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
         journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
-        # the last findings of each review survive an interrupted build (the context digest shows them)
-        st.setdefault("reviews", {})[a.stage] = {"round": rnd, "verdict": a.verdict or "ok", "note": (note or "")[:6000]}
+        save_review(p, st, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
         p.save_state()
-        emit({"ok": True, "reverted": sorted(changed)})
+        emit({"ok": True, "reverted": sorted(changed), "context_error": refresh_context(p, tid)})
 
     else:
         raise SatoryError(f"unknown step {a.step}")

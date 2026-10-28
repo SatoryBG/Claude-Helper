@@ -61,8 +61,10 @@ the tables of contents of the documents with line numbers (read them by section)
 - **major**: a probable bug, an incomplete or wrong mini-spec, broken architecture, superfluous scope.
 - **minor** / **nit**: improvements that do not stop the task.
 
-An edge case that neither the SPEC nor the mini-spec defines is a SPEC gap (below), not a major finding -
-unless it crashes, loses or corrupts data, or opens a security hole.
+A question of product behaviour that neither the SPEC nor the mini-spec decides (what the product should
+do in a case nobody specified) is a SPEC gap (below), not a finding. The correctness of the implementation
+is always yours to judge with its normal severity: a wrong result, a race, an unhandled null, empty value
+or error, a broken rule of `docs/ARCHITECTURE.md`, an ADR or CLAUDE.md.
 
 The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`.
 Every finding has a file, a line, what the problem is and specifically what to change.

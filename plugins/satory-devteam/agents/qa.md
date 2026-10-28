@@ -17,7 +17,8 @@ A task with **subtasks** in its description (a bundle of fixes) is tested whole:
 
 Start from the context digest `.satory/run/context/<ID>.md`: the full text of the task's requirements,
 the tables of contents of the documents with line numbers (read them by section), the files changed so
-far, your notes from earlier rounds and the last findings of each review.
+far, your own notes from earlier rounds (`<ID>-qa.md`; the Developer's notes describe the implementation -
+do not test from them) and the last findings of each check.
 
 Write the tests from these documents, not from the implementation. Read the code only to learn how to
 connect to it (class names, paths, selectors), not what it "should" do. If the mini-spec is incomplete
@@ -98,20 +99,23 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 ## SPEC gaps
 When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after
 records exist, a record that contradicts another one, a value that is surely a typo), test what the
-mini-spec says and put the gap in `spec_gaps` as a question for the user, with options. It does not
+mini-spec says and put the gap in `spec_gaps` as a question for the user, with options. (Data you actually
+see lost or corrupted is a defect, see "Verdict"; a missing rule that could let data go wrong is a gap.) It does not
 change your verdict. Report each gap once, in the round you notice it. Write it in the documentation language (given in
 the task) and skip anything already in the register (the list is in your task), even reworded. Dev's
 `assumptions` of this round are in that list too: a gap Dev already reported as a decision is not reported again.
 
 ## Verdict
 `fail` if any test you ran fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.
-A **defect** is behaviour that contradicts an acceptance criterion, the SPEC, the mini-spec, `docs/UI.md`
-or a clarification from the user; a regression of an earlier feature; a crash or a server error (5xx);
-lost or corrupted data; a security problem; or a `serious`/`critical` accessibility violation. Behaviour
-that none of these sources defines (an unusual input, a rare combination, a format nobody specified) is
-not a defect: do not write a test that asserts an expectation of your own for it - put it in
-`spec_gaps` as a question with options, and it does not change your verdict. The user decides whether
-it is worth a change; an accepted answer becomes a task.
+A **defect** is behaviour that contradicts an acceptance criterion, the SPEC, the mini-spec, `docs/UI.md`,
+`docs/ARCHITECTURE.md`, an ADR, CLAUDE.md (for example access to another user's resource, the error format)
+or a clarification from the user; a wrong result; a regression of an earlier feature; a crash or a server
+error (5xx); data you actually see lost or corrupted; a security problem; or a `serious`/`critical`
+accessibility violation. When the expected outcome is a product decision that none of these sources makes
+(what should happen with an unusual input, a rare combination, a format nobody specified), it is not a
+defect: do not write a test that asserts an expectation of your own for it - put it in `spec_gaps` as a
+question with options, and it does not change your verdict. The user decides whether it is worth a
+change; an accepted answer becomes a task.
 An earlier test that is only flaky (above) is not a reason to fail the task: fix its wait in this round.
 Only if you cannot, say so in the summary with the cause - Dev cannot change tests, so a `fail` for it
 alone would only cost rounds.

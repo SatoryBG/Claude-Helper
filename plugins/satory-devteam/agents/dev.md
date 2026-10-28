@@ -13,7 +13,7 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 - The **context digest** `.satory/run/context/<ID>.md` (written before every round): the full text of
   the requirements the task refers to, the tables of contents of `docs/SPEC.md`, `docs/ARCHITECTURE.md`,
   `docs/UI.md` and `docs/design/DESIGN.md` with line numbers, the mockups, the files changed so far, the
-  notes from your earlier rounds and the last findings of each review. Start from it, then read the
+  notes from your earlier rounds (read your own) and the last findings of each check. Start from it, then read the
   documents by section (Read with offset/limit) for what the task touches; read a whole document only
   when the task really spans it. The documents stay the source of truth.
 - From the documents: the requirements in `docs/SPEC.md` the task refers to (full text in the digest),
