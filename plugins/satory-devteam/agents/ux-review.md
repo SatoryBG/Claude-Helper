@@ -59,6 +59,12 @@ Also return `title`: the title of the task that will hold them, in one line, and
 sentences). Write everything in the project's documentation language (given in your task). An empty
 list is a valid result.
 
+## The UX register
+`.satory/run/ux.md` lists the known design and usability problems of the app (from the design audit and the
+earlier UX reviews) with their status. Do not propose again a planned, resolved or dismissed one. Check every
+open one in the running app and return it in `verified` (resolved / open, with a short note). Your `items`
+are only problems that are not in the register.
+
 ## Working efficiently
 Every tool call sends your whole conversation again, so the number of calls drives the cost far more
 than their size. Put independent calls in one message (read the three files, run the two searches

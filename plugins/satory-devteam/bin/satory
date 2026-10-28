@@ -359,6 +359,10 @@ def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]
         if r.returncode != 0:
             return False, set()
         names.update(line.strip() for line in r.stdout.splitlines() if line.strip())
+    try:  # the latest full list, for the coverage register (listing the tests can take minutes)
+        write_json(p.run / "tests.json", {"listed": now(), "names": sorted(names)})
+    except OSError:
+        pass
     return True, names
 
 
@@ -1166,6 +1170,9 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
     lines += [f"- {x}: already started or done - no new dependency" for x in data.get("_skipped_depends", [])]
+    linked = ux_link_tasks(p, added)
+    if linked:
+        lines += [f"- UX problems planned: {', '.join(linked)}"]
     journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
     journal_flush(p)
     render_plan(p, plan)
@@ -1684,6 +1691,16 @@ def write_context(p: Project, tid: str) -> dict:
             if missing:
                 parts += [f"Not found in docs/SPEC.md: {', '.join(missing)}", ""]
         parts += spec_cross_cutting(lines, model, ids)
+    if spec.exists() and ids:
+        try:
+            cov = [c for c in compute_coverage(p, model)["items"] if c["id"] in ids or c.get("parent") in ids]
+            if cov:
+                parts += ["## Coverage of the task's criteria (tests that already check them)", "",
+                          "A test checks a criterion as it was when the test was written: a criterion this task "
+                          "changes (see the change history of docs/SPEC.md) needs its tests updated or new ones.", "",
+                          *[f"- {coverage_line(c)}" for c in cov if c["kind"] == "criterion"], ""]
+        except Exception:  # noqa: BLE001 - the coverage is a help, never a reason to fail the digest
+            pass
     parts += ["## Tables of contents", ""]
     for rel in DIGEST_DOCS:
         f = p.root / rel
@@ -1713,6 +1730,10 @@ def write_context(p: Project, tid: str) -> dict:
         if changed:
             parts += [f"## Files changed on this task's branch so far ({len(changed)})", "",
                       *[f"- {x}" for x in changed[:120]], *(["- ..."] if len(changed) > 120 else []), ""]
+    ux = [x for x in ux_load(p)["items"] if x.get("task") == tid and x["status"] in UX_OPEN]
+    if ux:
+        parts += ["## UX problems this task is to solve (register: .satory/run/ux.md)", "",
+                  *[f"- {ux_line(x)}" + (f": {x['detail'][:200]}" if x.get("detail") else "") for x in ux], ""]
     notes_dir = p.run / "notes"
     notes = sorted(notes_dir.glob(f"{tid}-*.md")) if notes_dir.is_dir() else []
     if notes:
@@ -1943,6 +1964,241 @@ def cmd_finding(p: Project, a) -> None:
         if left:
             progress(p, f"🧽 {len(left)} small improvement(s) from {tid} noted for the polish task")
         return emit({"ok": True, "polish": [f["id"] for f in left]})
+    raise SatoryError(f"unknown action {a.action}")
+
+
+# ----------------------------------------------------------------- coverage ---
+# Which acceptance criterion is covered by which task and which test. A test covers a criterion when its
+# name carries the id ("AC-003.4: ..." in an e2e title, AC003_4_... in a unit test method); a done task's
+# "QA: coverage" section that names the id counts as a weaker, written claim. Built on demand from the
+# requirements model, the plan, the task files and the latest test list (.satory/run/tests.json).
+
+COV_ORDER = ("untested", "claimed", "tested", "planned", "not_planned")
+
+
+def test_ids(name: str) -> set[str]:
+    """The requirement ids a test name carries: AC-003.4 as written, or AC003_4 / NFR012 in a method name."""
+    ids = set(REQ_ID.findall(name))
+    for m in re.finditer(r"(?<![A-Za-z])([A-Z]{1,5})(\d{3})(?:_(\d{1,3}))?(?=_|\b)", name):
+        if m.group(1) not in NOT_REQ:  # T052_... is a task, not a requirement
+            ids.add(f"{m.group(1)}-{m.group(2)}" + (f".{m.group(3)}" if m.group(3) else ""))
+    return ids
+
+
+def qa_coverage_ids(text: str) -> set[str]:
+    m = re.search(r"^## QA: coverage\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return set(REQ_ID.findall(m.group(1))) if m else set()
+
+
+def compute_coverage(p: Project, model: dict, names: list[str] | None = None) -> dict:
+    plan = p.plan()
+    status = {t["id"]: merged_status(p, t) for t in plan["tasks"]}
+    if names is None:
+        names = load_json(p.run / "tests.json", {}).get("names") or []
+    by_test: dict[str, list[str]] = {}
+    for n in names:
+        for i in test_ids(n):
+            by_test.setdefault(i, []).append(n)
+    items = [it for it in model["items"] if it["kind"] in ("criterion", "cross")]
+    parent_of = {it["id"]: it.get("parent") for it in items}
+    tasks_of: dict[str, list[str]] = {}
+    claims: dict[str, list[str]] = {}
+    for t in plan["tasks"]:
+        ids = set(task_req_ids(t, model))
+        f = p.root / "docs" / "tasks" / f"{t['id']}.md"
+        claimed = qa_coverage_ids(f.read_text(encoding="utf-8")) if f.exists() and status[t["id"]] == "done" else set()
+        for it in items:
+            if it["id"] in ids or (parent_of[it["id"]] and parent_of[it["id"]] in ids):
+                tasks_of.setdefault(it["id"], []).append(t["id"])
+            if it["id"] in claimed:
+                claims.setdefault(it["id"], []).append(t["id"])
+    out = []
+    for it in items:
+        tasks = tasks_of.get(it["id"], [])
+        done = [x for x in tasks if status.get(x) == "done"]
+        tests = by_test.get(it["id"], [])
+        if tests:
+            st = "tested"
+        elif claims.get(it["id"]):
+            st = "claimed"
+        elif len(done) < len(tasks):
+            st = "planned"  # a task still to do covers it (a done one may have touched only part of its requirement)
+        elif done:
+            st = "untested"
+        else:
+            st = "not_planned"
+        if it["kind"] == "cross" and st == "not_planned":
+            st = "untested" if any(status[t["id"]] == "done" for t in plan["tasks"]) and not tests else st
+        out.append({"id": it["id"], "kind": it["kind"], "title": it["title"], "parent": it.get("parent"),
+                    "status": st, "tasks": tasks, "done_tasks": done, "claimed_in": claims.get(it["id"], []),
+                    "tests": len(tests), "test_examples": tests[:3]})
+    counts = {k: sum(1 for x in out if x["status"] == k) for k in COV_ORDER}
+    return {"items": out, "counts": counts, "tests_listed": len(names),
+            "test_list": load_json(p.run / "tests.json", {}).get("listed")}
+
+
+def coverage_line(c: dict) -> str:
+    ex = f" - e.g. {c['test_examples'][0][:110]}" if c["test_examples"] else ""
+    return (f"{c['id']} [{c['status']}] {c['title'][:70]}" + (f" - tests: {c['tests']}" if c["tests"] else "")
+            + (f" - claimed in {', '.join(c['claimed_in'])}" if c["status"] == "claimed" else "") + ex)
+
+
+def cmd_coverage(p: Project, a) -> None:
+    spec = p.root / "docs" / "SPEC.md"
+    if not spec.exists():
+        raise SatoryError("docs/SPEC.md does not exist")
+    model = spec_model(p, spec.read_text(encoding="utf-8").splitlines())
+    names = None
+    if a.refresh:
+        listed, found = test_names(p)
+        if not listed:
+            raise SatoryError("the test list could not be produced (commands.test_list)")
+        names = sorted(found)
+    cov = compute_coverage(p, model, names)
+    if a.task:
+        ids = set(task_req_ids(p.task(p.plan(), a.task), model))
+        cov["items"] = [c for c in cov["items"] if c["id"] in ids or (c.get("parent") in ids)]
+    write_json(p.run / "coverage.json", cov)
+    lines = [f"# Coverage of the acceptance criteria ({now()})", "",
+             "Statuses: tested (a test name carries the id), claimed (only the task's 'QA: coverage' names it), "
+             "untested (a done task covers it, no test), planned, not_planned.", "",
+             f"Counts: {', '.join(f'{k} {v}' for k, v in cov['counts'].items() if v)}; tests listed: {cov['tests_listed']}"
+             + (f" ({cov['test_list']})" if cov.get("test_list") else " - run `satory coverage --refresh` to list them"), ""]
+    for k in COV_ORDER:
+        group = [c for c in cov["items"] if c["status"] == k]
+        if group:
+            lines += [f"## {k} ({len(group)})", "", *[f"- {coverage_line(c)}" for c in group], ""]
+    (p.run / "coverage.md").write_text("\n".join(lines), encoding="utf-8")
+    emit({"ok": True, "path": p.rel(p.run / "coverage.md"), "counts": cov["counts"], "tests_listed": cov["tests_listed"],
+          "untested": [c["id"] for c in cov["items"] if c["status"] == "untested"],
+          "claimed": [c["id"] for c in cov["items"] if c["status"] == "claimed"],
+          "not_planned": [c["id"] for c in cov["items"] if c["status"] == "not_planned"]})
+
+
+# ----------------------------------------------------------------------- ux ---
+# The register of the app's design and usability problems, for the whole project (.satory/run/ux.json): the
+# problems of the design audit (docs/design/AUDIT.md) and of the UX reviews, each with its id, page, severity
+# and status - open, planned (in a task), resolved (confirmed by the UI reviewer or a later UX review) or
+# dismissed (by the user). A later UX review verifies the open ones and does not propose the others again.
+
+UX_OPEN = ("open", "planned")
+UX_LEVEL = {"критичен": "critical", "висок": "high", "среден": "medium", "нисък": "low",
+            "critical": "critical", "high": "high", "medium": "medium", "low": "low", "major": "high", "minor": "low"}
+AUDIT_ITEM = re.compile(r"^\s*\d+\.\s+\*\*([^\s\[\]*]{1,6}-\d{1,3})\s+\[([^\]]+)\]\s+(.+?)\*\*\s*(.*)$")
+
+
+def ux_load(p: Project) -> dict:
+    return load_json(p.run / "ux.json", {"next": 1, "items": []})
+
+
+def ux_line(x: dict) -> str:
+    return (f"{x['id']} [{x['severity']}] {x['title']}" + (f" ({x['page']})" if x.get("page") else "")
+            + f" - {x['status']}" + (f" in {x['task']}" if x.get("task") else ""))
+
+
+def ux_save(p: Project, reg: dict) -> None:
+    write_json(p.run / "ux.json", reg)
+    lines = ["# UX register", "", *[f"- {ux_line(x)}" for x in reg["items"]]]
+    (p.run / "ux.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def ux_add(reg: dict, items: list[dict], source: str, task: str | None = None) -> list[str]:
+    added = []
+    for n in items:
+        title = " ".join(str(n.get("title") or "").split())
+        if not title:
+            continue
+        page = str(n.get("page") or "").strip()
+        if any(x["title"] == title and x.get("page", "") == page and x["status"] != "dismissed" for x in reg["items"]):
+            continue
+        ref = str(n.get("ref") or "").strip()
+        xid = ref if ref and not any(x["id"] == ref for x in reg["items"]) else f"UX-{reg['next']}"
+        if not ref or xid != ref:
+            reg["next"] += 1
+        sev = UX_LEVEL.get(str(n.get("severity") or "").strip().lower(), str(n.get("severity") or "medium"))
+        reg["items"].append({"id": xid, "title": title, "page": page, "severity": sev, "detail": str(n.get("detail") or ""),
+                             "source": source, "status": "planned" if task else "open", "task": task,
+                             "history": [{"date": now(), "event": f"raised by {source}" + (f", planned in {task}" if task else "")}]})
+        added.append(xid)
+    return added
+
+
+def ux_link_tasks(p: Project, tasks: list[dict]) -> list[str]:
+    """Marks as planned the open problems a new task names by id (the design tasks name the audit problems)."""
+    reg = ux_load(p)
+    if not reg["items"]:
+        return []
+    linked = []
+    for t in tasks:
+        text = json.dumps(t, ensure_ascii=False)
+        for x in reg["items"]:
+            if x["status"] == "open" and re.search(rf"(?<![\w-]){re.escape(x['id'])}(?!\d)", text):
+                x["status"], x["task"] = "planned", t["id"]
+                x.setdefault("history", []).append({"date": now(), "event": f"planned in {t['id']}"})
+                linked.append(x["id"])
+    if linked:
+        ux_save(p, reg)
+    return linked
+
+
+def cmd_ux(p: Project, a) -> None:
+    reg = ux_load(p)
+    if a.action == "list":
+        items = [x for x in reg["items"] if (not a.open or x["status"] in UX_OPEN) and (not a.task or x.get("task") == a.task)]
+        return emit({"ok": True, "items": items, "count": len(items),
+                     "counts": {k: sum(1 for x in reg["items"] if x["status"] == k) for k in ("open", "planned", "resolved", "dismissed")}})
+    if a.action == "import-audit":
+        path = Path(a.target or "docs/design/AUDIT.md")
+        path = path if path.is_absolute() else p.root / path
+        if not path.exists():
+            raise SatoryError(f"{path} does not exist")
+        page, items = "", []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            h = HEADING.match(line)
+            if h and len(h.group(1)) == 2:
+                page = re.sub(r"^\d+\.\s*", "", h.group(2)).strip()
+            m = AUDIT_ITEM.match(line)
+            if m:
+                items.append({"ref": m.group(1), "severity": m.group(2), "title": m.group(3).strip().rstrip("."),
+                              "page": page, "detail": m.group(4).strip()[:600]})
+        added = ux_add(reg, items, "design audit")
+        ux_save(p, reg)
+        return emit({"ok": True, "found": len(items), "added": added})
+    if a.action == "link":  # the open problems that tasks still to do name by id become planned in them
+        plan = p.plan()
+        linked = ux_link_tasks(p, [t for t in plan["tasks"] if merged_status(p, t) != "done"])
+        return emit({"ok": True, "linked": linked})
+    if a.action == "dismiss":
+        x = next((x for x in reg["items"] if x["id"] == a.target), None)
+        if not x:
+            raise SatoryError(f"unknown UX problem {a.target}")
+        x["status"] = "dismissed"
+        x.setdefault("history", []).append({"date": now(), "event": "dismissed by the user", "note": read_note(a).strip()})
+        ux_save(p, reg)
+        return emit({"ok": True})
+    try:
+        data = json.loads(read_note(a) or "[]")
+    except json.JSONDecodeError as e:
+        raise SatoryError(f"ux {a.action} expects JSON on stdin: {e}")
+    if a.action == "add":
+        added = ux_add(reg, data if isinstance(data, list) else [data], a.source or "review", a.task)
+        ux_save(p, reg)
+        return emit({"ok": True, "added": added})
+    if a.action == "verify":  # [{id, status: resolved|open, note}] from the UI reviewer or a UX review
+        done, warnings = [], []
+        for v in data:
+            x = next((x for x in reg["items"] if x["id"] == str(v.get("id", "")).strip()), None)
+            if not x or x["status"] not in UX_OPEN:
+                warnings.append(f"{v.get('id')}: not an open UX problem")
+                continue
+            if v.get("status") == "resolved":
+                x["status"] = "resolved"
+                x["task"] = a.task or x.get("task")
+                done.append(x["id"])
+            x.setdefault("history", []).append({"date": now(), "event": f"{v.get('status')} ({a.source or 'review'})",
+                                                "note": str(v.get("note") or "")})
+        ux_save(p, reg)
+        return emit({"ok": True, "resolved": done, "warnings": warnings})
     raise SatoryError(f"unknown action {a.action}")
 
 
@@ -2496,6 +2752,18 @@ def main() -> None:
     s = sub.add_parser("spec")
     s.add_argument("action", choices=["check"])
 
+    s = sub.add_parser("ux")
+    s.add_argument("action", choices=["add", "list", "verify", "dismiss", "import-audit", "link"])
+    s.add_argument("target", nargs="?", help="dismiss: the id; import-audit: the audit file (default docs/design/AUDIT.md)")
+    s.add_argument("--task", help="add: the task that will solve them (planned); verify: the task that solved them; list: only its")
+    s.add_argument("--source", help="add/verify: who (e.g. 'ux review M2', 'ui T-062 r2')")
+    s.add_argument("--open", action="store_true", help="list: only open and planned")
+    s.add_argument("--note-stdin", action="store_true")
+
+    s = sub.add_parser("coverage")
+    s.add_argument("--task", help="only the criteria of this task")
+    s.add_argument("--refresh", action="store_true", help="list the tests first (commands.test_list; can take minutes)")
+
     s = sub.add_parser("finding")
     s.add_argument("action", choices=["record", "dispute", "list", "polish"])
     s.add_argument("task")
@@ -2546,7 +2814,7 @@ def main() -> None:
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
-                    "finding": cmd_finding}
+                    "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock, "context": cmd_task_context}[a.action](p, a)

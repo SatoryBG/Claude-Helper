@@ -231,6 +231,27 @@ again. A round keeps both small without leaving out a check:
 - **Fewer turns.** Every role asks for independent tool calls in one message, related shell commands in
   one call and files read in larger ranges, and never for a skipped check.
 
+## Coverage and the UX register
+
+**Coverage of the acceptance criteria** (`satory coverage`, `.satory/run/coverage.md`): for every criterion
+and NFR of the SPEC, the tasks that cover it and the tests that check it, with a status - `tested` (a test
+name carries the id: `AC-003.4: ...` in an e2e or Vitest title, `AC003_4_...` in a unit test method),
+`claimed` (only a done task's "QA: coverage" names it), `untested` (a done task covers it, no test),
+`planned` (a task still to do covers it) or `not_planned`. It is built from the requirements model, the plan,
+the task files and the latest test list (`.satory/run/tests.json`, written whenever the tests are listed;
+`--refresh` lists them now). QA puts the criterion id in every test name; the digest shows which criteria of
+the task already have tests; the milestone audit starts from the untested and claimed ones; `/satory-devteam:status`
+shows the counts and the release lists every untested criterion before asking.
+
+**The UX register** (`satory ux`, `.satory/run/ux.md`): the design and usability problems of the app for the
+whole project - from the design audit (each problem a line `N. **P-01 [High] Title.** ...` in AUDIT.md, read
+by `ux import-audit`) and from the UX reviews - with id, page, severity and status: `open`, `planned` (in a
+task: a new task that names the id plans it; `ux link` does it for the tasks already planned), `resolved`
+(confirmed by the UI reviewer of that task or a later UX review) or `dismissed` (by the user, `ux dismiss`).
+The digest lists the problems a task is to solve; the UI reviewer verifies them (`ux_verified`); a UX review
+checks the open ones, never proposes the others again, and its new problems are planned in its improvement
+task.
+
 ## Tests in a round
 
 A round does not run the whole test suite more than it has to. Dev runs `build`, `lint` and `test`
@@ -319,6 +340,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.0** - the coverage register (`satory coverage`): every criterion with its tasks, its tests and a
+  status, from the test names and the task files; QA names its tests by criterion; the digest, the milestone
+  audit, the status and the release use it. The UX register (`satory ux`): the problems of the design audit
+  and the UX reviews with id, page, severity and status; tasks plan them by id, the UI reviewer and later UX
+  reviews verify them, the user may dismiss one.
 - **1.5.0** - a register of findings per task (`satory finding`): stable ids, statuses, one-line list
   in the digest and a full record with history per finding; checks verify their open findings instead of
   reporting them again, Dev fixes or disputes each one, an unverified blocking finding stays open, the

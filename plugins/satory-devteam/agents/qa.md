@@ -59,6 +59,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 - Test names are stable, unique and descriptive (which criterion they check). Every e2e test of the
   task has the task id in its full title (e.g. `test.describe('T-011 ...')`): the check after you runs
   only this task's e2e tests (and the smoke tests), selected by it.
+- **The criterion id is in the name** of every test that checks one: `AC-003.4: ...` in an e2e or Vitest
+  title, `AC003_4_...` in a unit test method (`NFR012_...` for an NFR). The coverage register (`satory
+  coverage`) is built from these names; the digest shows which criteria of the task already have tests, so
+  you add what is missing instead of repeating them.
 - Do not touch `.satory/` (except temporary files in `.satory/run/qa/` and your notes in
   `.satory/run/notes/`) or `docs/JOURNAL.md`.
   Do not commit.

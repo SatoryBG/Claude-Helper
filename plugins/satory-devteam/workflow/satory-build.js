@@ -89,6 +89,11 @@ const VERIFIED = {
     required: ['id', 'status'],
   },
 }
+const UX_VERIFIED = {
+  type: 'array',
+  description: 'For each UX problem of the register you were asked to check (its id): resolved (it is gone in the running app) or open, with a short note',
+  items: { type: 'object', properties: { id: { type: 'string' }, status: { type: 'string', enum: ['resolved', 'open'] }, note: { type: 'string' } }, required: ['id', 'status'] },
+}
 const DEV_SCHEMA = {
   type: 'object',
   properties: {
@@ -182,6 +187,7 @@ const UI_SCHEMA = {
       description: 'New problems only - not the open findings listed in your task (verify those in `verified`)',
     },
     verified: VERIFIED,
+    ux_verified: UX_VERIFIED,
   },
   required: ['verdict', 'summary', 'pages_checked', 'findings', 'verified'],
 }
@@ -263,7 +269,9 @@ const UX_SCHEMA = {
         },
         required: ['title', 'kind', 'impact', 'description', 'pages', 'ui'],
       },
+      description: 'New problems only - not the ones in the UX register (.satory/run/ux.md)',
     },
+    verified: UX_VERIFIED,
   },
   required: ['summary', 'title', 'items'],
 }
@@ -690,14 +698,17 @@ async function addQuestions(items, kind, source, { task, milestone, phase }) {
   }
 }
 
-function auditPrompt(m, tasks, register) {
+function auditPrompt(m, tasks, register, coverage) {
   return `Project: ${PROJECT}
 Milestone: ${m} - all its tasks are done:
 ${bullets(tasks.map(t => `${t.id} - ${t.title} (docs/tasks/${t.id}.md)`))}
 
 Review the data rules of this milestone together with everything built before it (the whole SPEC and the
 code on the current branch). Already in the register - read ${register} and do not repeat any of them, even
-reworded.`
+reworded.${coverage ? `\n\nThe coverage register (which criterion a test checks) is in ${coverage.path}: ${Object.entries(coverage.counts || {}).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(', ')}.` +
+  ((coverage.untested || []).length ? ` Untested criteria of done tasks: ${coverage.untested.join(', ')}.` : '') +
+  ((coverage.claimed || []).length ? ` Only claimed in a task file, no test carries the id: ${coverage.claimed.join(', ')}.` : '') +
+  ' Check these first: a criterion without a test is a `test` item, unless a test does check it under another name (then say which).' : ''}`
 }
 
 function healthPrompt(m, tasks) {
@@ -744,7 +755,10 @@ ${bullets(tasks.map(t => `${t.id} - ${t.title}`))}
 
 The app runs on staging: the URL is deploy.environments.staging.url in .satory/project.json. Walk every
 page, menu and dialog of the whole app (not only this milestone) and find what should be presented or work
-better. Already planned - do not propose it again:
+better. The register of known UX problems is in .satory/run/ux.md (id, page, status): do not propose again
+the planned, resolved or dismissed ones; check each open one in the app and return it in \`verified\`
+(resolved or open). Report in \`items\` only problems that are not in the register. Already planned - do not
+propose it again:
 ${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
 }
 
@@ -769,6 +783,13 @@ missed. Return the final list in the same form.
 ${JSON.stringify(draft, null, 1)}`,
     { phase: 'Milestone review', label: `UX critique ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })) || draft
   const items = out.items || []
+  const checked = out.verified || draft.verified || []
+  if (checked.length) {
+    try {
+      const v = await sh(`ux verify --source ${q(`ux review ${m}`)}`, { phase: 'Milestone review', label: `ux verified ${m}`, note: JSON.stringify(checked) })
+      if (v && (v.resolved || []).length) log(`🎨 ${m}: UX problem(s) confirmed solved: ${v.resolved.join(', ')}`)
+    } catch (e) { log(`Could not update the UX register: ${e.message}`) }
+  }
   if (!items.length) { log(`🎨 ${m} UX review: nothing to improve`); return }
   const next = plan.tasks.find(t => t.status === 'todo')
   const keep = 'Behaviour unchanged: what is calculated, validated and saved stays as the SPEC says; tests that assert the old presentation are adapted by QA'
@@ -785,6 +806,10 @@ ${JSON.stringify(draft, null, 1)}`,
     note: JSON.stringify({ title: `UX improvements after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
   }), 'plan add')
   log(`🎨 ${m} UX review: ${items.length} improvement(s) → ${res.added.join(', ')}`)
+  try {  // the register: the new problems are planned in the improvement task
+    await sh(`ux add --task ${res.added[0]} --source ${q(`ux review ${m}`)}`, { phase: 'Milestone review', label: `ux register ${m}`,
+      note: JSON.stringify(items.map(x => ({ title: x.title, page: (x.pages || []).join(', '), severity: x.impact, detail: x.description }))) })
+  } catch (e) { log(`Could not update the UX register: ${e.message}`) }
 }
 
 // The small improvements noted during the milestone's tasks (minor findings of the Reviewer and the UI
@@ -834,7 +859,9 @@ async function reviewMilestones(plan) {
     const tasks = plan.tasks.filter(t => t.milestone === m)
     if (reg.milestones_reviewed.includes(m) || !tasks.every(t => t.status === 'done')) continue
     if (MILESTONE && m !== MILESTONE) continue
-    const audit = await spawn('auditor', auditPrompt(m, tasks, reg.path),
+    let coverage = null
+    try { coverage = await sh('coverage', { phase: 'Milestone review', label: `coverage ${m}` }) } catch (e) { /* the review goes on without it */ }
+    const audit = await spawn('auditor', auditPrompt(m, tasks, reg.path, coverage && coverage.ok ? coverage : null),
       { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
     if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
     const n = (await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })).length
@@ -1058,6 +1085,12 @@ async function runTask(t) {
       contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiRes.blocking.length ? 'fail' : 'pass'}`,
         { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`))
       uiReviewedAt = aq.checkpoint
+      if ((ui.ux_verified || []).length) {
+        try {
+          const v = await sh(`ux verify --task ${t.id} --source ${q(`ui ${tag}`)}`, { phase: 'UI', label: `ux register ${tag}`, note: JSON.stringify(ui.ux_verified) })
+          if (v && (v.resolved || []).length) log(`🎨 ${tag}: UX problem(s) solved: ${v.resolved.join(', ')}`)
+        } catch (e) { log(`Could not update the UX register: ${e.message}`) }
+      }
       if (uiRes.blocking.length) {
         lastStage = 'ui'
         feedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
@@ -1203,10 +1236,16 @@ realistic data, at 375/768/1280 px, light and dark. Judge it by the established 
 of status, match with the user's world, control, consistency, error prevention, recognition over recall,
 efficiency, aesthetic and minimalist design, error recovery, help) and by visual quality (hierarchy, typography,
 spacing, colour, density, charts). Write ${dir}/docs/design/AUDIT.md: per page, what works, the problems ranked
-by severity with the screenshot paths, and the five most important things a redesign must achieve. Return the
-file, a summary and the key problems.${brief}`,
+by severity with the screenshot paths, and the five most important things a redesign must achieve. Write each
+problem as a numbered line \`N. **P-01 [High] Title.** text\` (ids P-01, P-02 ... unique across the file;
+severity Critical / High / Medium / Low, in the documentation language if it is not English): satory reads them
+into the UX register. Return the file, a summary and the key problems.${brief}`,
     { phase: 'Design', label: 'design audit', model: MODELS['ux-review'], schema: DESIGN_AUDIT_SCHEMA, effort: 'max' })
   if (!audit) throw new Error('the design audit returned no result')
+  try {
+    const imp = await sh(`ux import-audit ${q(`${dir}/docs/design/AUDIT.md`)}`, { phase: 'Design', label: 'ux register' })
+    if (imp && imp.found) log(`🎨 ${imp.found} problem(s) of the design audit in the UX register`)
+  } catch (e) { log(`Could not read the audit into the UX register: ${e.message}`) }
 
   // 2. directions (unless the user chose one of the existing ones)
   let choice = req.choice || null, reasons = 'the user chose it', improvements = []
@@ -1295,7 +1334,8 @@ The app is redesigned: read ${dir}/docs/design/DESIGN.md, the mockups in ${dir}/
 ${dir}/docs/UI.md (all new), and the current code in ${PROJECT}. Plan the tasks that build this design, by area
 (first the foundation: tokens, typography, app shell and shared components; then the pages), each with subtasks,
 "ui": true, behaviour unchanged (what is calculated, validated and saved stays as the SPEC says), description
-naming the mockup files to match and the old tests QA will adapt. Milestone: ${next ? next.milestone : '(the last one)'};
+naming the mockup files to match, the ids of the audit problems it solves (as in AUDIT.md, e.g. P-04 - satory
+plans them in the task from these ids) and the old tests QA will adapt. Milestone: ${next ? next.milestone : '(the last one)'};
 insert_before: ${next ? next.id : '(none - append)'}; no questions (use []). Tasks not done yet:
 ${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone}] ${t.title}`)) : '- (none)'}`,
     { phase: 'Design', label: 'design tasks', model: MODELS.planner, schema: PLANNER_SCHEMA })

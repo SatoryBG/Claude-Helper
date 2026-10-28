@@ -20,6 +20,11 @@ Show the user:
 - `git log <latest tag>..HEAD --oneline` (or the whole log if there is no tag);
 - the staging URL, so they can look at it themselves before deciding;
 - the blocked tasks, if any (they do **not** go in);
+- the coverage of the acceptance criteria: `$SATORY coverage --refresh` (lists the tests first). Show its
+  counts and every criterion that is `untested` (a done task covers it, no test) or only `claimed` (named
+  in a task file, no test carries the id), with its title. They are not tested automatically in what goes
+  to production; recommend planning the tests first (`/satory-devteam:request`) and continue only if the
+  user says so in the approval below;
 - the open questions for the user (`$SATORY question list --open`). If any is `critical`, list them and
   say that they can make the numbers or data wrong in production; recommend answering them first
   (`/satory-devteam:status`) and continue only if the user says so in the approval below.

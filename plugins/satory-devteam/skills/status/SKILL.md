@@ -16,6 +16,11 @@ Talk to the user in the language they write in.
    - staging and prod (URL, image, when), the remote;
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
    - the open questions for the user (`questions` in the status): how many, how many critical.
+   - the coverage of the acceptance criteria: `$SATORY coverage` (from the latest test list): the counts,
+     and the `untested` and `claimed` criteria by id and title (details in `.satory/run/coverage.md`).
+   - the UX register: `$SATORY ux list` - the counts (open, planned, resolved, dismissed); the open ones by
+     id, page and title when the user asks. A problem the user does not want solved:
+     `$SATORY ux dismiss <id> --note-stdin` with their reason.
    - queued changes waiting for the next task boundary: `$SATORY queue list` (how many). If the build
      reported that one could not be merged (a conflict with what a task changed), rebase its branch onto
      main and resolve it with the user (`git rebase main <branch>` in a worktree of that branch); the

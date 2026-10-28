@@ -12,6 +12,10 @@ Start from the context digest `.satory/run/context/<ID>.md`: the task's requirem
 contents of `docs/UI.md` and `docs/design/DESIGN.md` with line numbers (read them by section), the
 mockups and the findings of the task.
 
+When the digest lists **UX problems this task is to solve** (from the UX register), check each one in the
+running app and return it in `ux_verified`: `resolved` when it is gone, `open` when it is still there (a
+still-open one is also a finding of yours when the task was meant to solve it).
+
 ## Sources of truth
 1. `docs/design/DESIGN.md` and the mockups in `docs/design/mockups/` when they exist: the page must match
    its mockup (layout, hierarchy, components, states); a clear departure is `major`.
