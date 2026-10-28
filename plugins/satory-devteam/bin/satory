@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 TRAILER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-CMD_TIMEOUT = 45 * 60
+CMD_TIMEOUT = 90 * 60  # default; project.json command_timeout_minutes overrides it
 HEALTH_TIMEOUT = 120
 PROTECTED = [".satory/**", "docs/JOURNAL.md"]
 DOCS_ALLOWED = ["docs/**", "**/*.md"]
@@ -144,6 +144,13 @@ class Project:
     def main(self) -> str:
         return self.config.get("main_branch", "main")
 
+    def cmd_timeout(self) -> int:
+        """Seconds one command (build, test, e2e) may run; a growing e2e suite needs more."""
+        try:
+            return max(60, int(float(self.config.get("command_timeout_minutes", CMD_TIMEOUT / 60)) * 60))
+        except (TypeError, ValueError):
+            return CMD_TIMEOUT
+
     @property
     def test_globs(self) -> list[str]:
         return self.config.get("paths", {}).get("tests", [])
@@ -258,9 +265,9 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
             try:
                 code = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root,
                                       stdout=f, stderr=subprocess.STDOUT, env=env,
-                                      timeout=CMD_TIMEOUT).returncode
+                                      timeout=p.cmd_timeout()).returncode
             except subprocess.TimeoutExpired:
-                f.write(f"\n[satory] timeout after {CMD_TIMEOUT}s\n")
+                f.write(f"\n[satory] timeout after {p.cmd_timeout()}s (command_timeout_minutes in .satory/project.json)\n")
                 code = 124
             f.write(f"\n[satory] exit {code}\n")
             if code != 0:
@@ -355,7 +362,7 @@ def test_names(p: Project, tid: str = "", rnd: int = 0, cache: bool = False) -> 
     names: set[str] = set()
     for cmd in cmds:
         r = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root, capture_output=True,
-                           text=True, env=p.env(tid, rnd), timeout=CMD_TIMEOUT)
+                           text=True, env=p.env(tid, rnd), timeout=p.cmd_timeout())
         if r.returncode != 0:
             return False, set()
         names.update(line.strip() for line in r.stdout.splitlines() if line.strip())

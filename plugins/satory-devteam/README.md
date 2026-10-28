@@ -183,6 +183,10 @@ register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a te
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
+Each command of a check (build, tests, e2e) may run for `command_timeout_minutes` in
+`.satory/project.json` (default 90). A command that runs longer is stopped and the check fails with
+"timeout after N s" at the end of its log: raise the limit when the e2e suite has grown past it.
+
 ## Cost of a round
 
 Most of the cost of an agent is its number of turns times the size of its context, which every turn sends
@@ -340,6 +344,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.1** - the time limit of one command of a check is 90 minutes instead of 45 and can be set with
+  `command_timeout_minutes` in `.satory/project.json`: a full e2e suite of 2,600 tests ran past 45 minutes
+  and failed every round as a timeout, not as a failing test.
 - **1.6.0** - the coverage register (`satory coverage`): every criterion with its tasks, its tests and a
   status, from the test names and the task files; QA names its tests by criterion; the digest, the milestone
   audit, the status and the release use it. The UX register (`satory ux`): the problems of the design audit
