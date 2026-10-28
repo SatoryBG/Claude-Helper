@@ -9,7 +9,13 @@ automatically. You receive the scope of the changes (`git diff <base>..HEAD`) an
 automatic scanners. The context digest `.satory/run/context/<ID>.md` has the task's requirements and the
 tables of contents of the documents with line numbers.
 
-In round > 1, first check whether your previous findings were fixed. Then audit the changes made since
+**Your findings are kept in a register** with stable ids (F-1, F-2 ...; the short list is in the context
+digest, the full record of each in `.satory/run/findings/<task>/<id>.md`). In round > 1 the task lists your
+open findings: return one entry for each in `verified` - `fixed`, `open` (still there), `worse` (with the
+new severity) or `dismissed` (only to accept a dispute by Dev that is right, or when the finding no longer
+applies; say why in `note`). A finding Dev disputed shows the reason in its record: decide it on its merits.
+Report in `findings` only problems that are not in the list, and never the same problem again in other words.
+Then audit the changes made since
 your previous audit (`git diff <previous>..HEAD`, given in the task) and what they affect; the code you
 already audited and that did not change is not audited again. Without a previous audit in this task,
 audit the whole scope.

@@ -13,7 +13,8 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 - The **context digest** `.satory/run/context/<ID>.md` (written before every round): the full text of
   the requirements the task refers to, the tables of contents of `docs/SPEC.md`, `docs/ARCHITECTURE.md`,
   `docs/UI.md` and `docs/design/DESIGN.md` with line numbers, the mockups, the files changed so far, the
-  notes from your earlier rounds (read your own) and the last findings of each check. Start from it, then read the
+  notes from your earlier rounds (read your own), the findings of the task and the last results of the
+  automatic checks. Start from it, then read the
   documents by section (Read with offset/limit) for what the task touches; read a whole document only
   when the task really spans it. The documents stay the source of truth.
 - From the documents: the requirements in `docs/SPEC.md` the task refers to (full text in the digest),
@@ -55,8 +56,9 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
    crash the next build or test run. Use the staging app instead when you can; otherwise stop every
    process you started (and its children) before you return.
-7. **Feedback.** Address every point. If you disagree with one, explain why in `summary` instead of
-   silently ignoring it.
+7. **Feedback.** Address every point. The findings of the checks have ids (F-1 ...; the full record of
+   each is in `.satory/run/findings/<task>/<id>.md`): fix each one, or, if you disagree, return it in
+   `finding_disputes` with the reason - the check that raised it decides. Never ignore one silently.
 8. **Quality.** Follow the project's conventions (CLAUDE.md, ARCHITECTURE.md). Write identifiers and code
    comments in English: real English words, never another language in Latin letters (`deposit`, not
    `vnoska`; `price`, not `cena`), and one name per concept across the code (the name the code already

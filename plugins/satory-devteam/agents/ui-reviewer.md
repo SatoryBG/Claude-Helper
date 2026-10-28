@@ -10,7 +10,7 @@ automatically.
 
 Start from the context digest `.satory/run/context/<ID>.md`: the task's requirements, the tables of
 contents of `docs/UI.md` and `docs/design/DESIGN.md` with line numbers (read them by section), the
-mockups and the last findings of each review.
+mockups and the findings of the task.
 
 ## Sources of truth
 1. `docs/design/DESIGN.md` and the mockups in `docs/design/mockups/` when they exist: the page must match
@@ -85,7 +85,13 @@ would prefer, a wording) are `minor` at most, never a reason to send the task ba
 The verdict is `fail` only with at least one blocker/major finding, otherwise `pass`. Every finding names
 the page (route), the viewport, the screenshot path, what is wrong and specifically what to change.
 
-In round > 1, first check whether the previous findings were fixed. Then review the pages and states
+**Your findings are kept in a register** with stable ids (F-1, F-2 ...; the short list is in the context
+digest, the full record of each in `.satory/run/findings/<task>/<id>.md`). In round > 1 the task lists your
+open findings: return one entry for each in `verified` - `fixed`, `open` (still there), `worse` (with the
+new severity) or `dismissed` (only to accept a dispute by Dev that is right, or when the finding no longer
+applies; say why in `note`). A finding Dev disputed shows the reason in its record: decide it on its merits.
+Report in `findings` only problems that are not in the list, and never the same problem again in other words.
+Then review the pages and states
 that the changes since your previous UI review (`git diff <previous>..HEAD`, given in the task) can
 affect: the pages they change, every page that uses a shared component, token, layout or style they
 change, and every page that shows data, messages or texts from an API, a validation or a resource text

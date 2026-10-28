@@ -76,6 +76,19 @@ const GAP_ITEMS = {
     required: ['severity', 'title', 'detail'],
   },
 }
+// The check's verdict on each of its own open findings in the register (listed in its task)
+const VERIFIED = {
+  type: 'array',
+  description: 'One entry for every open finding of yours listed in the task (F-ids): fixed, still open, worse (with the new severity) or dismissed (a dispute you accept, or it no longer applies - with the reason)',
+  items: {
+    type: 'object',
+    properties: {
+      id: { type: 'string' }, status: { type: 'string', enum: ['fixed', 'open', 'worse', 'dismissed'] },
+      severity: { type: 'string' }, note: { type: 'string' },
+    },
+    required: ['id', 'status'],
+  },
+}
 const DEV_SCHEMA = {
   type: 'object',
   properties: {
@@ -87,6 +100,11 @@ const DEV_SCHEMA = {
       items: { type: 'object', properties: { test: { type: 'string' }, reason: { type: 'string' } }, required: ['test', 'reason'] },
     },
     blocked_question: { type: 'string', description: 'Empty, unless the task cannot continue without a business decision by the user' },
+    finding_disputes: {
+      type: 'array',
+      description: 'Findings (F-ids from the feedback) you disagree with, with the reason; the check that raised each one decides',
+      items: { type: 'object', properties: { id: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'reason'] },
+    },
     assumptions: { ...GAP_ITEMS, description: 'New in this round: product behaviour the SPEC does not define and you chose yourself, for the user to confirm later (does not stop the task)' },
   },
   required: ['summary', 'changes', 'mini_spec_updated', 'disputes', 'blocked_question'],
@@ -102,11 +120,14 @@ const REVIEW_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+          title: { type: 'string', description: 'One short line' },
           file: { type: 'string' }, line: { type: 'integer' }, issue: { type: 'string' }, fix: { type: 'string' },
         },
         required: ['severity', 'file', 'issue', 'fix'],
       },
+      description: 'New problems only - not the open findings listed in your task (verify those in `verified`)',
     },
+    verified: VERIFIED,
     spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
   required: ['verdict', 'summary', 'findings'],
@@ -128,13 +149,14 @@ const QA_SCHEMA = {
     },
     findings: {
       type: 'array',
-      description: 'Defects from the exploratory testing or an incomplete mini-spec',
+      description: 'New defects from the exploratory testing or an incomplete mini-spec - not the open findings listed in your task (verify those in `verified`)',
       items: {
         type: 'object',
-        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, description: { type: 'string' }, repro: { type: 'string' } },
+        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, title: { type: 'string', description: 'One short line' }, description: { type: 'string' }, repro: { type: 'string' } },
         required: ['severity', 'description'],
       },
     },
+    verified: VERIFIED,
     spec_gaps: { ...GAP_ITEMS, description: 'New in this round: data rules the SPEC does not define (questions for the user; they do not stop the task)' },
   },
   required: ['verdict', 'summary', 'mini_spec_complete', 'tests_added', 'failures', 'findings'],
@@ -151,12 +173,15 @@ const UI_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
+          title: { type: 'string', description: 'One short line' },
           page: { type: 'string' }, viewport: { type: 'string' }, screenshot: { type: 'string' },
           issue: { type: 'string' }, fix: { type: 'string' },
         },
         required: ['severity', 'page', 'issue', 'fix'],
       },
+      description: 'New problems only - not the open findings listed in your task (verify those in `verified`)',
     },
+    verified: VERIFIED,
   },
   required: ['verdict', 'summary', 'pages_checked', 'findings'],
 }
@@ -171,12 +196,15 @@ const SEC_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+          title: { type: 'string', description: 'One short line' },
           category: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
           issue: { type: 'string' }, attack: { type: 'string' }, fix: { type: 'string' },
         },
         required: ['severity', 'category', 'file', 'issue', 'fix'],
       },
+      description: 'New problems only - not the open findings listed in your task (verify those in `verified`)',
     },
+    verified: VERIFIED,
   },
   required: ['verdict', 'summary', 'findings'],
 }
@@ -453,7 +481,7 @@ function gateLines(gates) {
 
 function skippedLog(res) {
   const s = (res && res.skipped_depends) || []
-  if (s.length) log(`🗂 ${s.join(', ')} already started: no new dependency for ${s.length > 1 ? 'them' : 'it'} - the new tasks come after`)
+  if (s.length) log(`🗂 ${s.join(', ')}: already started or done - no new dependency, the new tasks come after`)
 }
 
 // The CLI rewrites the context digest in its steps; a failure there only costs the digest, but is reported.
@@ -471,7 +499,7 @@ function context(t, start) {
     `Project: ${PROJECT}`,
     `Task: ${t.id} - ${t.title} (owner: ${t.owner})`,
     `Task file: docs/tasks/${t.id}.md`,
-    `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds and the last findings of each check. The documents stay the source of truth; if the file is missing, read them directly.`,
+    `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds, the findings of the task and the last results of the automatic checks. The documents stay the source of truth; if the file is missing, read them directly.`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
     `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
@@ -517,27 +545,24 @@ Reminder: tests belong to QA (do not touch them), the mini-spec in the task file
 build/lint/test must pass. Do not commit.`
 }
 
-// In round > 1 a review starts from its own previous findings and the changes made since it ran. After an
-// interrupted build they are not in memory: the digest has the last findings of each review.
+// In round > 1 a check starts from its own open findings in the register (stable F-ids) and the changes
+// made since it ran: it verifies each one instead of reporting it again. After an interrupted build they are
+// not in memory: the digest lists the findings of the task.
 let RESUMED = false  // the task in progress was resumed after an interrupted build
-const RESUMED_PREV = round => RESUMED && round > 1
-  ? '\n\n## Previous findings\nThe build was interrupted: if the context digest lists your last findings in this task ("Last findings of each check"), check that they were addressed. There is no diff of what changed since then, so review the whole scope.'
-  : ''
-
-// The previous findings of a check: the blocking ones to verify, the rest only so they are not reported
-// again (they are already kept for the polish task).
-function prevFindings(findings, blocking, line) {
-  const req = findings.filter(blocking), rest = findings.filter(f => !blocking(f))
-  return (req.length ? `\n\n## Previous findings - check that they were fixed\n${bullets(req.map(line))}` : '') +
-    (rest.length ? `\n\n## Previous non-blocking findings - already recorded for the polish task; do not report them again\n${bullets(rest.map(line))}` : '')
+const fline = f => `${f.id} [${f.severity}] ${f.title}${f.where ? ` (${f.where})` : ''}` +
+  (f.status === 'disputed' ? ` - DISPUTED by Dev${f.dispute ? `: ${f.dispute}` : ', see its record'}` : '')
+function openBlock(open, round) {
+  if (open && open.length) {
+    return `\n\n## Your open findings in this task - verify each one in \`verified\` (fixed / open / worse / dismissed)\n` +
+      `Full records: .satory/run/findings/<task>/<id>.md. Report as new only problems that are not in this list.\n${bullets(open.map(fline))}`
+  }
+  return RESUMED && round > 1
+    ? '\n\n## Your open findings\nThe build was interrupted: the context digest lists the findings of this task ("Findings of this task"). Verify each open one of yours in `verified`. There is no diff of what changed since your last review, so review the whole scope.'
+    : ''
 }
-const BLOCKING = f => f.severity === 'blocker' || f.severity === 'major'
-const SEC_BLOCKING = f => ['critical', 'high', 'medium'].includes(f.severity)
 
-function reviewPrompt(ctx, round, base, reviewedAt, prevReview, dev) {
-  const prev = prevReview
-    ? prevFindings(prevReview.findings, BLOCKING, f => `[${f.severity}] ${where(f)}: ${f.issue}`)
-    : RESUMED_PREV(round)
+function reviewPrompt(ctx, round, base, reviewedAt, openRev, dev) {
+  const prev = openBlock(openRev, round)
   const disputes = dev.disputes.length
     ? `\n## Dev disputes tests\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
   return `${ctx}
@@ -550,7 +575,7 @@ ${dev.summary}
 ${bullets(dev.changes)}${prev}${disputes}`
 }
 
-function qaPrompt(ctx, round, base, staging, dev, retryNote) {
+function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa) {
   const env = staging.skipped
     ? 'The project has no staging environment (not a web app or no deploy) - no e2e and no browser exploration.'
     : `The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).`
@@ -562,11 +587,11 @@ ${env}
 
 Scope of the changes: \`git diff ${base}..HEAD\`
 Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the orchestrator runs it after you.
-Dev reports: ${dev.summary}${disputes}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+Dev reports: ${dev.summary}${disputes}${openBlock(openQa, round)}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
-function uiPrompt(ctx, round, base, staging, dev, prevUi, uiReviewedAt) {
-  const prev = prevUi ? prevFindings(prevUi.findings, BLOCKING, f => `[${f.severity}] ${at(f)}: ${f.issue}`) : RESUMED_PREV(round)
+function uiPrompt(ctx, round, base, staging, dev, openUi, uiReviewedAt) {
+  const prev = openBlock(openUi, round)
   return `${ctx}
 Round: ${round}.
 The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).
@@ -575,12 +600,10 @@ Scope of the changes: \`git diff ${base}..HEAD\`${uiReviewedAt ? `\nChanges sinc
 Dev reports: ${dev.summary}${prev}`
 }
 
-function secPrompt(ctx, round, base, scan, prevSec, secReviewedAt) {
+function secPrompt(ctx, round, base, scan, openSec, secReviewedAt) {
   const scans = (scan.scans || []).map(s =>
     `\`${s.cmd}\` → ${s.missing_tool ? 'TOOL IS MISSING' : s.ok ? 'OK' : `problems found (exit ${s.exit})`} - log: ${s.log}`)
-  const prev = prevSec
-    ? prevFindings(prevSec.findings, SEC_BLOCKING, f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}`)
-    : RESUMED_PREV(round)
+  const prev = openBlock(openSec, round)
   return `${ctx}
 Round: ${round}.
 
@@ -623,35 +646,26 @@ const secNote = r => `${r.summary}` +
 
 // --------------------------------------------------------------- feedback --
 
-function reviewFeedback(r) {
-  const blocking = r.findings.filter(f => f.severity === 'blocker' || f.severity === 'major')
-  const rest = r.findings.filter(f => !blocking.includes(f))
-  return `### Code review: changes requested\n${r.summary}\n\nRequired:\n` +
-    bullets(blocking.map(f => `[${f.severity}] ${where(f)}: ${f.issue}\n  → ${f.fix}`)) +
-    (rest.length ? `\n\nOptional:\n${bullets(rest.map(f => `[${f.severity}] ${where(f)}: ${f.issue}`))}` : '')
+// Feedback to Dev from the register: the blocking open findings of a check are required, its other open
+// ones optional; Dev answers by fixing them or by disputing one (finding_disputes) with the reason.
+function findingsFeedback(title, summary, res) {
+  const req = res.blocking || [], opt = (res.open || []).filter(f => !req.some(b => b.id === f.id))
+  return `### ${title}\n${summary}\n\nRequired (full records: .satory/run/findings/<task>/<id>.md):\n` +
+    bullets(req.map(f => `${fline(f)}${f.fix ? `\n  → ${f.fix}` : ''}`)) +
+    (opt.length ? `\n\nOptional:\n${bullets(opt.map(fline))}` : '') +
+    `\n\nIf you disagree with a finding, return it in \`finding_disputes\` with the reason; the check that raised it decides.`
 }
 
-function qaFeedback(r, after) {
+function qaFeedback(r, after, res) {
   const parts = [`### QA: failed\n${r.summary}`]
   if (!r.mini_spec_complete) parts.push('The mini-spec is incomplete or inaccurate - complete it so it can be tested.')
   if (r.failures.length) parts.push('Failing tests (do NOT change them - change the code; if a test is wrong, dispute it in the task file):\n' +
     bullets(r.failures.map(f => `${f.test}: expected ${f.expected}; actual ${f.actual}${f.repro ? `; reproduce: ${f.repro}` : ''}`)))
-  if (r.findings.length) parts.push('Defects:\n' + bullets(r.findings.map(f => `[${f.severity}] ${f.description}${f.repro ? ` (${f.repro})` : ''}`)))
+  if ((res.open || []).length) parts.push('Defects (findings; dispute one in `finding_disputes` with the reason if you disagree):\n' +
+    bullets(res.open.map(f => `${fline(f)}${f.detail && f.detail !== f.title ? `: ${f.detail}` : ''}`)))
   const gates = gateLines(after.gates)
   if (gates.length) parts.push('Automatic checks (the whole test suite):\n' + bullets(gates))
   return parts.join('\n\n')
-}
-
-function uiFeedback(r, blocking) {
-  const rest = r.findings.filter(f => !blocking.includes(f))
-  return `### UI review: changes requested\n${r.summary}\n\nRequired (see docs/UI.md):\n` +
-    bullets(blocking.map(f => `[${f.severity}] ${at(f)}: ${f.issue}${f.screenshot ? ` (screenshot: ${f.screenshot})` : ''}\n  → ${f.fix}`)) +
-    (rest.length ? `\n\nOptional:\n${bullets(rest.map(f => `[${f.severity}] ${at(f)}: ${f.issue}`))}` : '')
-}
-
-function secFeedback(r, blocking) {
-  return `### Security: vulnerabilities found\n${r.summary}\n\n` +
-    bullets(blocking.map(f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}${f.attack ? `\n  attack: ${f.attack}` : ''}\n  → ${f.fix}`))
 }
 
 // --------------------------------------------------------------- one task --
@@ -903,19 +917,20 @@ async function runTask(t) {
   RESUMED = !!start.resumed
   const role = t.owner === 'devops' ? 'devops' : 'dev'
   let round = start.rounds_used || 0
-  const open = (start.open_findings || []).map(f => `### ${f.stage} (round ${f.round}, ${f.verdict})\n${f.note}`)
+  const lastFailed = (start.open_findings || []).map(f => `### ${f.stage} (round ${f.round}, ${f.verdict})\n${f.note}`)
   let feedback = start.resumed
     ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.' +
-      (open.length ? `\n\nThe last checks that failed before the interruption - address every point that is still open (your last round may already have fixed some):\n\n${open.join('\n\n')}` : '')
+      (lastFailed.length ? `\n\nThe open findings and the failed checks before the interruption - address every point that is still open (your last round may already have fixed some; dispute a finding in \`finding_disputes\` if you disagree):\n\n${lastFailed.join('\n\n')}` : '')
     : ''
-  let reviewedAt = null, prevReview = null, prevUi = null, uiReviewedAt = null, prevSec = null, secReviewedAt = null, lastStage = ''
-  // stage -> the non-blocking findings of all its rounds, for the polish task. Accumulated, because a review
-  // in round > 1 looks only at what changed: an earlier minor finding elsewhere is not repeated, not lost.
-  const polish = {}
-  const notePolish = (stage, tag, items) => {
-    const p = polish[stage] || (polish[stage] = { tag, items: [] })
-    p.tag = tag
-    for (const x of items) if (!p.items.some(y => y.where === x.where && y.issue === x.issue)) p.items.push(x)
+  let reviewedAt = null, uiReviewedAt = null, secReviewedAt = null, lastStage = ''
+  const open = {}  // check -> its open findings in the register after its last run (for the next round's prompt)
+  // records a check's new findings and its verdict on its open ones; returns the register's view of the check
+  const record = async (stage, items, verified, phase) => {
+    const res = must(await sh(`finding record ${t.id} --stage ${stage} --round ${round}`,
+      { phase, label: `findings ${stage} ${t.id} r${round}`, note: JSON.stringify({ new: items, verified: verified || [] }) }), `findings ${stage}`)
+    for (const w of res.warnings || []) log(`⚠ ${t.id} r${round} ${stage}: ${w}`)
+    open[stage] = res.open || []
+    return res
   }
 
   while (round < MAX_ROUNDS) {
@@ -929,6 +944,15 @@ async function runTask(t) {
     if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
     if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
     known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
+    if ((dev.finding_disputes || []).length) {
+      try {
+        const d = await sh(`finding dispute ${t.id} --round ${round}`, { phase: 'Dev', label: `disputes ${tag}`, note: JSON.stringify(dev.finding_disputes) })
+        for (const id of (d && d.disputed) || []) {  // the check that raised it sees the dispute in its next prompt
+          const reason = (dev.finding_disputes.find(x => x.id === id) || {}).reason || ''
+          for (const list of Object.values(open)) for (const f of list) if (f.id === id) Object.assign(f, { status: 'disputed', dispute: reason })
+        }
+      } catch (e) { log(`Could not record the disputes of ${tag}: ${e.message}`) }
+    }
     const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
       { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
     contextLog(ad)
@@ -941,21 +965,19 @@ async function runTask(t) {
       ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
 
     // ---- Review -------------------------------------------------------
-    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, prevReview, dev) + known,
+    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known,
       { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
     if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
     known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
-    const revBlocking = rev.findings.some(f => f.severity === 'blocker' || f.severity === 'major')
-    const revVerdict = revBlocking ? 'changes_requested' : 'approve'
-    must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revVerdict}`,
-      { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
+    const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
+      rev.verified, 'Review')
+    const revBlocking = revRes.blocking.length > 0
+    contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
+      { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`))
     reviewedAt = ad.checkpoint
-    prevReview = rev
-    notePolish('reviewer', tag, rev.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
-      .map(f => ({ severity: f.severity, where: where(f), issue: f.issue, fix: f.fix })))
     if (revBlocking) {
       lastStage = 'review'
-      feedback = reviewFeedback(rev) + devViolations
+      feedback = findingsFeedback('Code review: changes requested', rev.summary, revRes) + devViolations
       continue
     }
 
@@ -969,7 +991,7 @@ async function runTask(t) {
     }
     let qa = null, aq = null, retryNote = ''
     for (let attempt = 1; ; attempt++) {
-      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote) + known,
+      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa) + known,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
       known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
@@ -982,47 +1004,45 @@ async function runTask(t) {
         `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
         `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
     }
-    const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete
+    const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
+      qa.verified, 'QA')
+    const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
     if (qaFailed) {
       lastStage = 'qa'
-      feedback = qaFeedback(qa, aq)
+      feedback = qaFeedback(qa, aq, qaRes)
       continue
     }
 
     // ---- UI -----------------------------------------------------------
     if (needsUi(t, staging)) {
-      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, prevUi, uiReviewedAt),
+      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt),
         { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
       if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
-      const uiBlocking = ui.findings.filter(f => f.severity === 'blocker' || f.severity === 'major')
-      must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiBlocking.length ? 'fail' : 'pass'}`,
-        { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`)
-      prevUi = ui
+      const uiRes = await record('ui', ui.findings.map(f => ({ severity: f.severity, title: f.title, where: at(f),
+        detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI')
+      contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiRes.blocking.length ? 'fail' : 'pass'}`,
+        { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`))
       uiReviewedAt = aq.checkpoint
-      notePolish('ui', tag, ui.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
-        .map(f => ({ severity: f.severity, where: at(f), issue: f.issue, fix: f.fix })))
-      if (uiBlocking.length) {
+      if (uiRes.blocking.length) {
         lastStage = 'ui'
-        feedback = uiFeedback(ui, uiBlocking)
+        feedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
         continue
       }
     }
 
     // ---- Security -----------------------------------------------------
     const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
-    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan, prevSec, secReviewedAt),
+    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt),
       { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
     if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
-    prevSec = sec
     secReviewedAt = aq.checkpoint
-    const secBlocking = sec.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity))
-    notePolish('security', tag, sec.findings.filter(f => f.severity === 'low' || f.severity === 'info')
-      .map(f => ({ severity: f.severity, where: `${f.category} ${where(f)}`, issue: f.issue, fix: f.fix })))
-    must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secBlocking.length ? 'fail' : 'pass'}`,
-      { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`)
-    if (secBlocking.length) {
+    const secRes = await record('security', sec.findings.map(f => ({ severity: f.severity, title: f.title, where: `${f.category} ${where(f)}`,
+      detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security')
+    contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secRes.blocking.length ? 'fail' : 'pass'}`,
+      { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`))
+    if (secRes.blocking.length) {
       lastStage = 'security'
-      feedback = secFeedback(sec, secBlocking)
+      feedback = findingsFeedback('Security: vulnerabilities found', sec.summary, secRes)
       continue
     }
 
@@ -1031,6 +1051,7 @@ async function runTask(t) {
       const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
       flakyLog(full.gates, tag)
+      contextLog(full)
       if (!full.ok) {
         lastStage = 'full e2e'
         feedback = `### The whole e2e suite fails
@@ -1056,13 +1077,9 @@ ${bullets(gateLines(full.gates))}`
         note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
     `finish ${t.id}`)
     log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
-    for (const [stage, p] of Object.entries(polish)) {
-      if (!p.items.length) continue
-      try {
-        await sh(`polish add --task ${t.id} --source ${stage}-${p.tag.replace(' ', '-')}`,
-          { phase: 'Docs', label: `polish ${stage} ${t.id}`, note: JSON.stringify(p.items) })
-      } catch (e) { log(`Could not note the small improvements from ${stage}: ${e.message}`) }
-    }
+    try {  // the non-blocking findings still open go to the polish task after the milestone
+      await sh(`finding polish ${t.id} --round ${round}`, { phase: 'Docs', label: `polish ${t.id}` })
+    } catch (e) { log(`Could not note the small improvements of ${t.id}: ${e.message}`) }
     return { id: t.id, title: t.title, status: 'done', rounds: round, commit: fin.commit, pushed: fin.pushed,
              push_error: fin.push_error, staging: fin.staging }
   }
@@ -1106,6 +1123,12 @@ UI_REVIEW = plan.ui_review === true
 LANG = plan.language || 'en'
 if (plan.experimental && plan.experimental.length) log(`⚗ Experimental settings on: ${plan.experimental.join(', ')} (remove "experimental" from .satory/project.json to turn them off)`)
 log(`${plan.name}: ${plan.tasks.length} tasks, up to ${MAX_ROUNDS} rounds per task${UI_REVIEW ? ', UI review on' : ''}${MILESTONE ? `, milestone ${MILESTONE} only` : ''}`)
+// the format of docs/SPEC.md: the digests take the requirements from it, so a format error is reported early
+try {
+  const sc = await sh('spec check', { phase: 'Prepare', label: 'spec check' })
+  if (sc && sc.errors && sc.errors.length) log(`⚠ docs/SPEC.md: ${sc.errors.length} format error(s), e.g. ${sc.errors[0]} - the digests may miss requirements; see .satory/run/requirements.json`)
+  if (sc && sc.not_in_any_task && sc.not_in_any_task.length) log(`⚠ docs/SPEC.md: no task covers ${sc.not_in_any_task.join(', ')}`)
+} catch (e) { /* no SPEC (e.g. a library without one): nothing to check */ }
 
 plan = await reviewMilestones(plan)
 plan = await planAnswers(plan)

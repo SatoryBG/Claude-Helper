@@ -188,6 +188,13 @@ The retry runs only when few tests failed: at most `e2e_retry_max_percent` of th
 Most of the cost of an agent is its number of turns times the size of its context, which every turn sends
 again. A round keeps both small without leaving out a check:
 
+- **The SPEC in a fixed format.** A requirement is a heading `### R-001 - Title`, its criteria bullets
+  `- **AC-001.1** - ...` under it, a non-functional requirement a bullet `- **NFR-001 - Title.** ...` (or a
+  heading) and applies to every task (`spec.cross_cutting_prefixes` in `.satory/project.json`, default
+  `NFR`). `satory spec check` checks it (unique ids, every criterion under its requirement, requirements no
+  task covers) and writes the model to `.satory/run/requirements.json`; the analyst, a request and the
+  answers to questions run it after every change, and the build reports format errors when it starts. The
+  digests are built from this model, never from the wording.
 - **Context digest.** The CLI writes `.satory/run/context/<task>.md` whenever the work changes (task start,
   after Dev, after QA, after each review; `satory task context <task>` writes it by hand): the full text
   of the requirements the task refers to (its ids from `docs/SPEC.md`, with ranges like "AC-003.8 -
@@ -201,12 +208,19 @@ again. A round keeps both small without leaving out a check:
 - **Notes between rounds.** Dev (or DevOps) and QA leave short notes for their next round in
   `.satory/run/notes/<task>-<role>.md`: the key files, the commands that worked, the traps and what is open.
   Each role reads only its own; a fresh start of a task removes them.
-- **Reviews of what changed.** In round > 1 the Reviewer, the UI reviewer and Security start from their own
-  previous findings and look at the changes made since their previous review (the UI reviewer also at the
-  pages that use a shared component, token or layout those changes touch); the whole scope is reviewed the
-  first time. The non-blocking findings of all rounds are kept for the polish task. The last findings of
-  each check (Review, QA, UI, Security, the whole e2e suite) are kept in the state: after an interrupted
-  build the failed ones become Dev's feedback.
+- **A register of findings.** The findings of the Reviewer, QA, the UI reviewer and Security go into one
+  register per task (`satory finding`, `.satory/run/findings/<task>.json`) with stable ids (F-1, F-2 ...) and
+  a status (open, fixed, disputed, dismissed, polish). The digest has the short list (one line each); the
+  full record and history of each is in `.satory/run/findings/<task>/<id>.md`. In round > 1 a check gets
+  its open findings and verifies each one (`verified`: fixed / open / worse with the new severity /
+  dismissed) instead of reporting it again; an unverified blocking finding stays open. Dev fixes each one
+  or disputes it (`finding_disputes`), and the check that raised it decides. A task goes back while a
+  check has a blocking finding open. The non-blocking ones still open at the finish go to the polish task;
+  after an interruption or an unblock the open ones are Dev's feedback.
+- **Reviews of what changed.** In round > 1 the Reviewer, the UI reviewer and Security look at the changes
+  made since their previous review (the UI reviewer also at the pages that use a shared component, token,
+  layout, API or text those changes touch); the whole scope is reviewed the first time. The last results
+  of the automatic checks (build/lint, the tests after QA, the whole e2e suite) are kept in the state.
 - **What sends a task back.** QA fails a task for a defect: a contradiction with an acceptance criterion,
   the SPEC, the mini-spec, `docs/UI.md`, the architecture, an ADR, CLAUDE.md or a clarification, a wrong
   result, a regression, a crash or 5xx, lost data, a security problem or a serious accessibility
@@ -304,6 +318,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.5.0** - a register of findings per task (`satory finding`): stable ids, statuses, one-line list
+  in the digest and a full record with history per finding; checks verify their open findings instead of
+  reporting them again, Dev fixes or disputes each one, an unverified blocking finding stays open, the
+  open non-blocking ones go to the polish task, and the open ones survive an interruption and an unblock.
+  The SPEC has a fixed format checked by `satory spec check`, and the digests are built from its model
+  (`.satory/run/requirements.json`); NFRs as headings or bullets, criteria with their requirement's
+  heading, open questions never taken for requirements. Digest errors are logged in every step.
 - **1.4.2** - fixes after a second review: the task's explicit requirements are never filtered out (a
   missing one is reported); the NFRs and the other cross-cutting SPEC sections are in every digest; an
   unblock clears the old findings with the round counter; the whole e2e suite in QA clears its earlier

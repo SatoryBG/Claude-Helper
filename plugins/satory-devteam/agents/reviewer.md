@@ -79,8 +79,14 @@ not stop the task. Report each gap once, in the round you notice it. Write it in
 the task) and skip anything already in the register (the list is in your task), even reworded. Dev's
 `assumptions` of this round are in that list too: a gap Dev already reported as a decision is not reported again.
 
-In round > 1, first check whether the previous findings were addressed. Then review the new changes
-(`git diff <previous checkpoint>..HEAD`) without losing the overall picture (`git diff <base>..HEAD`).
+**Your findings are kept in a register** with stable ids (F-1, F-2 ...; the short list is in the context
+digest, the full record of each in `.satory/run/findings/<task>/<id>.md`). In round > 1 the task lists your
+open findings: return one entry for each in `verified` - `fixed`, `open` (still there), `worse` (with the
+new severity) or `dismissed` (only to accept a dispute by Dev that is right, or when the finding no longer
+applies; say why in `note`). A finding Dev disputed shows the reason in its record: decide it on its merits.
+Report in `findings` only problems that are not in the list, and never the same problem again in other words.
+Then review the new changes (`git diff <previous checkpoint>..HEAD`) without losing the overall picture
+(`git diff <base>..HEAD`).
 
 ## Working efficiently
 Every tool call sends your whole conversation again, so the number of calls drives the cost far more

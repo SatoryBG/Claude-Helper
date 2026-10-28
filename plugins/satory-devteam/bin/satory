@@ -1127,7 +1127,7 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
         t = p.task(plan, dep.get("task", ""))
         if status[t["id"]] not in ("todo", "blocked"):
             # a task in progress or done is not held back: it finishes first and the new tasks come after it
-            data.setdefault("_skipped_depends", []).append(t["id"])
+            data.setdefault("_skipped_depends", []).append(f"{t['id']} ({status[t['id']].replace('_', ' ')})")
             continue
         for d in dep.get("add", []):
             d = resolve(d)
@@ -1165,7 +1165,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines += [f"- {m['task']} merged with {', '.join(m['merged'])}" for m in data.get("_merged", [])]
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
-    lines += [f"- {x} has started: no new dependency (it finishes first)" for x in data.get("_skipped_depends", [])]
+    lines += [f"- {x}: already started or done - no new dependency" for x in data.get("_skipped_depends", [])]
     journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
     journal_flush(p)
     render_plan(p, plan)
@@ -1416,12 +1416,20 @@ def cmd_task_start(p: Project, a) -> None:
               "known_tests": sorted(names), "test_list_ok": listed, "started": now()}
         st["checkpoint"] = checkpoint(p, tid, "start")
     if not resumed:  # a fresh start: the notes and the digest of an abandoned branch would mislead
-        for f in [*(p.run / "notes").glob(f"{tid}-*.md"), p.run / "context" / f"{tid}.md"]:
+        for f in [*(p.run / "notes").glob(f"{tid}-*.md"), p.run / "context" / f"{tid}.md",
+                  findings_path(p, tid), p.run / "findings" / f"{tid}.md"]:
             f.unlink(missing_ok=True)
+        shutil.rmtree(p.run / "findings" / tid, ignore_errors=True)
     p.state["tasks"][tid] = st
     p.save_state()
-    open_findings = [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items()
-                     if resumed and v.get("verdict") in REVIEW_FAIL]
+    open_findings = []
+    if resumed:
+        blocking = [f for f in findings_load(p, tid)["items"] if f["status"] in FINDING_OPEN and finding_blocks(f)]
+        for stage in dict.fromkeys(f["stage"] for f in blocking):
+            open_findings.append({"stage": stage, "round": max(f["round"] for f in blocking if f["stage"] == stage),
+                                  "verdict": "open findings",
+                                  "note": "\n".join(f"- {finding_line(f)}" for f in blocking if f["stage"] == stage)})
+        open_findings += [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items() if v.get("verdict") in REVIEW_FAIL]
     context_error = refresh_context(p, tid)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
     progress(p, f"▶ {tid}{again} - {t['title']}")
@@ -1454,23 +1462,98 @@ def headings(lines: list[str]) -> list[tuple[int, int, str]]:
     return out
 
 
-def spec_ids(lines: list[str]) -> list[str]:
-    """The ids the SPEC defines: those a heading starts with or a bold bullet names."""
-    ids = [m.group(0) for _, _, h in headings(lines) if (m := REQ_ID.match(h))]
-    ids += [m.group(1) for line in lines if (m := re.match(r"^\s*[-*]\s+\*\*([A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?)\b", line))]
-    return list(dict.fromkeys(ids))
+ID_HEAD = re.compile(r"^([A-Z]{1,5}-\d{1,3})\s+-\s+(.+)$")
+ID_BULLET = re.compile(r"^(\s*)[-*]\s+\*\*([A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?)\b(.*?)\*\*")
+NOT_REQ = ("T", "Q", "ADR")
 
 
-def task_req_ids(t: dict, lines: list[str]) -> list[str]:
+def bullet_end(lines: list[str], i: int, indent: int) -> int:
+    """The end (exclusive) of the bullet at line i: its continuation and nested lines, up to a blank line,
+    a heading or a sibling bullet."""
+    end = i + 1
+    while end < len(lines) and lines[end].strip():
+        ln = lines[end]
+        if HEADING.match(ln) or (re.match(r"^\s*[-*]\s", ln) and len(ln) - len(ln.lstrip()) <= indent):
+            break
+        end += 1
+    return end
+
+
+def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",)) -> dict:
+    """The requirements model of docs/SPEC.md, independent of its wording. The format (checked by `satory spec
+    check`): a requirement is a heading `### R-001 - Title` with its criteria as bullets `- **AC-001.1** - ...`
+    under it; a cross-cutting requirement (prefix NFR by default) is a bullet `- **NFR-001 - Title.** ...` or a
+    heading `### NFR-001 - Title`. Returns the items (id, kind, title, parent, start, end; 0-based lines,
+    end exclusive), the top-level sections and the format errors and warnings."""
+    heads = headings(lines)
+    items: list[dict] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    reqs = []  # requirement headings: (start, end, id)
+    for k, (i, level, text) in enumerate(heads):
+        m = ID_HEAD.match(text)
+        if not m or m.group(1).split("-")[0] in NOT_REQ:
+            continue
+        rid = m.group(1)
+        end = next((j for j, lv, _ in heads[k + 1:] if lv <= level), len(lines))
+        kind = "cross" if rid.split("-")[0] in cross else "requirement"
+        items.append({"id": rid, "kind": kind, "title": m.group(2).strip(), "parent": None, "start": i, "end": end})
+        if kind == "requirement":
+            reqs.append((i, end, rid))
+    fence = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else ID_BULLET.match(line)
+        if not m or m.group(2).split("-")[0] in NOT_REQ:
+            continue
+        bid, indent = m.group(2), len(m.group(1))
+        title = re.sub(r"^\s*-\s*", "", m.group(3)).strip().rstrip(".") or line[m.end():].strip(" -")[:120]
+        end = bullet_end(lines, i, indent)
+        parent = next((rid for a0, b0, rid in reversed(reqs) if a0 < i < b0), None)
+        if "." in bid:
+            if not parent:
+                errors.append(f"line {i + 1}: criterion {bid} is not under a requirement heading")
+            elif bid.split(".")[0].split("-")[1] != parent.split("-")[1]:
+                warnings.append(f"line {i + 1}: criterion {bid} is under {parent} (numbers differ)")
+            items.append({"id": bid, "kind": "criterion", "title": title, "parent": parent, "start": i, "end": end})
+        else:
+            kind = "cross" if bid.split("-")[0] in cross else "requirement"
+            if kind == "requirement":
+                warnings.append(f"line {i + 1}: requirement {bid} is a bullet; write it as a heading `### {bid} - Title`")
+            items.append({"id": bid, "kind": kind, "title": title, "parent": parent, "start": i, "end": end})
+    seen: dict[str, int] = {}
+    for it in items:
+        if it["id"] in seen:
+            errors.append(f"line {it['start'] + 1}: {it['id']} is defined twice (also line {seen[it['id']] + 1})")
+        seen.setdefault(it["id"], it["start"])
+    for a0, b0, rid in reqs:
+        if not any(it["parent"] == rid for it in items):
+            warnings.append(f"line {a0 + 1}: requirement {rid} has no acceptance criteria")
+    tops = [(i, txt) for i, lv, txt in heads if lv == 2]
+    sections = []
+    for k, (i, txt) in enumerate(tops):
+        end = tops[k + 1][0] if k + 1 < len(tops) else len(lines)
+        sections.append({"title": txt, "start": i, "end": end,
+                         "items": sum(1 for it in items if i <= it["start"] < end)})
+    items.sort(key=lambda it: it["start"])
+    return {"items": items, "sections": sections, "errors": errors, "warnings": warnings}
+
+
+def cross_prefixes(p: Project) -> tuple[str, ...]:
+    return tuple(p.config.get("spec", {}).get("cross_cutting_prefixes") or ["NFR"])
+
+
+def task_req_ids(t: dict, model: dict) -> list[str]:
     """The requirement ids a task refers to, in order: its `requirements`, then every id in its text, with
-    ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. Ids whose prefix the SPEC does
-    not use (a hash name like SHA-256, a process number) are left out."""
+    ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. Ids the SPEC does not define are
+    kept only when the task lists them explicitly (then they are reported as missing)."""
     subs = t.get("subtasks") or []
     text = "\n".join([t.get("title") or "", t.get("description") or "", *(t.get("acceptance") or []),
                       *[f"{x.get('title') or ''}\n{x.get('description') or ''}\n" + "\n".join(x.get("acceptance") or [])
                         for x in subs]])
-    known = spec_ids(lines)
-    prefixes = {x.split("-")[0] for x in known}
+    known = [it["id"] for it in model["items"]]
     explicit = list(t.get("requirements") or [])
     found: list[str] = []
     for m in REQ_RANGE.finditer(text):
@@ -1478,48 +1561,33 @@ def task_req_ids(t: dict, lines: list[str]) -> list[str]:
         if lo <= hi <= lo + 50:
             found += [f"{m.group(1)}.{n}" for n in range(lo, hi + 1)]
     for m in REQ_WILD.finditer(text):
-        found += [x for x in known if x.startswith(m.group(1) + ".")] or [m.group(1)]
+        found += [x for x in known if x.startswith(m.group(1) + ".")]
     found += REQ_ID.findall(REQ_WILD.sub(" ", text))
-    return list(dict.fromkeys([*explicit, *(x for x in found if x.split("-")[0] in prefixes)]))
+    return list(dict.fromkeys([*explicit, *(x for x in found if x in known)]))
 
 
-def spec_sections(lines: list[str], ids: list[str]) -> tuple[list[tuple[int, int]], list[str]]:
-    """Line ranges (0-based, end exclusive) of the SPEC text for the ids: a heading that starts with the id
-    takes its whole section, a bullet that names it (`- **AC-004.2**`) its paragraph with its nested lines.
-    Returns the ranges in document order and the ids that were not found."""
-    heads = headings(lines)
+def spec_sections(lines: list[str], ids: list[str], model: dict | None = None) -> tuple[list[tuple[int, int]], list[str]]:
+    """Line ranges of the SPEC text for the ids (a requirement with its whole section, a criterion or a
+    cross-cutting item with its paragraph), merged and in document order, and the ids not found."""
+    model = model or parse_spec(lines)
+    by_id = {it["id"]: it for it in model["items"]}
     ranges, missing = [], []
     for rid in ids:
-        pat = re.compile(rf"(?<![\w.-]){re.escape(rid)}(?![\w.]|-\d)")
-        found = None
-        for k, (i, level, text) in enumerate(heads):
-            if pat.match(text):
-                end = next((j for j, lv, _ in heads[k + 1:] if lv <= level), len(lines))
-                found = (i, end)
-                break
-        if not found:
-            for i, line in enumerate(lines):
-                m = re.match(r"^(\s*)[-*]\s+\*\*([^*]+)\*\*", line)
-                if m and pat.match(m.group(2)):
-                    indent = len(m.group(1))
-                    end = i + 1
-                    while end < len(lines) and lines[end].strip():
-                        ln = lines[end]
-                        if HEADING.match(ln) or (re.match(r"^\s*[-*]\s", ln) and len(ln) - len(ln.lstrip()) <= indent):
-                            break  # a sibling bullet or a heading ends it; nested lines belong to it
-                        end += 1
-                    found = (i, end)
-                    break
-        if found:
-            ranges.append(found)
-        else:
+        it = by_id.get(rid)
+        if not it:
             missing.append(rid)
+            continue
+        ranges.append((it["start"], it["end"]))
+        par = by_id.get(it.get("parent") or "")
+        if it["kind"] == "criterion" and par:  # the requirement's heading and story give the criterion its context
+            first = min((x["start"] for x in model["items"] if x.get("parent") == par["id"]), default=par["start"] + 1)
+            ranges.append((par["start"], first))
     merged: list[tuple[int, int]] = []
-    for a, b in sorted(ranges):
-        if merged and a < merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+    for a0, b0 in sorted(ranges):
+        if merged and a0 <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b0))
         else:
-            merged.append((a, b))
+            merged.append((a0, b0))
     return merged, missing
 
 
@@ -1531,26 +1599,19 @@ def doc_toc(lines: list[str]) -> list[str]:
 REVIEW_FAIL = ("fail", "changes_requested", "gate-fail")
 
 
-def spec_cross_cutting(lines: list[str]) -> list[str]:
-    """The parts of the SPEC that apply to every task: a top-level section of id bullets without id headings
-    (the non-functional requirements) in full, and the sections without ids (roles, data, out of scope,
-    assumptions ...) by name and line, to read the ones that concern the task."""
-    heads = headings(lines)
-    tops = [(i, txt) for i, lv, txt in heads if lv == 2]
-    full, named = [], []
-    for k, (i, txt) in enumerate(tops):
-        end = tops[k + 1][0] if k + 1 < len(tops) else len(lines)
-        id_heads = any(lv > 2 and REQ_ID.match(t) for j, lv, t in heads if i < j < end)
-        id_bullets = any(re.match(r"^\s*[-*]\s+\*\*[A-Z]{1,5}-\d", ln) for ln in lines[i + 1:end])
-        if id_bullets and not id_heads:
-            full.append((i, end))
-        elif not id_heads:
-            named.append(f"- L{i + 1}: {txt}")
+def spec_cross_cutting(lines: list[str], model: dict, skip: list[str] = ()) -> list[str]:
+    """The parts of the SPEC that apply to every task: the cross-cutting requirements (NFRs) in full, and the
+    top-level sections without requirements (roles, data, out of scope, assumptions ...) by name and line, to
+    read the ones that concern the task."""
+    ids = [it["id"] for it in model["items"] if it["kind"] == "cross" and it["id"] not in skip]
     out = []
-    if full:
-        out += ["## Requirements for every task (full text from docs/SPEC.md)", ""]
-        for a0, b0 in full:
+    if ids:
+        ranges, _ = spec_sections(lines, ids, model)
+        out += ["## Requirements for every task (full text from docs/SPEC.md"
+                + (", without those already above)" if skip else ")"), ""]
+        for a0, b0 in ranges:
             out += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
+    named = [f"- L{sec['start'] + 1}: {sec['title']}" for sec in model["sections"] if not sec["items"]]
     if named:
         out += ["## Other sections of docs/SPEC.md - read the ones that concern the task", "", *named, ""]
     return out
@@ -1575,15 +1636,16 @@ def write_context(p: Project, tid: str) -> dict:
     spec = p.root / "docs" / "SPEC.md"
     if spec.exists():
         lines = spec.read_text(encoding="utf-8").splitlines()
-        ids = task_req_ids(t, lines)
+        model = parse_spec(lines, cross_prefixes(p))
+        ids = task_req_ids(t, model)
         if ids:
-            ranges, missing = spec_sections(lines, ids)
+            ranges, missing = spec_sections(lines, ids, model)
             parts += [f"## Requirements of this task (text from docs/SPEC.md: {', '.join(ids)})", ""]
             for a0, b0 in ranges:
                 parts += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
             if missing:
                 parts += [f"Not found in docs/SPEC.md: {', '.join(missing)}", ""]
-        parts += spec_cross_cutting(lines)
+        parts += spec_cross_cutting(lines, model, ids)
     parts += ["## Tables of contents", ""]
     for rel in DIGEST_DOCS:
         f = p.root / rel
@@ -1618,10 +1680,14 @@ def write_context(p: Project, tid: str) -> dict:
     if notes:
         parts += ["## Notes from earlier rounds (each role reads only its own)", "",
                   *[f"- {p.rel(x)}" for x in notes], ""]
+    freg = findings_load(p, tid)
+    if freg["items"]:
+        parts += ["## Findings of this task (full record: .satory/run/findings/" + tid + "/<id>.md)", "",
+                  *[f"- {finding_line(f)}" for f in freg["items"]], ""]
     reviews = st.get("reviews") or {}
     if reviews:
         rounds = st.get("rounds", 0)
-        parts += ["## Last findings of each check in this task", ""]
+        parts += ["## Last results of the automatic checks", ""]
         for stage, r in reviews.items():
             stale = f"; not re-checked since round {r.get('round')}" if (r.get("round") or 0) < rounds else ""
             parts += [f"### {stage} (round {r.get('round')}, {r.get('verdict') or '-'}{stale})", r.get("note", "").strip(), ""]
@@ -1641,9 +1707,190 @@ def refresh_context(p: Project, tid: str) -> str | None:
 
 
 def save_review(p: Project, st: dict, stage: str, rnd: int, verdict: str, note: str) -> None:
-    """The last findings of a check, kept in the state: the digest shows them and a resumed task gets the
-    open ones as its feedback, so they survive an interrupted build."""
-    st.setdefault("reviews", {})[stage] = {"round": rnd, "verdict": verdict, "note": (note or "")[:6000]}
+    """The last result of an automatic check (build/lint, the tests after QA, the whole e2e suite), kept in
+    the state: the digest shows it and a resumed task gets the failed ones as its feedback. Only the CLI's own
+    lines (results, logs) are kept, so nothing important is cut; the agents' findings are in the register."""
+    st.setdefault("reviews", {})[stage] = {"round": rnd, "verdict": verdict, "note": (note or "")[:4000]}
+
+
+def cmd_spec(p: Project, a) -> None:
+    """`spec check`: checks the format of docs/SPEC.md (see parse_spec), writes the requirements model to
+    .satory/run/requirements.json and reports the requirements no task covers."""
+    spec = p.root / "docs" / "SPEC.md"
+    if not spec.exists():
+        raise SatoryError("docs/SPEC.md does not exist")
+    text = spec.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    model = parse_spec(lines, cross_prefixes(p))
+    plan = p.plan()
+    covered: set[str] = set()
+    for t in plan["tasks"]:
+        covered.update(task_req_ids(t, model))
+    by_id = {it["id"]: it for it in model["items"]}
+    uncovered = [it["id"] for it in model["items"] if it["kind"] == "requirement" and it["id"] not in covered
+                 and not any(c in covered for c in by_id if by_id[c].get("parent") == it["id"])]
+    m = re.search(r"\*\*(?:Version|Версия):\*\*\s*(\d+)", text)
+    out = {"spec_version": int(m.group(1)) if m else None,
+           "sha": __import__("hashlib").sha256(text.encode("utf-8")).hexdigest()[:16],
+           "items": [{k: (v + 1 if k == "start" else v) for k, v in it.items()} for it in model["items"]],
+           "sections": [{"title": x["title"], "line": x["start"] + 1, "items": x["items"]} for x in model["sections"]],
+           "errors": model["errors"], "warnings": model["warnings"], "not_in_any_task": uncovered}
+    path = p.run / "requirements.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, out)
+    kinds = {k: sum(1 for it in model["items"] if it["kind"] == k) for k in ("requirement", "criterion", "cross")}
+    emit({"ok": not model["errors"], "path": p.rel(path), "counts": kinds, "errors": model["errors"],
+          "warnings": model["warnings"], "not_in_any_task": uncovered})
+
+
+# ----------------------------------------------------------------- findings ---
+# The findings of the checks of one task (Reviewer, QA, UI reviewer, Security) in one register with stable
+# ids and a status, in .satory/run/findings/<task>.json; findings/<task>.md is the short list (one line each)
+# and findings/<task>/F-N.md the full record with its history. A check verifies its own open findings in the
+# next round (fixed / open / worse / dismissed) instead of reporting them again; Dev may dispute one, and the
+# check that raised it decides. The non-blocking ones still open when the task finishes go to the polish task.
+
+FINDING_BLOCKING = {"security": ("critical", "high", "medium")}
+FINDING_OPEN = ("open", "disputed")
+
+
+def finding_blocks(f: dict) -> bool:
+    return f["severity"] in FINDING_BLOCKING.get(f["stage"], ("blocker", "major"))
+
+
+def findings_path(p: Project, tid: str) -> Path:
+    return p.run / "findings" / f"{tid}.json"
+
+
+def findings_load(p: Project, tid: str) -> dict:
+    return load_json(findings_path(p, tid), {"next": 1, "items": []})
+
+
+def finding_line(f: dict) -> str:
+    return (f"{f['id']} [{f['severity']}] [{f['stage']} r{f['round']}] {f['title']}"
+            + (f" ({f['where']})" if f.get("where") else "") + f" - {f['status']}")
+
+
+def findings_save(p: Project, tid: str, reg: dict) -> None:
+    path = findings_path(p, tid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, reg)
+    lines = [f"# Findings of {tid}", "", "Full record and history of each: findings/" + tid + "/<id>.md", ""]
+    lines += [f"- {finding_line(f)}" for f in reg["items"]]
+    (path.parent / f"{tid}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    d = path.parent / tid
+    d.mkdir(exist_ok=True)
+    for f in reg["items"]:
+        body = [f"# {f['id']} - {f['title']}", "",
+                f"- Check: {f['stage']}, raised in round {f['round']}", f"- Severity: {f['severity']}",
+                f"- Status: {f['status']}", *([f"- Where: {f['where']}"] if f.get("where") else []), "",
+                "## Finding", "", f.get("detail") or f["title"], ""]
+        if f.get("fix"):
+            body += ["## Suggested fix", "", f["fix"], ""]
+        body += ["## History", "", *[f"- r{h.get('round')} {h.get('by')}: {h.get('event')}" + (f" - {h['note']}" if h.get("note") else "")
+                                     for h in f.get("history", [])]]
+        (d / f"{f['id']}.md").write_text("\n".join(body) + "\n", encoding="utf-8")
+
+
+def finding_title(text: str) -> str:
+    text = " ".join(str(text or "").split())
+    m = re.match(r"(.{20,140}?[.!?])(\s|$)", text)
+    return (m.group(1) if m else text[:140]).strip()
+
+
+def cmd_finding(p: Project, a) -> None:
+    tid = a.task
+    reg = findings_load(p, tid)
+    by_id = {f["id"]: f for f in reg["items"]}
+    rnd = a.round
+    if a.action == "list":
+        items = [f for f in reg["items"] if (not a.open or f["status"] in FINDING_OPEN) and (not a.stage or f["stage"] == a.stage)]
+        return emit({"ok": True, "items": items, "count": len(items)})
+    try:
+        data = json.loads(read_note(a) or "{}")
+    except json.JSONDecodeError as e:
+        raise SatoryError(f"finding {a.action} expects JSON on stdin: {e}")
+    if a.action == "record":
+        stage = a.stage
+        before = [f["id"] for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN]
+        touched, warnings = set(), []
+        for v in data.get("verified") or []:
+            f = by_id.get(str(v.get("id", "")).strip())
+            if not f:
+                warnings.append(f"unknown finding {v.get('id')}")
+                continue
+            if f["stage"] != stage:
+                warnings.append(f"{f['id']} belongs to {f['stage']}, not {stage}")
+                continue
+            status, note = str(v.get("status", "")).strip(), str(v.get("note") or "").strip()
+            if status == "worse" and v.get("severity"):
+                f["severity"] = str(v["severity"])
+            if status in ("fixed", "dismissed"):
+                f["status"] = status
+            elif status in ("open", "worse"):
+                f["status"] = "open"
+            else:
+                warnings.append(f"{f['id']}: unknown status {status!r}")
+                continue
+            f.setdefault("history", []).append({"round": rnd, "by": stage, "event": status, "note": note})
+            touched.add(f["id"])
+        added = []
+        for n in data.get("new") or []:
+            detail = str(n.get("detail") or n.get("issue") or n.get("description") or "").strip()
+            title = str(n.get("title") or "").strip() or finding_title(detail)
+            where = str(n.get("where") or "").strip()
+            if not title:
+                continue
+            dup = next((f for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN
+                        and f["title"] == title and f.get("where", "") == where), None)
+            if dup:
+                dup.setdefault("history", []).append({"round": rnd, "by": stage, "event": "reported again"})
+                touched.add(dup["id"])
+                continue
+            fid = f"F-{reg['next']}"
+            reg["next"] += 1
+            f = {"id": fid, "stage": stage, "round": rnd, "severity": str(n.get("severity") or "minor"), "title": title,
+                 "where": where, "detail": detail, "fix": str(n.get("fix") or "").strip(), "status": "open",
+                 "history": [{"round": rnd, "by": stage, "event": "raised"}]}
+            reg["items"].append(f)
+            by_id[fid] = f
+            added.append(fid)
+        unverified = [x for x in before if x not in touched and by_id[x]["status"] in FINDING_OPEN]
+        for x in unverified:
+            by_id[x].setdefault("history", []).append({"round": rnd, "by": stage, "event": "not verified (still open)"})
+        findings_save(p, tid, reg)
+        mine = [f for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN]
+        return emit({"ok": True, "added": added, "unverified": unverified, "warnings": warnings,
+                     "open": mine, "blocking": [f for f in mine if finding_blocks(f)]})
+    if a.action == "dispute":
+        done = []
+        for d in data if isinstance(data, list) else data.get("disputes") or []:
+            f = by_id.get(str(d.get("id", "")).strip())
+            if f and f["status"] == "open":
+                f["status"] = "disputed"
+                f.setdefault("history", []).append({"round": rnd, "by": "dev", "event": "disputed", "note": str(d.get("reason") or "")})
+                done.append(f["id"])
+        findings_save(p, tid, reg)
+        return emit({"ok": True, "disputed": done})
+    if a.action == "polish":
+        left = [f for f in reg["items"] if f["status"] in FINDING_OPEN and not finding_blocks(f)]
+        path = p.run / "polish.json"
+        pol = load_json(path, {"items": []})
+        seen = {(x.get("task"), x.get("finding")) for x in pol["items"]}
+        for f in left:
+            if (tid, f["id"]) not in seen:
+                pol["items"].append({"task": tid, "finding": f["id"], "source": f"{f['stage']}-{tid}-r{f['round']}",
+                                     "severity": f["severity"], "where": f.get("where", ""),
+                                     "issue": f["title"] + (f": {f['detail']}" if f.get("detail") and f["detail"] != f["title"] else ""),
+                                     "fix": f.get("fix", ""), "planned": None})
+            f["status"] = "polish"
+            f.setdefault("history", []).append({"round": rnd, "by": "satory", "event": "moved to the polish task"})
+        write_json(path, pol)
+        findings_save(p, tid, reg)
+        if left:
+            progress(p, f"🧽 {len(left)} small improvement(s) from {tid} noted for the polish task")
+        return emit({"ok": True, "polish": [f["id"] for f in left]})
+    raise SatoryError(f"unknown action {a.action}")
 
 
 def cmd_task_context(p: Project, a) -> None:
@@ -1785,7 +2032,8 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
-        save_review(p, st, "qa", rnd, verdict, join_note(note, extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
+        save_review(p, st, "qa checks", rnd, "pass" if gates_ok else "fail",
+                    "\n".join(extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
         if gates["e2e"].get("scope") != "task":  # the whole suite ran here: its result is in the qa entry
             (st.get("reviews") or {}).pop("full e2e", None)
         p.save_state()
@@ -1814,7 +2062,7 @@ def cmd_step(p: Project, a) -> None:
         extra = [f"- Whole e2e suite: {'✓' if g['ok'] else '✗ - back to Dev; the next round runs it again in QA'}"]
         extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
-        save_review(p, st, "full e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra + [f"- Log: {g.get('log')}"]))
+        save_review(p, st, "full e2e", rnd, "pass" if g["ok"] else "fail", "\n".join(extra + [f"- Log: {g.get('log')}"]))
         p.save_state()
         emit({"ok": g["ok"], "gates": {"e2e": g}, "context_error": refresh_context(p, tid)})
 
@@ -1832,8 +2080,6 @@ def cmd_step(p: Project, a) -> None:
             p.git("clean", "-fdq")
         extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
         journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
-        save_review(p, st, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
-        p.save_state()
         emit({"ok": True, "reverted": sorted(changed), "context_error": refresh_context(p, tid)})
 
     else:
@@ -1936,7 +2182,13 @@ def cmd_task_unblock(p: Project, a) -> None:
     p.save_plan(plan)
     if tid in p.state["tasks"]:
         p.state["tasks"][tid]["rounds"] = 0
-        p.state["tasks"][tid].pop("reviews", None)  # the round numbers start again; old findings would read as current
+        p.state["tasks"][tid].pop("reviews", None)  # the round numbers start again; old check results would read as current
+        reg = findings_load(p, tid)  # the findings stay (Dev needs them with the guidance), marked
+        for f in reg["items"]:
+            if f["status"] in FINDING_OPEN:
+                f.setdefault("history", []).append({"round": 0, "by": "user", "event": "task unblocked; still open"})
+        if reg["items"]:
+            findings_save(p, tid, reg)
         p.save_state()
     journal_pending(p, tid, "user", None, "unblocked", answer or "Unblocked without a clarification.")
     journal_flush(p)
@@ -2186,6 +2438,17 @@ def main() -> None:
     s.add_argument("--full", action="store_true", help="list: every field of every item")
     s.add_argument("--note-stdin", action="store_true")
 
+    s = sub.add_parser("spec")
+    s.add_argument("action", choices=["check"])
+
+    s = sub.add_parser("finding")
+    s.add_argument("action", choices=["record", "dispute", "list", "polish"])
+    s.add_argument("task")
+    s.add_argument("--stage", help="record: the check (reviewer, qa, ui, security); list: only its findings")
+    s.add_argument("--round", type=int, default=0)
+    s.add_argument("--open", action="store_true", help="list: only open and disputed")
+    s.add_argument("--note-stdin", action="store_true")
+
     s = sub.add_parser("design")
     s.add_argument("action", choices=["request", "status", "done", "log"])
     s.add_argument("--choice", help="request: the direction to use (its folder name under docs/design/directions)")
@@ -2226,7 +2489,8 @@ def main() -> None:
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
-                    "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design}
+                    "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
+                    "finding": cmd_finding}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
                     "unblock": cmd_task_unblock, "context": cmd_task_context}[a.action](p, a)

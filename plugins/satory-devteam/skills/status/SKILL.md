@@ -62,7 +62,8 @@ Talk to the user in the language they write in.
    - Answers that change the requirements go into `docs/SPEC.md` (version + history row, the affected
      R-IDs; a decision becomes an acceptance criterion with concrete values). `main` changes only between
      two tasks, so write the SPEC through the queue: `$SATORY queue begin` (a worktree of main on a new
-     branch), edit `docs/SPEC.md` under its `dir`, then
+     branch), edit `docs/SPEC.md` under its `dir` in its fixed format (requirement headings, criteria and
+     NFR bullets with their ids), check it with `$SATORY --project <dir> spec check` (fix every error), then
      `$SATORY queue add --branch <branch> --dir <dir> --source answers --message "docs: specification vN"`
      with `{}` on stdin. It is merged at once on a clean main, or by the build after the current task.
    - Answers that need code changes (a different behaviour than built, an accepted `fix` or `test`) are

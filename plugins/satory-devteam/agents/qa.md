@@ -18,7 +18,7 @@ A task with **subtasks** in its description (a bundle of fixes) is tested whole:
 Start from the context digest `.satory/run/context/<ID>.md`: the full text of the task's requirements,
 the tables of contents of the documents with line numbers (read them by section), the files changed so
 far, your own notes from earlier rounds (`<ID>-qa.md`; the Developer's notes describe the implementation -
-do not test from them) and the last findings of each check.
+do not test from them) and the findings of the task.
 
 Write the tests from these documents, not from the implementation. Read the code only to learn how to
 connect to it (class names, paths, selectors), not what it "should" do. If the mini-spec is incomplete
@@ -104,6 +104,15 @@ see lost or corrupted is a defect, see "Verdict"; a missing rule that could let 
 change your verdict. Report each gap once, in the round you notice it. Write it in the documentation language (given in
 the task) and skip anything already in the register (the list is in your task), even reworded. Dev's
 `assumptions` of this round are in that list too: a gap Dev already reported as a decision is not reported again.
+
+## Your findings
+The defects you report in `findings` are kept in a register with stable ids (F-1, F-2 ...; the short list
+is in the context digest, the full record of each in `.satory/run/findings/<task>/<id>.md`); failing tests
+are not (the tests show them every round). In round > 1 the task lists your open findings: return one entry
+for each in `verified` - `fixed`, `open` (still there), `worse` (with the new severity) or `dismissed` (only
+to accept a dispute by Dev that is right, or when the finding no longer applies; say why in `note`). A
+finding Dev disputed shows the reason in its record: decide it on its merits. Report in `findings` only
+defects that are not in the list, and never the same problem again in other words.
 
 ## Verdict
 `fail` if any test you ran fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.

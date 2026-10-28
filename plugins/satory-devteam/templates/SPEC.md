@@ -14,7 +14,9 @@
 ## 3. Requirements
 
 <!-- Every requirement has an ID (R-001…) and acceptance criteria (AC-001.1…) in Given/When/Then form.
-     The criteria must be verifiable by a test - no "fast", "convenient", "good". -->
+     The criteria must be verifiable by a test - no "fast", "convenient", "good".
+     Fixed format (checked by `satory spec check`; the agents read requirements by id): a requirement is a
+     heading `### R-001 - Title`, its criteria are bullets `- **AC-001.1** - ...` under it. -->
 
 ### R-001 - <short title>
 
@@ -25,7 +27,8 @@
 
 ## 4. Non-functional requirements
 
-<!-- NFR-001…: performance, security, authentication, personal data, language/localisation, supported
+<!-- One bullet each, `- **NFR-001 - Title.** text`; they apply to every task.
+     NFR-001…: performance, security, authentication, personal data, language/localisation, supported
      browsers, availability. For a UI also: the viewports it must work at without horizontal scrolling
      and the accessibility level (e.g. no axe serious/critical violations, WCAG 2.2 AA contrast). -->
 

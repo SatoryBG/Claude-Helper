@@ -35,7 +35,10 @@ Follow the rules of `${CLAUDE_PLUGIN_ROOT}/skills/analyst/SKILL.md` (sections "S
   every new or changed field. Do not ask technical questions.
 - For a change or a new capability: write it into `docs/SPEC.md` - new or changed requirements and
   acceptance criteria (Given/When/Then, concrete values), a version bump and a row in the change history
-  with the source "request from the user". Show the user the new or changed criteria and get a yes.
+  with the source "request from the user". Keep the fixed format of the SPEC (requirement headings
+  `### R-NNN - Title`, criteria bullets `- **AC-NNN.N** - ...`, NFR bullets `- **NFR-NNN - Title.** ...`)
+  and run `satory --project <dir> spec check` on the edited copy; fix every error it reports. Show the user
+  the new or changed criteria and get a yes.
 
 ## 2. Architect
 Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/architect/SKILL.md`.

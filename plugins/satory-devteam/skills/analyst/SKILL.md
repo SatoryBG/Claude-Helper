@@ -75,6 +75,12 @@ Fill in `docs/SPEC.md` from the template `${CLAUDE_PLUGIN_ROOT}/templates/SPEC.m
   at least one negative scenario. The criteria are **verifiable by an automatic test**: concrete values,
   messages, statuses. No "fast", "convenient", "intuitive".
 - Requirements are small and independent where possible.
+- **The format is fixed**, because the agents read the requirements by their ids: a requirement is a
+  heading `### R-001 - Title` (level 3, ` - ` after the id); its criteria are bullets
+  `- **AC-001.1** - Given … When … Then …` directly under it (the number before the dot is the
+  requirement's); a non-functional requirement, which applies to every task, is a bullet
+  `- **NFR-001 - Title.** text` (or a heading `### NFR-001 - Title`). Ids are unique and never reused.
+  After writing, run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/satory" spec check` and fix every error it reports.
 - Look and feel is not a requirement with ACs: it goes into section "User interface" as the direction the
   architect turns into `docs/UI.md`. Its testable part goes into the NFRs: the viewports every page must
   work at without horizontal scrolling (default 375, 768 and 1280 px) and the accessibility level
