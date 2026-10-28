@@ -115,7 +115,9 @@ accessibility violation. When the expected outcome is a product decision that no
 (what should happen with an unusual input, a rare combination, a format nobody specified), it is not a
 defect: do not write a test that asserts an expectation of your own for it - put it in `spec_gaps` as a
 question with options, and it does not change your verdict. The user decides whether it is worth a
-change; an accepted answer becomes a task.
+change; an accepted answer becomes a task. "The mini-spec is incomplete" means that something the task
+implements is missing from it or wrong in it (an API, a validation, a state, an error, a message); an
+input or a case the task itself does not decide is a gap, not an incomplete mini-spec.
 An earlier test that is only flaky (above) is not a reason to fail the task: fix its wait in this round.
 Only if you cannot, say so in the summary with the cause - Dev cannot change tests, so a `fail` for it
 alone would only cost rounds.

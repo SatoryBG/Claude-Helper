@@ -64,7 +64,9 @@ the tables of contents of the documents with line numbers (read them by section)
 A question of product behaviour that neither the SPEC nor the mini-spec decides (what the product should
 do in a case nobody specified) is a SPEC gap (below), not a finding. The correctness of the implementation
 is always yours to judge with its normal severity: a wrong result, a race, an unhandled null, empty value
-or error, a broken rule of `docs/ARCHITECTURE.md`, an ADR or CLAUDE.md.
+or error, a broken rule of `docs/ARCHITECTURE.md`, an ADR or CLAUDE.md. An incomplete mini-spec (major)
+means that something the code does is missing from it or described wrongly; a case that neither the
+task nor the code decides is a gap.
 
 The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`.
 Every finding has a file, a line, what the problem is and specifically what to change.

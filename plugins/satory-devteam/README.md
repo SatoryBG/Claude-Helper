@@ -194,7 +194,9 @@ again. A round keeps both small without leaving out a check:
   AC-003.10" and wildcards like "AC-003.*" expanded), the tables of contents of `docs/SPEC.md`,
   `docs/ARCHITECTURE.md`, `docs/UI.md` and `docs/design/DESIGN.md` with line numbers, the ADRs and mockups
   the task names, the files changed on its branch, the agents' notes and the last findings of each check
-  (marked when not re-checked since). The agents start from it and read the documents by section; the
+  (marked when not re-checked since). The parts of the SPEC that apply to every task come with it: a
+  section of requirement bullets without requirement headings (the NFRs) in full, and the other sections
+  (roles, data, out of scope, assumptions) by name and line. The agents start from it and read the documents by section; the
   documents stay the source of truth.
 - **Notes between rounds.** Dev (or DevOps) and QA leave short notes for their next round in
   `.satory/run/notes/<task>-<role>.md`: the key files, the commands that worked, the traps and what is open.
@@ -302,6 +304,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.4.2** - fixes after a second review: the task's explicit requirements are never filtered out (a
+  missing one is reported); the NFRs and the other cross-cutting SPEC sections are in every digest; an
+  unblock clears the old findings with the round counter; the whole e2e suite in QA clears its earlier
+  failure; dependencies still go to blocked tasks and the skipped ones are logged; previous non-blocking
+  findings are shown apart ("already recorded for polish") so they are not reported again; a digest error
+  is logged; build/lint failures keep their logs; "incomplete mini-spec" is defined; "AC-001.1 - 3 MB" is
+  no longer read as a range.
 - **1.4.1** - fixes after an independent review of 1.4.0: the minor findings of all rounds reach the
   polish task; the digest is rewritten by the CLI after Dev, QA and each review (no separate call) and
   never left stale; ranges, wildcards and noise in requirement ids, fenced blocks and nested bullets in the

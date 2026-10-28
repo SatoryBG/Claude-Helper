@@ -1125,8 +1125,8 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
                     t[k].append(x)
     for dep in data.get("depends", []):
         t = p.task(plan, dep.get("task", ""))
-        if status[t["id"]] != "todo":
-            # a started task is not held back: it finishes first and the new tasks come after it
+        if status[t["id"]] not in ("todo", "blocked"):
+            # a task in progress or done is not held back: it finishes first and the new tasks come after it
             data.setdefault("_skipped_depends", []).append(t["id"])
             continue
         for d in dep.get("add", []):
@@ -1165,6 +1165,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines += [f"- {m['task']} merged with {', '.join(m['merged'])}" for m in data.get("_merged", [])]
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
     lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
+    lines += [f"- {x} has started: no new dependency (it finishes first)" for x in data.get("_skipped_depends", [])]
     journal_pending(p, "plan", source, None, "ok", join_note(data.get("summary", ""), lines))
     journal_flush(p)
     render_plan(p, plan)
@@ -1177,7 +1178,8 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     push_error = push_quiet(p, "origin", p.main)
     return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
             "merged": data.get("_merged", []),
-            "resolved": [r.get("id") for r in data.get("resolved", [])], "push_error": push_error}
+            "resolved": [r.get("id") for r in data.get("resolved", [])], "push_error": push_error,
+            "skipped_depends": data.get("_skipped_depends", [])}
 
 
 def queue_dir(p: Project) -> Path:
@@ -1432,7 +1434,7 @@ def cmd_task_start(p: Project, a) -> None:
 
 # Ids of requirements a task refers to (R-012, NFR-006, AC-004.2, UC-3 ...); task and question ids are not.
 REQ_ID = re.compile(r"\b(?!(?:T|Q|ADR)-)[A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?(?!\d|\.\d)")
-REQ_RANGE = re.compile(r"\b([A-Z]{1,5}-\d{1,3})\.(\d{1,3})\s*[-–]\s*(?:\1\.)?(\d{1,3})\b")
+REQ_RANGE = re.compile(r"\b([A-Z]{1,5}-\d{1,3})\.(\d{1,3})(?:\s*[-\u2013]\s*\1\.|[-\u2013])(\d{1,3})\b")
 REQ_WILD = re.compile(r"\b([A-Z]{1,5}-\d{1,3})\.\*")
 ADR_ID = re.compile(r"\bADR-(\d{1,4})\b")
 DIGEST_DOCS = ["docs/SPEC.md", "docs/ARCHITECTURE.md", "docs/UI.md", "docs/design/DESIGN.md"]
@@ -1469,7 +1471,8 @@ def task_req_ids(t: dict, lines: list[str]) -> list[str]:
                         for x in subs]])
     known = spec_ids(lines)
     prefixes = {x.split("-")[0] for x in known}
-    found: list[str] = list(t.get("requirements") or [])
+    explicit = list(t.get("requirements") or [])
+    found: list[str] = []
     for m in REQ_RANGE.finditer(text):
         lo, hi = int(m.group(2)), int(m.group(3))
         if lo <= hi <= lo + 50:
@@ -1477,7 +1480,7 @@ def task_req_ids(t: dict, lines: list[str]) -> list[str]:
     for m in REQ_WILD.finditer(text):
         found += [x for x in known if x.startswith(m.group(1) + ".")] or [m.group(1)]
     found += REQ_ID.findall(REQ_WILD.sub(" ", text))
-    return [x for x in dict.fromkeys(found) if x.split("-")[0] in prefixes]
+    return list(dict.fromkeys([*explicit, *(x for x in found if x.split("-")[0] in prefixes)]))
 
 
 def spec_sections(lines: list[str], ids: list[str]) -> tuple[list[tuple[int, int]], list[str]]:
@@ -1528,6 +1531,31 @@ def doc_toc(lines: list[str]) -> list[str]:
 REVIEW_FAIL = ("fail", "changes_requested", "gate-fail")
 
 
+def spec_cross_cutting(lines: list[str]) -> list[str]:
+    """The parts of the SPEC that apply to every task: a top-level section of id bullets without id headings
+    (the non-functional requirements) in full, and the sections without ids (roles, data, out of scope,
+    assumptions ...) by name and line, to read the ones that concern the task."""
+    heads = headings(lines)
+    tops = [(i, txt) for i, lv, txt in heads if lv == 2]
+    full, named = [], []
+    for k, (i, txt) in enumerate(tops):
+        end = tops[k + 1][0] if k + 1 < len(tops) else len(lines)
+        id_heads = any(lv > 2 and REQ_ID.match(t) for j, lv, t in heads if i < j < end)
+        id_bullets = any(re.match(r"^\s*[-*]\s+\*\*[A-Z]{1,5}-\d", ln) for ln in lines[i + 1:end])
+        if id_bullets and not id_heads:
+            full.append((i, end))
+        elif not id_heads:
+            named.append(f"- L{i + 1}: {txt}")
+    out = []
+    if full:
+        out += ["## Requirements for every task (full text from docs/SPEC.md)", ""]
+        for a0, b0 in full:
+            out += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
+    if named:
+        out += ["## Other sections of docs/SPEC.md - read the ones that concern the task", "", *named, ""]
+    return out
+
+
 def write_context(p: Project, tid: str) -> dict:
     """Writes the context digest of a task to .satory/run/context/<task>.md: the full text of the
     requirements it refers to, the tables of contents of the documents with line numbers (to read them by
@@ -1555,6 +1583,7 @@ def write_context(p: Project, tid: str) -> dict:
                 parts += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
             if missing:
                 parts += [f"Not found in docs/SPEC.md: {', '.join(missing)}", ""]
+        parts += spec_cross_cutting(lines)
     parts += ["## Tables of contents", ""]
     for rel in DIGEST_DOCS:
         f = p.root / rel
@@ -1659,7 +1688,7 @@ def cmd_step(p: Project, a) -> None:
                   for k, g in gates.items()]
         journal_pending(p, tid, a.owner, rnd, "ok" if ok else "gate-fail", join_note(note, extra))
         if not ok:
-            save_review(p, st, "build/lint", rnd, "gate-fail", "\n".join(extra))
+            save_review(p, st, "build/lint", rnd, "gate-fail", "\n".join(extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
         else:
             (st.get("reviews") or {}).pop("build/lint", None)
         p.save_state()
@@ -1757,6 +1786,8 @@ def cmd_step(p: Project, a) -> None:
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         save_review(p, st, "qa", rnd, verdict, join_note(note, extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
+        if gates["e2e"].get("scope") != "task":  # the whole suite ran here: its result is in the qa entry
+            (st.get("reviews") or {}).pop("full e2e", None)
         p.save_state()
         emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used,
               "tests": {"listed": listed, "count": len(names), "missing": []},
@@ -1905,6 +1936,7 @@ def cmd_task_unblock(p: Project, a) -> None:
     p.save_plan(plan)
     if tid in p.state["tasks"]:
         p.state["tasks"][tid]["rounds"] = 0
+        p.state["tasks"][tid].pop("reviews", None)  # the round numbers start again; old findings would read as current
         p.save_state()
     journal_pending(p, tid, "user", None, "unblocked", answer or "Unblocked without a clarification.")
     journal_flush(p)

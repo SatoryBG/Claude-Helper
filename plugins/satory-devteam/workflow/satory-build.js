@@ -451,6 +451,16 @@ function gateLines(gates) {
       (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : ''))
 }
 
+function skippedLog(res) {
+  const s = (res && res.skipped_depends) || []
+  if (s.length) log(`🗂 ${s.join(', ')} already started: no new dependency for ${s.length > 1 ? 'them' : 'it'} - the new tasks come after`)
+}
+
+// The CLI rewrites the context digest in its steps; a failure there only costs the digest, but is reported.
+function contextLog(res) {
+  if (res && res.context_error) log(`⚠ ${res.context_error} - the agents read the documents directly this time`)
+}
+
 function flakyLog(gates, tag) {
   const flaky = (gates && gates.e2e && gates.e2e.flaky) || []
   if (flaky.length) log(`⚠ ${tag}: ${flaky.length} e2e test(s) passed only on the retry - recorded as flaky for the user`)
@@ -461,7 +471,7 @@ function context(t, start) {
     `Project: ${PROJECT}`,
     `Task: ${t.id} - ${t.title} (owner: ${t.owner})`,
     `Task file: docs/tasks/${t.id}.md`,
-    `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds and the last findings of each check. The documents stay the source of truth.`,
+    `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds and the last findings of each check. The documents stay the source of truth; if the file is missing, read them directly.`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
     `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
@@ -514,10 +524,20 @@ const RESUMED_PREV = round => RESUMED && round > 1
   ? '\n\n## Previous findings\nThe build was interrupted: if the context digest lists your last findings in this task ("Last findings of each check"), check that they were addressed. There is no diff of what changed since then, so review the whole scope.'
   : ''
 
+// The previous findings of a check: the blocking ones to verify, the rest only so they are not reported
+// again (they are already kept for the polish task).
+function prevFindings(findings, blocking, line) {
+  const req = findings.filter(blocking), rest = findings.filter(f => !blocking(f))
+  return (req.length ? `\n\n## Previous findings - check that they were fixed\n${bullets(req.map(line))}` : '') +
+    (rest.length ? `\n\n## Previous non-blocking findings - already recorded for the polish task; do not report them again\n${bullets(rest.map(line))}` : '')
+}
+const BLOCKING = f => f.severity === 'blocker' || f.severity === 'major'
+const SEC_BLOCKING = f => ['critical', 'high', 'medium'].includes(f.severity)
+
 function reviewPrompt(ctx, round, base, reviewedAt, prevReview, dev) {
-  const prev = prevReview ? (prevReview.findings.length
-    ? `\n## Previous findings - check that they were addressed\n${bullets(prevReview.findings.map(f => `[${f.severity}] ${where(f)}: ${f.issue}`))}`
-    : '') : RESUMED_PREV(round)
+  const prev = prevReview
+    ? prevFindings(prevReview.findings, BLOCKING, f => `[${f.severity}] ${where(f)}: ${f.issue}`)
+    : RESUMED_PREV(round)
   const disputes = dev.disputes.length
     ? `\n## Dev disputes tests\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
   return `${ctx}
@@ -546,9 +566,7 @@ Dev reports: ${dev.summary}${disputes}${retryNote ? `\n\n## ATTENTION\n${retryNo
 }
 
 function uiPrompt(ctx, round, base, staging, dev, prevUi, uiReviewedAt) {
-  const prev = prevUi ? (prevUi.findings.length
-    ? `\n\n## Previous findings - check that they were fixed\n${bullets(prevUi.findings.map(f => `[${f.severity}] ${at(f)}: ${f.issue}`))}`
-    : '') : RESUMED_PREV(round)
+  const prev = prevUi ? prevFindings(prevUi.findings, BLOCKING, f => `[${f.severity}] ${at(f)}: ${f.issue}`) : RESUMED_PREV(round)
   return `${ctx}
 Round: ${round}.
 The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).
@@ -560,9 +578,9 @@ Dev reports: ${dev.summary}${prev}`
 function secPrompt(ctx, round, base, scan, prevSec, secReviewedAt) {
   const scans = (scan.scans || []).map(s =>
     `\`${s.cmd}\` → ${s.missing_tool ? 'TOOL IS MISSING' : s.ok ? 'OK' : `problems found (exit ${s.exit})`} - log: ${s.log}`)
-  const prev = prevSec ? (prevSec.findings.length
-    ? `\n\n## Previous findings - check that they were fixed\n${bullets(prevSec.findings.map(f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}`))}`
-    : '') : RESUMED_PREV(round)
+  const prev = prevSec
+    ? prevFindings(prevSec.findings, SEC_BLOCKING, f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}`)
+    : RESUMED_PREV(round)
   return `${ctx}
 Round: ${round}.
 
@@ -853,6 +871,7 @@ async function planAnswers(plan) {
     if (/^satory\//.test(st.branch || '')) return plan
     const q = must(await sh('queue apply', { phase: 'Planning', label: 'queued changes' }), 'queue apply')
     for (const a of q.applied || []) {
+      skippedLog(a)
       const tasks = [...a.added, ...a.updated.map(x => `${x} (extended)`)]
       log(`🗂 Queued change applied${a.merged ? ` (documents from ${a.branch})` : ''}${tasks.length ? `: ${tasks.join(', ')}` : ''}`)
     }
@@ -867,6 +886,7 @@ async function planAnswers(plan) {
     // bundle: tasks for the same place in the plan become one task with subtasks, so the whole cycle
     // runs once for all the fixes of this planning, not once for each
     const res = must(await sh('plan add', { phase: 'Planning', label: 'add tasks', note: JSON.stringify({ ...out, bundle: true }) }), 'plan add')
+    skippedLog(res)
     log(`🗂 ${res.added.length} new task(s) for the answered questions${res.added.length ? `: ${res.added.join(', ')}` : ''}` +
       (res.resolved.length ? `; ${res.resolved.length} answer(s) need no task` : ''))
     return must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
@@ -879,6 +899,7 @@ async function planAnswers(plan) {
 async function runTask(t) {
   const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
   const ctx = context(t, start)
+  contextLog(start)
   RESUMED = !!start.resumed
   const role = t.owner === 'devops' ? 'devops' : 'dev'
   let round = start.rounds_used || 0
@@ -910,6 +931,7 @@ async function runTask(t) {
     known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
     const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
       { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
+    contextLog(ad)
     if (!ad.ok) {
       lastStage = 'build/lint'
       feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
@@ -953,7 +975,7 @@ async function runTask(t) {
       known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
-      if (!aq.qa_violation) break
+      if (!aq.qa_violation) { contextLog(aq); break }
       flakyLog(aq.gates, tag)
       if (attempt >= QA_ATTEMPTS) return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
@@ -1221,6 +1243,7 @@ ${todo.length ? bullets(todo.map(t => `${t.id} [${t.milestone}] ${t.title}`)) : 
   if (!tasks) throw new Error('the planner returned no tasks for the design')
   const added = must(await sh(`queue add --branch ${q(qb.branch)} --dir ${q(dir)} --source design --message ${q(`docs: design (${choice})`)}`,
     { phase: 'Design', label: 'design to main', note: JSON.stringify({ title: `design (${choice})`, summary: full.summary, tasks: tasks.tasks, depends: tasks.depends || [], resolved: [] }) }), 'queue add')
+  skippedLog(added.applied)
   await sh('design done', { phase: 'Design', label: 'design done' })
   await sh('question ux-reviewed design', { phase: 'Design', label: 'ux reviewed' })
   await designNote(`design ready: docs/design/ (DESIGN.md, mockups, AUDIT.md); ${tasks.tasks.length} task(s) build it${added.applied && added.applied.added ? `: ${added.applied.added.join(', ')}` : ''}`)
