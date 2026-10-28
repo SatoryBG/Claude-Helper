@@ -766,6 +766,8 @@ ${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
 // still to do. It is done without asking the user, like the refactoring: the user comments if they disagree.
 async function uxTask(m, tasks, plan) {
   await sh(`question ux-reviewed ${m}`, { phase: 'Milestone review', label: `ux reviewed ${m}` })
+  // ux.md from the current task statuses, so the review sees the planned problems whose task is done
+  try { await sh('ux list', { phase: 'Milestone review', label: `ux refresh ${m}` }) } catch (e) { /* the review goes on */ }
   const draft = await spawn('ux-review', uxPrompt(m, tasks, plan),
     { phase: 'Milestone review', label: `UX review ${m}`, model: MODELS['ux-review'], schema: UX_SCHEMA, effort: 'max' })
   if (!draft) { log(`The UX review of ${m} returned no result.`); return }

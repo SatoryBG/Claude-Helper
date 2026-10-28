@@ -1604,7 +1604,9 @@ def task_req_ids(t: dict, model: dict, wildcards: bool = True) -> list[str]:
         if lo <= hi <= lo + 50:
             found += [f"{m.group(1)}.{n}" for n in range(lo, hi + 1)]
     for m in REQ_WILD.finditer(text):
-        found += [x for x in known if x.startswith(m.group(1) + ".")] if wildcards else [f"R-{m.group(1).split('-')[1]}"]
+        matches = [x for x in known if x.startswith(m.group(1) + ".")]
+        found += matches if wildcards else sorted({it["parent"] for it in model["items"]
+                                                   if it["id"] in matches and it.get("parent")})
     found += REQ_ID.findall(REQ_WILD.sub(" ", text))
     # an id the SPEC does not define but with a prefix it uses is kept, so the digest reports it as not found
     return list(dict.fromkeys([*explicit, *(x for x in found if x.split("-")[0] in prefixes)]))
@@ -1986,7 +1988,7 @@ def canon(rid: str) -> str:
 def expand_ids(text: str, crit: tuple[str, ...] = ("AC",)) -> set[str]:
     """The ids in a text, in their canonical form: as written (AC-003.4), ranges (AC-003.3 - AC-003.6) expanded,
     and the method-name form (AC003_4_..., NFR012_...; a sub-number only for criterion prefixes)."""
-    ids = {canon(x) for x in REQ_ID.findall(text)}
+    ids = {canon(x if x.split("-")[0] in crit else x.split(".")[0]) for x in REQ_ID.findall(text)}
     for m in REQ_RANGE.finditer(text):
         lo, hi = int(m.group(2)), int(m.group(3))
         if lo <= hi <= lo + 50:
@@ -2168,8 +2170,7 @@ def ux_add(reg: dict, items: list[dict], source: str, task: str | None = None, a
         page = str(n.get("page") or "").strip()
         ref = str(n.get("ref") or "").strip()
         # the same problem again (also a dismissed one: the user's decision stays) is not added twice
-        if any(x["title"] == title and x.get("page", "") == page and (not ref or x.get("ref", "") in ("", ref))
-               for x in reg["items"]):
+        if any(x["title"] == title and x.get("page", "") == page for x in reg["items"]):
             continue
         used = {x["id"] for x in reg["items"]}
         if ref and ref not in used:
@@ -2197,9 +2198,10 @@ def ux_link_tasks(p: Project, tasks: list[dict]) -> list[str]:
     that reference (a new audit numbers its problems again); Cyrillic and Latin letters match (П-04 = P-04)."""
     reg = ux_load(p)
     keys: dict[str, dict] = {}
-    for x in sorted((x for x in reg["items"] if x["status"] == "open"), key=lambda x: x.get("audit") or 0):
+    for x in sorted(reg["items"], key=lambda x: x.get("audit") or 0):
         for k in {fold(x["id"]), fold(x.get("ref") or x["id"])}:
-            keys[k] = x  # a later audit wins
+            keys[k] = x  # a later audit wins, whatever its status
+    keys = {k: x for k, x in keys.items() if x["status"] == "open"}
     if not keys:
         return []
     linked = []
@@ -2218,6 +2220,8 @@ def ux_link_tasks(p: Project, tasks: list[dict]) -> list[str]:
 def cmd_ux(p: Project, a) -> None:
     reg = ux_load(p)
     if a.action == "list":
+        if reg["items"]:
+            ux_save(p, reg)  # ux.md shows the current task statuses ("that task is done - check it")
         items = [x for x in reg["items"] if (not a.open or x["status"] in UX_OPEN) and (not a.task or x.get("task") == a.task)]
         return emit({"ok": True, "items": items, "count": len(items),
                      "counts": {k: sum(1 for x in reg["items"] if x["status"] == k) for k in ("open", "planned", "resolved", "dismissed")}})
