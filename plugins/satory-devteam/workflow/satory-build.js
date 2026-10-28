@@ -461,6 +461,7 @@ function context(t, start) {
     `Project: ${PROJECT}`,
     `Task: ${t.id} - ${t.title} (owner: ${t.owner})`,
     `Task file: docs/tasks/${t.id}.md`,
+    `Context digest: .satory/run/context/${t.id}.md - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the mockups, the files changed so far, the notes from earlier rounds and the last findings of each review. The documents stay the source of truth.`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
     `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
@@ -506,10 +507,17 @@ Reminder: tests belong to QA (do not touch them), the mini-spec in the task file
 build/lint/test must pass. Do not commit.`
 }
 
+// In round > 1 a review starts from its own previous findings and the changes made since it ran. After an
+// interrupted build they are not in memory: the digest has the last findings of each review.
+let RESUMED = false  // the task in progress was resumed after an interrupted build
+const RESUMED_PREV = round => RESUMED && round > 1
+  ? '\n\n## Previous findings\nThe build was interrupted: if the context digest lists your last findings in this task ("Last findings of each review"), check that they were addressed.'
+  : ''
+
 function reviewPrompt(ctx, round, base, reviewedAt, prevReview, dev) {
-  const prev = prevReview && prevReview.findings.length
+  const prev = prevReview ? (prevReview.findings.length
     ? `\n## Previous findings - check that they were addressed\n${bullets(prevReview.findings.map(f => `[${f.severity}] ${where(f)}: ${f.issue}`))}`
-    : ''
+    : '') : RESUMED_PREV(round)
   const disputes = dev.disputes.length
     ? `\n## Dev disputes tests\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
   return `${ctx}
@@ -537,25 +545,28 @@ Run the unit tests and the e2e tests you added or changed, not the whole e2e sui
 Dev reports: ${dev.summary}${disputes}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
-function uiPrompt(ctx, round, base, staging, dev, prevUi) {
-  const prev = prevUi && prevUi.findings.length
+function uiPrompt(ctx, round, base, staging, dev, prevUi, uiReviewedAt) {
+  const prev = prevUi ? (prevUi.findings.length
     ? `\n\n## Previous findings - check that they were fixed\n${bullets(prevUi.findings.map(f => `[${f.severity}] ${at(f)}: ${f.issue}`))}`
-    : ''
+    : '') : RESUMED_PREV(round)
   return `${ctx}
 Round: ${round}.
 The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).
 
-Scope of the changes: \`git diff ${base}..HEAD\`
+Scope of the changes: \`git diff ${base}..HEAD\`${uiReviewedAt ? `\nChanges since your previous UI review: \`git diff ${uiReviewedAt}..HEAD\`` : ''}
 Dev reports: ${dev.summary}${prev}`
 }
 
-function secPrompt(ctx, round, base, scan) {
+function secPrompt(ctx, round, base, scan, prevSec, secReviewedAt) {
   const scans = (scan.scans || []).map(s =>
     `\`${s.cmd}\` → ${s.missing_tool ? 'TOOL IS MISSING' : s.ok ? 'OK' : `problems found (exit ${s.exit})`} - log: ${s.log}`)
+  const prev = prevSec ? (prevSec.findings.length
+    ? `\n\n## Previous findings - check that they were fixed\n${bullets(prevSec.findings.map(f => `[${f.severity}] ${f.category} ${where(f)}: ${f.issue}`))}`
+    : '') : RESUMED_PREV(round)
   return `${ctx}
 Round: ${round}.
 
-Scope of the audit: \`git diff ${base}..HEAD\` (plus the affected context).
+Scope of the audit: \`git diff ${base}..HEAD\` (plus the affected context).${secReviewedAt ? `\nChanges since your previous audit: \`git diff ${secReviewedAt}..HEAD\`` : ''}${prev}
 
 ## Automatic scanners
 ${scans.length ? bullets(scans) : '- none configured (commands.security in .satory/project.json)'}`
@@ -868,12 +879,13 @@ async function planAnswers(plan) {
 async function runTask(t) {
   const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
   const ctx = context(t, start)
+  RESUMED = !!start.resumed
   const role = t.owner === 'devops' ? 'devops' : 'dev'
   let round = start.rounds_used || 0
   let feedback = start.resumed
     ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.'
     : ''
-  let reviewedAt = null, prevReview = null, prevUi = null, lastStage = ''
+  let reviewedAt = null, prevReview = null, prevUi = null, uiReviewedAt = null, prevSec = null, secReviewedAt = null, lastStage = ''
   const polish = {}  // stage -> non-blocking findings of its last passing round, for the polish task
 
   while (round < MAX_ROUNDS) {
@@ -881,6 +893,10 @@ async function runTask(t) {
     const tag = `${t.id} r${round}`
 
     // ---- Dev ----------------------------------------------------------
+    // the context digest of this round (requirements, tables of contents, changed files, notes, last findings)
+    try {
+      must(await sh(`task context ${t.id}`, { phase: 'Dev', label: `context ${tag}` }), `context ${tag}`)
+    } catch (e) { log(`Could not write the context digest of ${tag}: ${e.message}`) }
     let known = await registerNote()
     const dev = await spawn(role, devPrompt(ctx, round, feedback) + known,
       { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
@@ -948,13 +964,14 @@ async function runTask(t) {
 
     // ---- UI -----------------------------------------------------------
     if (needsUi(t, staging)) {
-      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, prevUi),
+      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, prevUi, uiReviewedAt),
         { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
       if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
       const uiBlocking = ui.findings.filter(f => f.severity === 'blocker' || f.severity === 'major')
       must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiBlocking.length ? 'fail' : 'pass'}`,
         { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`)
       prevUi = ui
+      uiReviewedAt = aq.checkpoint
       polish.ui = { tag, items: ui.findings.filter(f => f.severity === 'minor' || f.severity === 'nit')
         .map(f => ({ severity: f.severity, where: at(f), issue: f.issue, fix: f.fix })) }
       if (uiBlocking.length) {
@@ -966,9 +983,11 @@ async function runTask(t) {
 
     // ---- Security -----------------------------------------------------
     const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
-    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan),
+    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan, prevSec, secReviewedAt),
       { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
     if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
+    prevSec = sec
+    secReviewedAt = aq.checkpoint
     const secBlocking = sec.findings.filter(f => ['critical', 'high', 'medium'].includes(f.severity))
     polish.security = { tag, items: sec.findings.filter(f => f.severity === 'low' || f.severity === 'info')
       .map(f => ({ severity: f.severity, where: `${f.category} ${where(f)}`, issue: f.issue, fix: f.fix })) }

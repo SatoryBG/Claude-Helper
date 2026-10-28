@@ -41,3 +41,11 @@ For each rule, check three things: is it in the SPEC, is it enforced on the serv
 Write the titles, details and options in the project's documentation language (`language` in
 `.satory/project.json`). Do not repeat items already in the register (the list is in your task), even
 reworded. Report only what you verified in the files; no generic advice. An empty list is a valid result.
+
+## Working efficiently
+Every tool call sends your whole conversation again, so the number of calls drives the cost far more
+than their size. Put independent calls in one message (read the three files, run the two searches
+together), combine related shell commands into one Bash call (`&&`, a small script), read a file once in
+a larger range instead of many small `sed -n`/`head` pieces, and do not read again what is already in
+your context unless it changed. Filter long outputs (`grep`, `tail`) instead of reading them whole.
+Never skip a check, a test or a reading the task needs in order to save calls.

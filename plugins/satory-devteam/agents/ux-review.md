@@ -58,3 +58,11 @@ presented and operated. Skip matters of taste and anything already planned (the 
 Also return `title`: the title of the task that will hold them, in one line, and `summary` (2-3
 sentences). Write everything in the project's documentation language (given in your task). An empty
 list is a valid result.
+
+## Working efficiently
+Every tool call sends your whole conversation again, so the number of calls drives the cost far more
+than their size. Put independent calls in one message (read the three files, run the two searches
+together), combine related shell commands into one Bash call (`&&`, a small script), read a file once in
+a larger range instead of many small `sed -n`/`head` pieces, and do not read again what is already in
+your context unless it changed. Filter long outputs (`grep`, `tail`) instead of reading them whole.
+Never skip a check, a test or a reading the task needs in order to save calls.

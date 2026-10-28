@@ -1420,6 +1420,133 @@ def cmd_task_start(p: Project, a) -> None:
           "known_tests": len(st["known_tests"])})
 
 
+# ---------------------------------------------------------- context digest ---
+
+# Ids of requirements a task refers to (R-012, NFR-006, AC-004.2, UC-3 ...); task and question ids are not.
+REQ_ID = re.compile(r"\b(?!(?:T|Q|ADR)-)[A-Z]{1,5}-\d{1,3}(?:\.\d{1,3})?(?!\d|\.\d)")
+ADR_ID = re.compile(r"\bADR-(\d{1,4})\b")
+DIGEST_DOCS = ["docs/SPEC.md", "docs/ARCHITECTURE.md", "docs/UI.md", "docs/design/DESIGN.md"]
+HEADING = re.compile(r"^(#{1,4})\s+(.*\S)\s*$")
+
+
+def spec_sections(lines: list[str], ids: list[str]) -> tuple[list[tuple[int, int]], list[str]]:
+    """Line ranges (0-based, end exclusive) of the SPEC text for the ids: a heading that starts with the id
+    takes its whole section, a bullet that names it (`- **AC-004.2**`) its paragraph. Returns the ranges in
+    document order and the ids that were not found."""
+    ranges, missing = [], []
+    for rid in ids:
+        pat = re.compile(rf"(?<![\w.-]){re.escape(rid)}(?![\w.]|-\d)")
+        found = None
+        for i, line in enumerate(lines):
+            m = HEADING.match(line)
+            if m and pat.match(m.group(2)):
+                level = len(m.group(1))
+                end = next((j for j in range(i + 1, len(lines))
+                            if (h := HEADING.match(lines[j])) and len(h.group(1)) <= level), len(lines))
+                found = (i, end)
+                break
+        if not found:
+            for i, line in enumerate(lines):
+                if re.match(r"^\s*[-*]\s+\*\*", line) and pat.search(line.split("**")[1] if "**" in line else ""):
+                    end = i + 1
+                    while end < len(lines) and lines[end].strip() and not re.match(r"^\s*[-*]\s|^#", lines[end]):
+                        end += 1
+                    found = (i, end)
+                    break
+        if found:
+            ranges.append(found)
+        else:
+            missing.append(rid)
+    merged: list[tuple[int, int]] = []
+    for a, b in sorted(ranges):
+        if merged and a < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged, missing
+
+
+def doc_toc(lines: list[str]) -> list[str]:
+    """Headings of levels 2-3 with their line numbers (1-based), for reading a document by section."""
+    out, fence = [], False
+    for i, line in enumerate(lines, 1):
+        if line.startswith("```"):
+            fence = not fence
+        m = None if fence else HEADING.match(line)
+        if m and len(m.group(1)) in (2, 3):
+            out.append(f"{'  ' if len(m.group(1)) == 3 else ''}- L{i}: {m.group(2)}")
+    return out
+
+
+def cmd_task_context(p: Project, a) -> None:
+    """A digest of what one task needs, written to .satory/run/context/<task>.md before every round: the full
+    text of the requirements it refers to, the tables of contents of the documents with line numbers (to read
+    them by section), the mockups it names, the files changed on its branch, the agents' notes from earlier
+    rounds and the last findings of each review. The documents stay the source of truth; this is a map."""
+    tid = a.task
+    t = p.task(p.plan(), tid)
+    st = p.state["tasks"].get(tid) or {}
+    text = "\n".join([t.get("title", ""), t.get("description", ""), *t.get("acceptance", []),
+                      *[f"{x.get('title', '')}\n{x.get('description', '')}\n" + "\n".join(x.get("acceptance", []))
+                        for x in t.get("subtasks", [])]])
+    ids = list(dict.fromkeys([*t.get("requirements", []), *REQ_ID.findall(text)]))
+    parts = [f"# Context digest - {tid}: {t.get('title', '')}", "",
+             "Written by satory before every round. It is a map, not a replacement: the documents remain the "
+             "source of truth. Read a document by section (Read with offset/limit from the line numbers below) "
+             "and the whole of it only when the task really spans it.", ""]
+    missing: list[str] = []
+    spec = p.root / "docs" / "SPEC.md"
+    if spec.exists() and ids:
+        lines = spec.read_text(encoding="utf-8").splitlines()
+        ranges, missing = spec_sections(lines, ids)
+        parts += [f"## Requirements of this task (full text from docs/SPEC.md: {', '.join(ids)})", ""]
+        for a0, b0 in ranges:
+            parts += [f"<!-- docs/SPEC.md lines {a0 + 1}-{b0} -->", *lines[a0:b0], ""]
+        if missing:
+            parts += [f"Not found in docs/SPEC.md (look them up): {', '.join(missing)}", ""]
+    parts += ["## Tables of contents", ""]
+    for rel in DIGEST_DOCS:
+        f = p.root / rel
+        if f.exists():
+            lines = f.read_text(encoding="utf-8").splitlines()
+            parts += [f"### {rel} ({len(lines)} lines)", *doc_toc(lines), ""]
+    adr_dir = p.root / "docs" / "adr"
+    adrs = [f for n in dict.fromkeys(ADR_ID.findall(text)) for f in sorted(adr_dir.glob(f"{int(n):03d}-*.md"))[:1]] \
+        if adr_dir.is_dir() else []
+    if adrs:
+        parts += ["## ADRs named by the task", "", *[f"- {p.rel(f)}" for f in adrs], ""]
+    mockups = sorted(set(re.findall(r"docs/design/mockups/[\w./-]+\.html", text)))
+    mdir = p.root / "docs" / "design" / "mockups"
+    if mockups or mdir.is_dir():
+        parts += ["## Mockups", ""]
+        if mockups:
+            parts += ["Named by the task:", *[f"- {m}" for m in mockups]]
+        if mdir.is_dir():
+            parts += ["All pages: " + ", ".join(sorted(x.name for x in mdir.glob("*.html")))]
+        parts += [""]
+    if st.get("base"):
+        changed = [x for x in p.git("diff", "--name-only", st["base"], "HEAD").splitlines()
+                   if x and not x.startswith((".satory/", "docs/tasks/"))]
+        if changed:
+            parts += [f"## Files changed on this task's branch so far ({len(changed)})", "",
+                      *[f"- {x}" for x in changed[:120]], *(["- ..."] if len(changed) > 120 else []), ""]
+    notes_dir = p.run / "notes"
+    notes = sorted(notes_dir.glob(f"{tid}-*.md")) if notes_dir.is_dir() else []
+    if notes:
+        parts += ["## Notes from earlier rounds (read your own first)", "", *[f"- {p.rel(x)}" for x in notes], ""]
+    reviews = st.get("reviews") or {}
+    if reviews:
+        parts += ["## Last findings of each review in this task", ""]
+        for stage, r in reviews.items():
+            parts += [f"### {stage} (round {r.get('round')}, {r.get('verdict') or '-'})", r.get("note", "").strip(), ""]
+    out = p.run / "context" / f"{tid}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(parts).rstrip() + "\n"
+    out.write_text(body, encoding="utf-8")
+    emit({"ok": True, "path": p.rel(out), "chars": len(body), "requirements": ids, "missing": missing,
+          "notes": [p.rel(x) for x in notes]})
+
+
 def guard(p: Project, ref: str, allowed) -> list[str]:
     violations = []
     for path, status in sorted(changed_files(p, ref).items()):
@@ -1593,6 +1720,9 @@ def cmd_step(p: Project, a) -> None:
             p.git("clean", "-fdq")
         extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
         journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
+        # the last findings of each review survive an interrupted build (the context digest shows them)
+        st.setdefault("reviews", {})[a.stage] = {"round": rnd, "verdict": a.verdict or "ok", "note": (note or "")[:6000]}
+        p.save_state()
         emit({"ok": True, "reverted": sorted(changed)})
 
     else:
@@ -1918,7 +2048,7 @@ def main() -> None:
     s.add_argument("--source", help="add: who changes the plan (journal)")
 
     s = sub.add_parser("task")
-    s.add_argument("action", choices=["start", "finish", "block", "unblock"])
+    s.add_argument("action", choices=["start", "finish", "block", "unblock", "context"])
     s.add_argument("task")
     s.add_argument("--note-stdin", action="store_true")
 
@@ -1987,7 +2117,7 @@ def main() -> None:
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design}
         if a.cmd == "task":
             return {"start": cmd_task_start, "finish": cmd_task_finish, "block": cmd_task_block,
-                    "unblock": cmd_task_unblock}[a.action](p, a)
+                    "unblock": cmd_task_unblock, "context": cmd_task_context}[a.action](p, a)
         return handlers[a.cmd](p, a)
     except SatoryError as e:
         emit({"ok": False, "error": str(e)})

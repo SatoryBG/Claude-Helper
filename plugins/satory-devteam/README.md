@@ -183,6 +183,31 @@ register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a te
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
+## Cost of a round
+
+Most of the cost of an agent is its number of turns times the size of its context, which every turn sends
+again. A round keeps both small without leaving out a check:
+
+- **Context digest.** Before every round `satory task context <task>` writes
+  `.satory/run/context/<task>.md`: the full text of the requirements the task refers to (its R-, NFR- and
+  AC-ids from `docs/SPEC.md`), the tables of contents of `docs/SPEC.md`, `docs/ARCHITECTURE.md`,
+  `docs/UI.md` and `docs/design/DESIGN.md` with line numbers, the ADRs and mockups the task names, the
+  files changed on its branch, the agents' notes and the last findings of each review. The agents start
+  from it and read the documents by section; the documents stay the source of truth.
+- **Notes between rounds.** Dev (or DevOps) and QA leave short notes for their next round in
+  `.satory/run/notes/<task>-<role>.md`: the key files, the commands that worked, the traps and what is open.
+- **Reviews of what changed.** In round > 1 the Reviewer, the UI reviewer and Security start from their own
+  previous findings and look at the changes made since their previous review (the UI reviewer also at the
+  pages that use a shared component, token or layout those changes touch); the whole scope is reviewed the
+  first time. The last findings of each review are kept in the state, so they survive an interrupted build.
+- **What sends a task back.** QA fails a task for a defect: a contradiction with an acceptance criterion,
+  the SPEC, the mini-spec, `docs/UI.md` or a clarification, a regression, a crash or 5xx, lost data, a
+  security problem or a serious accessibility violation. Behaviour no source defines becomes a question
+  for the user instead of a test with QA's own expectation. The Reviewer treats such edge cases the same
+  way, unless they crash, lose data or open a security hole.
+- **Fewer turns.** Every role asks for independent tool calls in one message, related shell commands in
+  one call and files read in larger ranges, and never for a skipped check.
+
 ## Tests in a round
 
 A round does not run the whole test suite more than it has to. Dev runs `build`, `lint` and `test`
@@ -271,6 +296,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.4.0** - cheaper rounds at the same quality (see "Cost of a round"): the context digest
+  (`satory task context`), notes between rounds, reviews of what changed since the previous review (now
+  also for the UI reviewer and Security, with the last findings kept across an interrupted build), QA and
+  the Reviewer turn undefined edge cases into questions instead of failing the task, and every role batches
+  its tool calls.
 - **1.3.1** - a few failing unit tests (up to `unit_retry_max`, 3) run once more before the test gate
   fails; passing then counts, and they go to the register as flaky, as the e2e tests do.
 - **1.3.0** - the design step: a UX audit, design directions as mockups, the chosen design for every page

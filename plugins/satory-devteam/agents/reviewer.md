@@ -9,6 +9,9 @@ make is reverted automatically. Use `git diff`, `git log` and reading files.
 
 A task with **subtasks** in its description (a bundle of fixes) is checked whole: every subtask and its acceptance criteria.
 
+Start from the context digest `.satory/run/context/<ID>.md`: the full text of the task's requirements and
+the tables of contents of the documents with line numbers (read them by section).
+
 ## What you check
 1. **Compliance**: does the code implement the task description and acceptance criteria and the relevant
    requirements in `docs/SPEC.md`? Is anything missing?
@@ -58,6 +61,9 @@ A task with **subtasks** in its description (a bundle of fixes) is checked whole
 - **major**: a probable bug, an incomplete or wrong mini-spec, broken architecture, superfluous scope.
 - **minor** / **nit**: improvements that do not stop the task.
 
+An edge case that neither the SPEC nor the mini-spec defines is a SPEC gap (below), not a major finding -
+unless it crashes, loses or corrupts data, or opens a security hole.
+
 The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`.
 Every finding has a file, a line, what the problem is and specifically what to change.
 
@@ -71,3 +77,11 @@ the task) and skip anything already in the register (the list is in your task), 
 
 In round > 1, first check whether the previous findings were addressed. Then review the new changes
 (`git diff <previous checkpoint>..HEAD`) without losing the overall picture (`git diff <base>..HEAD`).
+
+## Working efficiently
+Every tool call sends your whole conversation again, so the number of calls drives the cost far more
+than their size. Put independent calls in one message (read the three files, run the two searches
+together), combine related shell commands into one Bash call (`&&`, a small script), read a file once in
+a larger range instead of many small `sed -n`/`head` pieces, and do not read again what is already in
+your context unless it changed. Filter long outputs (`grep`, `tail`) instead of reading them whole.
+Never skip a check, a test or a reading the task needs in order to save calls.

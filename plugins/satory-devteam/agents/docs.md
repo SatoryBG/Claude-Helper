@@ -23,3 +23,11 @@ Write the documentation in the language set by `language` in `.satory/project.js
 - Do not touch or read `docs/JOURNAL.md` or `.satory/`. Do not commit.
 - Do not invent: every statement in the documentation must match the code or the mini-spec.
 - Short and concrete, with examples (request and response, command) where they help.
+
+## Working efficiently
+Every tool call sends your whole conversation again, so the number of calls drives the cost far more
+than their size. Put independent calls in one message (read the three files, run the two searches
+together), combine related shell commands into one Bash call (`&&`, a small script), read a file once in
+a larger range instead of many small `sed -n`/`head` pieces, and do not read again what is already in
+your context unless it changed. Filter long outputs (`grep`, `tail`) instead of reading them whole.
+Never skip a check, a test or a reading the task needs in order to save calls.

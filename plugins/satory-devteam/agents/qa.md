@@ -15,6 +15,10 @@ A task with **subtasks** in its description (a bundle of fixes) is tested whole:
 3. The clarifications from the user in the task file.
 4. `docs/UI.md`, if it exists: the viewports and accessibility level the UI must meet.
 
+Start from the context digest `.satory/run/context/<ID>.md`: the full text of the task's requirements,
+the tables of contents of the documents with line numbers (read them by section), the files changed so
+far, your notes from earlier rounds and the last findings of each review.
+
 Write the tests from these documents, not from the implementation. Read the code only to learn how to
 connect to it (class names, paths, selectors), not what it "should" do. If the mini-spec is incomplete
 or contradicts the SPEC, the task fails and goes back to Dev.
@@ -54,7 +58,8 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 - Test names are stable, unique and descriptive (which criterion they check). Every e2e test of the
   task has the task id in its full title (e.g. `test.describe('T-011 ...')`): the check after you runs
   only this task's e2e tests (and the smoke tests), selected by it.
-- Do not touch `.satory/` (except temporary files in `.satory/run/qa/`) or `docs/JOURNAL.md`.
+- Do not touch `.satory/` (except temporary files in `.satory/run/qa/` and your notes in
+  `.satory/run/notes/`) or `docs/JOURNAL.md`.
   Do not commit.
 
 ## How you work
@@ -84,6 +89,11 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
    the test projects and use it; put a step you need in two places into a shared helper. Wait for the
    state you check (a response, a visible text, an enabled button), never for a fixed time.
+7. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
+   at most about 60 lines, facts only, not a log): the key files and what each does for this task, the
+   commands that worked (run one test, reach a state on staging, log in as a role), the traps you hit
+   and how you got past them, and what is still open. The next round starts from it (the digest lists
+   it), so it does not have to rediscover the code. It is not committed and never replaces "QA: coverage".
 
 ## SPEC gaps
 When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after
@@ -95,8 +105,23 @@ the task) and skip anything already in the register (the list is in your task), 
 
 ## Verdict
 `fail` if any test you ran fails (new or old), the exploration finds a defect, or the mini-spec is incomplete.
+A **defect** is behaviour that contradicts an acceptance criterion, the SPEC, the mini-spec, `docs/UI.md`
+or a clarification from the user; a regression of an earlier feature; a crash or a server error (5xx);
+lost or corrupted data; a security problem; or a `serious`/`critical` accessibility violation. Behaviour
+that none of these sources defines (an unusual input, a rare combination, a format nobody specified) is
+not a defect: do not write a test that asserts an expectation of your own for it - put it in
+`spec_gaps` as a question with options, and it does not change your verdict. The user decides whether
+it is worth a change; an accepted answer becomes a task.
 An earlier test that is only flaky (above) is not a reason to fail the task: fix its wait in this round.
 Only if you cannot, say so in the summary with the cause - Dev cannot change tests, so a `fail` for it
 alone would only cost rounds.
 For every failure give the test, expected, actual and how to reproduce it, so Dev can act without asking
 you. Give `pass` only if everything passes and every criterion is covered.
+
+## Working efficiently
+Every tool call sends your whole conversation again, so the number of calls drives the cost far more
+than their size. Put independent calls in one message (read the three files, run the two searches
+together), combine related shell commands into one Bash call (`&&`, a small script), read a file once in
+a larger range instead of many small `sed -n`/`head` pieces, and do not read again what is already in
+your context unless it changed. Filter long outputs (`grep`, `tail`) instead of reading them whole.
+Never skip a check, a test or a reading the task needs in order to save calls.
