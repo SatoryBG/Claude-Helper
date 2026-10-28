@@ -348,7 +348,7 @@ def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
     return res
 
 
-def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]:
+def test_names(p: Project, tid: str = "", rnd: int = 0, cache: bool = False) -> tuple[bool, set[str]]:
     cmds = p.commands("test_list")
     if not cmds:
         return False, set()
@@ -359,10 +359,11 @@ def test_names(p: Project, tid: str = "", rnd: int = 0) -> tuple[bool, set[str]]
         if r.returncode != 0:
             return False, set()
         names.update(line.strip() for line in r.stdout.splitlines() if line.strip())
-    try:  # the latest full list, for the coverage register (listing the tests can take minutes)
-        write_json(p.run / "tests.json", {"listed": now(), "names": sorted(names)})
-    except OSError:
-        pass
+    if cache:  # the latest list of main's tests, for the coverage register (listing them can take minutes)
+        try:
+            write_json(p.run / "tests.json", {"listed": now(), "names": sorted(names)})
+        except OSError:
+            pass
     return True, names
 
 
@@ -1417,7 +1418,7 @@ def cmd_task_start(p: Project, a) -> None:
             p.git("branch", "-m", branch, f"{branch}-stale-{now('%Y%m%d%H%M%S')}")
         base = p.git("rev-parse", "HEAD")
         p.git("checkout", "-q", "-b", branch)
-        listed, names = test_names(p, tid)
+        listed, names = test_names(p, tid, cache=True)  # the new branch is main's state here
         write_task_file(p, t)
         st = {"branch": branch, "base": base, "rounds": (st or {}).get("rounds", 0),
               "known_tests": sorted(names), "test_list_ok": listed, "started": now()}
@@ -1586,7 +1587,7 @@ def spec_model(p: Project, lines: list[str]) -> dict:
     return parse_spec(lines, cross_prefixes(p), crit_prefixes(p))
 
 
-def task_req_ids(t: dict, model: dict) -> list[str]:
+def task_req_ids(t: dict, model: dict, wildcards: bool = True) -> list[str]:
     """The requirement ids a task refers to, in order: its `requirements`, then every id in its text, with
     ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. An id the SPEC does not define is
     kept when the task lists it or its prefix is one the SPEC uses, so the digest reports it as not found."""
@@ -1603,7 +1604,7 @@ def task_req_ids(t: dict, model: dict) -> list[str]:
         if lo <= hi <= lo + 50:
             found += [f"{m.group(1)}.{n}" for n in range(lo, hi + 1)]
     for m in REQ_WILD.finditer(text):
-        found += [x for x in known if x.startswith(m.group(1) + ".")]
+        found += [x for x in known if x.startswith(m.group(1) + ".")] if wildcards else [f"R-{m.group(1).split('-')[1]}"]
     found += REQ_ID.findall(REQ_WILD.sub(" ", text))
     # an id the SPEC does not define but with a prefix it uses is kept, so the digest reports it as not found
     return list(dict.fromkeys([*explicit, *(x for x in found if x.split("-")[0] in prefixes)]))
@@ -1694,11 +1695,11 @@ def write_context(p: Project, tid: str) -> dict:
     if spec.exists() and ids:
         try:
             cov = [c for c in compute_coverage(p, model)["items"] if c["id"] in ids or c.get("parent") in ids]
-            if cov:
+            if cov:  # the task's criteria and the NFRs it names
                 parts += ["## Coverage of the task's criteria (tests that already check them)", "",
                           "A test checks a criterion as it was when the test was written: a criterion this task "
                           "changes (see the change history of docs/SPEC.md) needs its tests updated or new ones.", "",
-                          *[f"- {coverage_line(c)}" for c in cov if c["kind"] == "criterion"], ""]
+                          *[f"- {coverage_line(c)}" for c in cov], ""]
         except Exception:  # noqa: BLE001 - the coverage is a help, never a reason to fail the digest
             pass
     parts += ["## Tables of contents", ""]
@@ -1976,71 +1977,108 @@ def cmd_finding(p: Project, a) -> None:
 COV_ORDER = ("untested", "claimed", "tested", "planned", "not_planned")
 
 
-def test_ids(name: str) -> set[str]:
-    """The requirement ids a test name carries: AC-003.4 as written, or AC003_4 / NFR012 in a method name."""
-    ids = set(REQ_ID.findall(name))
-    for m in re.finditer(r"(?<![A-Za-z])([A-Z]{1,5})(\d{3})(?:_(\d{1,3}))?(?=_|\b)", name):
-        if m.group(1) not in NOT_REQ:  # T052_... is a task, not a requirement
-            ids.add(f"{m.group(1)}-{m.group(2)}" + (f".{m.group(3)}" if m.group(3) else ""))
+def canon(rid: str) -> str:
+    """One form of an id for comparing: AC-003.4, AC-3.4 and AC003_4 are the same criterion."""
+    m = re.match(r"([A-Z]{1,5})-?0*(\d+)(?:[._]0*(\d+))?$", rid)
+    return f"{m.group(1)}-{int(m.group(2))}" + (f".{int(m.group(3))}" if m.group(3) else "") if m else rid
+
+
+def expand_ids(text: str, crit: tuple[str, ...] = ("AC",)) -> set[str]:
+    """The ids in a text, in their canonical form: as written (AC-003.4), ranges (AC-003.3 - AC-003.6) expanded,
+    and the method-name form (AC003_4_..., NFR012_...; a sub-number only for criterion prefixes)."""
+    ids = {canon(x) for x in REQ_ID.findall(text)}
+    for m in REQ_RANGE.finditer(text):
+        lo, hi = int(m.group(2)), int(m.group(3))
+        if lo <= hi <= lo + 50:
+            ids |= {canon(f"{m.group(1)}.{n}") for n in range(lo, hi + 1)}
+    for m in re.finditer(r"(?<![A-Za-z])([A-Z]{1,5})(\d{1,3})(?:_(\d{1,3}))?(?=_|\b)", text):
+        pre = m.group(1)
+        if pre in NOT_REQ or (len(m.group(2)) < 3 and not m.group(3)):
+            continue  # T052_ is a task; a short bare number (R6) is not an id
+        sub = m.group(3) if pre in crit else None
+        ids.add(canon(f"{pre}-{m.group(2)}" + (f".{sub}" if sub else "")))
     return ids
 
 
-def qa_coverage_ids(text: str) -> set[str]:
+def test_ids(name: str, crit: tuple[str, ...] = ("AC",)) -> set[str]:
+    return expand_ids(name, crit)
+
+
+def qa_coverage_ids(text: str, crit: tuple[str, ...] = ("AC",)) -> set[str]:
     m = re.search(r"^## QA: coverage\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
-    return set(REQ_ID.findall(m.group(1))) if m else set()
+    return expand_ids(m.group(1), crit) if m else set()
 
 
 def compute_coverage(p: Project, model: dict, names: list[str] | None = None) -> dict:
+    """The status of each criterion and NFR: tested (a test name carries the id), claimed (only a done task's
+    "QA: coverage" names it), untested (a done task names it, or only its requirement while no task still to
+    do covers it, and no test), planned (a task still to do covers it), not_planned."""
     plan = p.plan()
     status = {t["id"]: merged_status(p, t) for t in plan["tasks"]}
+    crit = crit_prefixes(p)
     if names is None:
         names = load_json(p.run / "tests.json", {}).get("names") or []
     by_test: dict[str, list[str]] = {}
     for n in names:
-        for i in test_ids(n):
+        for i in test_ids(n, crit):
             by_test.setdefault(i, []).append(n)
     items = [it for it in model["items"] if it["kind"] in ("criterion", "cross")]
-    parent_of = {it["id"]: it.get("parent") for it in items}
-    tasks_of: dict[str, list[str]] = {}
+    explicit: dict[str, list[str]] = {}
+    via_parent: dict[str, list[str]] = {}
     claims: dict[str, list[str]] = {}
     for t in plan["tasks"]:
-        ids = set(task_req_ids(t, model))
+        # "AC-003.*" means the criteria at planning time, so it counts at the requirement level, not as naming
+        # each criterion (a later SPEC version may add criteria a done task never built)
+        ids = {canon(x) for x in task_req_ids(t, model, wildcards=False)}
         f = p.root / "docs" / "tasks" / f"{t['id']}.md"
-        claimed = qa_coverage_ids(f.read_text(encoding="utf-8")) if f.exists() and status[t["id"]] == "done" else set()
+        claimed = qa_coverage_ids(f.read_text(encoding="utf-8"), crit) if f.exists() and status[t["id"]] == "done" else set()
         for it in items:
-            if it["id"] in ids or (parent_of[it["id"]] and parent_of[it["id"]] in ids):
-                tasks_of.setdefault(it["id"], []).append(t["id"])
-            if it["id"] in claimed:
+            key = canon(it["id"])
+            if key in ids:
+                explicit.setdefault(it["id"], []).append(t["id"])
+            elif it.get("parent") and canon(it["parent"]) in ids:
+                via_parent.setdefault(it["id"], []).append(t["id"])
+            if key in claimed:
                 claims.setdefault(it["id"], []).append(t["id"])
+    any_done = any(v == "done" for v in status.values())
     out = []
     for it in items:
-        tasks = tasks_of.get(it["id"], [])
+        exp, par = explicit.get(it["id"], []), via_parent.get(it["id"], [])
+        tasks = exp + [x for x in par if x not in exp]
         done = [x for x in tasks if status.get(x) == "done"]
-        tests = by_test.get(it["id"], [])
+        pending = [x for x in tasks if status.get(x) != "done"]
+        tests = by_test.get(canon(it["id"]), [])
         if tests:
             st = "tested"
         elif claims.get(it["id"]):
             st = "claimed"
-        elif len(done) < len(tasks):
-            st = "planned"  # a task still to do covers it (a done one may have touched only part of its requirement)
+        elif any(status.get(x) == "done" for x in exp):
+            st = "untested"  # a done task names this very criterion and nothing tests it
+        elif pending:
+            st = "planned"
         elif done:
             st = "untested"
+        elif it["kind"] == "cross" and any_done:
+            st = "untested"  # an NFR applies to everything built so far
         else:
             st = "not_planned"
-        if it["kind"] == "cross" and st == "not_planned":
-            st = "untested" if any(status[t["id"]] == "done" for t in plan["tasks"]) and not tests else st
         out.append({"id": it["id"], "kind": it["kind"], "title": it["title"], "parent": it.get("parent"),
-                    "status": st, "tasks": tasks, "done_tasks": done, "claimed_in": claims.get(it["id"], []),
+                    "status": st, "tasks": tasks, "done_tasks": done, "pending_tasks": pending, "claimed_in": claims.get(it["id"], []),
                     "tests": len(tests), "test_examples": tests[:3]})
-    counts = {k: sum(1 for x in out if x["status"] == k) for k in COV_ORDER}
-    return {"items": out, "counts": counts, "tests_listed": len(names),
+    return {"items": out, "counts": coverage_counts(out), "tests_listed": len(names),
             "test_list": load_json(p.run / "tests.json", {}).get("listed")}
+
+
+def coverage_counts(items: list[dict]) -> dict:
+    return {k: sum(1 for x in items if x["status"] == k) for k in COV_ORDER}
 
 
 def coverage_line(c: dict) -> str:
     ex = f" - e.g. {c['test_examples'][0][:110]}" if c["test_examples"] else ""
     return (f"{c['id']} [{c['status']}] {c['title'][:70]}" + (f" - tests: {c['tests']}" if c["tests"] else "")
-            + (f" - claimed in {', '.join(c['claimed_in'])}" if c["status"] == "claimed" else "") + ex)
+            + (f" - claimed in {', '.join(c['claimed_in'])}" if c["status"] == "claimed" else "")
+            + (f" - also in {', '.join(c.get('pending_tasks', [])[:3])} (still to do)" if c["status"] in ("untested", "claimed") and c.get("pending_tasks") else "")
+            + ex)
 
 
 def cmd_coverage(p: Project, a) -> None:
@@ -2050,14 +2088,18 @@ def cmd_coverage(p: Project, a) -> None:
     model = spec_model(p, spec.read_text(encoding="utf-8").splitlines())
     names = None
     if a.refresh:
-        listed, found = test_names(p)
+        if p.current_branch() != p.main:
+            raise SatoryError(f"--refresh lists the tests of the checked-out branch; run it on {p.main}")
+        listed, found = test_names(p, cache=True)
         if not listed:
             raise SatoryError("the test list could not be produced (commands.test_list)")
         names = sorted(found)
     cov = compute_coverage(p, model, names)
-    if a.task:
+    if a.task:  # one task's criteria: printed only, the project-wide files stay as they are
         ids = set(task_req_ids(p.task(p.plan(), a.task), model))
         cov["items"] = [c for c in cov["items"] if c["id"] in ids or (c.get("parent") in ids)]
+        cov["counts"] = coverage_counts(cov["items"])
+        return emit({"ok": True, "task": a.task, "counts": cov["counts"], "items": cov["items"]})
     write_json(p.run / "coverage.json", cov)
     lines = [f"# Coverage of the acceptance criteria ({now()})", "",
              "Statuses: tested (a test name carries the id), claimed (only the task's 'QA: coverage' names it), "
@@ -2082,57 +2124,89 @@ def cmd_coverage(p: Project, a) -> None:
 # dismissed (by the user). A later UX review verifies the open ones and does not propose the others again.
 
 UX_OPEN = ("open", "planned")
-UX_LEVEL = {"критичен": "critical", "висок": "high", "среден": "medium", "нисък": "low",
-            "critical": "critical", "high": "high", "medium": "medium", "low": "low", "major": "high", "minor": "low"}
+UX_LEVEL = {"критичен": "critical", "критична": "critical", "висок": "high", "висока": "high", "среден": "medium",
+            "средна": "medium", "нисък": "low", "ниска": "low", "critical": "critical", "high": "high", "medium": "medium",
+            "low": "low", "major": "high", "minor": "low", "blocker": "critical"}
 AUDIT_ITEM = re.compile(r"^\s*\d+\.\s+\*\*([^\s\[\]*]{1,6}-\d{1,3})\s+\[([^\]]+)\]\s+(.+?)\*\*\s*(.*)$")
+_CYR = dict(zip("АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЬЮЯ", ["A", "B", "V", "G", "D", "E", "ZH", "Z", "I", "Y", "K", "L", "M", "N",
+               "O", "P", "R", "S", "T", "U", "F", "H", "TS", "CH", "SH", "SHT", "A", "Y", "YU", "YA"]))
+
+
+def fold(text: str) -> str:
+    """Cyrillic capitals in Latin letters, so an id written П-04 and P-04 is the same id when matching."""
+    return "".join(_CYR.get(c, c) for c in text)
 
 
 def ux_load(p: Project) -> dict:
-    return load_json(p.run / "ux.json", {"next": 1, "items": []})
+    return load_json(p.run / "ux.json", {"next": 1, "audits": 0, "items": []})
 
 
-def ux_line(x: dict) -> str:
+def ux_line(x: dict, task_status: dict | None = None) -> str:
+    done = task_status and x.get("task") and x["status"] == "planned" and task_status.get(x["task"]) == "done"
     return (f"{x['id']} [{x['severity']}] {x['title']}" + (f" ({x['page']})" if x.get("page") else "")
-            + f" - {x['status']}" + (f" in {x['task']}" if x.get("task") else ""))
+            + f" - {x['status']}" + (f" in {x['task']}" if x.get("task") else "") + (" (that task is done - check it)" if done else ""))
 
 
 def ux_save(p: Project, reg: dict) -> None:
     write_json(p.run / "ux.json", reg)
-    lines = ["# UX register", "", *[f"- {ux_line(x)}" for x in reg["items"]]]
+    try:
+        ts = {t["id"]: merged_status(p, t) for t in p.plan()["tasks"]}
+    except Exception:  # noqa: BLE001 - the list is still written without the task statuses
+        ts = {}
+    lines = ["# UX register", "",
+             "Statuses: open, planned (in a task), resolved, dismissed (by the user). A planned problem whose task is done "
+             "still waits for a check (UI reviewer or UX review).", "", *[f"- {ux_line(x, ts)}" for x in reg["items"]]]
     (p.run / "ux.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def ux_add(reg: dict, items: list[dict], source: str, task: str | None = None) -> list[str]:
+def ux_add(reg: dict, items: list[dict], source: str, task: str | None = None, audit: int | None = None) -> list[str]:
     added = []
     for n in items:
         title = " ".join(str(n.get("title") or "").split())
         if not title:
             continue
         page = str(n.get("page") or "").strip()
-        if any(x["title"] == title and x.get("page", "") == page and x["status"] != "dismissed" for x in reg["items"]):
-            continue
         ref = str(n.get("ref") or "").strip()
-        xid = ref if ref and not any(x["id"] == ref for x in reg["items"]) else f"UX-{reg['next']}"
-        if not ref or xid != ref:
+        # the same problem again (also a dismissed one: the user's decision stays) is not added twice
+        if any(x["title"] == title and x.get("page", "") == page and (not ref or x.get("ref", "") in ("", ref))
+               for x in reg["items"]):
+            continue
+        used = {x["id"] for x in reg["items"]}
+        if ref and ref not in used:
+            xid = ref
+        else:
+            xid = f"UX-{reg['next']}"
             reg["next"] += 1
-        sev = UX_LEVEL.get(str(n.get("severity") or "").strip().lower(), str(n.get("severity") or "medium"))
-        reg["items"].append({"id": xid, "title": title, "page": page, "severity": sev, "detail": str(n.get("detail") or ""),
-                             "source": source, "status": "planned" if task else "open", "task": task,
-                             "history": [{"date": now(), "event": f"raised by {source}" + (f", planned in {task}" if task else "")}]})
+        sev = UX_LEVEL.get(str(n.get("severity") or "").strip().lower(), str(n.get("severity") or "medium").strip().lower())
+        reg["items"].append({"id": xid, "ref": ref or xid, "audit": audit, "title": title, "page": page, "severity": sev,
+                             "detail": str(n.get("detail") or ""), "source": source, "status": "planned" if task else "open",
+                             "task": task, "history": [{"date": now(), "event": f"raised by {source}" + (f", planned in {task}" if task else "")}]})
         added.append(xid)
     return added
 
 
+def task_text(t: dict) -> str:
+    """The words of a task (title, description, criteria, subtasks), for finding the ids it names."""
+    subs = t.get("subtasks") or []
+    return "\n".join([t.get("title") or "", t.get("description") or "", *(t.get("acceptance") or []),
+                      *[f"{x.get('title') or ''}\n{x.get('description') or ''}\n" + "\n".join(x.get("acceptance") or []) for x in subs]])
+
+
 def ux_link_tasks(p: Project, tasks: list[dict]) -> list[str]:
-    """Marks as planned the open problems a new task names by id (the design tasks name the audit problems)."""
+    """Marks as planned the open problems a task names by id. An id names the problem of the latest audit with
+    that reference (a new audit numbers its problems again); Cyrillic and Latin letters match (П-04 = P-04)."""
     reg = ux_load(p)
-    if not reg["items"]:
+    keys: dict[str, dict] = {}
+    for x in sorted((x for x in reg["items"] if x["status"] == "open"), key=lambda x: x.get("audit") or 0):
+        for k in {fold(x["id"]), fold(x.get("ref") or x["id"])}:
+            keys[k] = x  # a later audit wins
+    if not keys:
         return []
     linked = []
     for t in tasks:
-        text = json.dumps(t, ensure_ascii=False)
-        for x in reg["items"]:
-            if x["status"] == "open" and re.search(rf"(?<![\w-]){re.escape(x['id'])}(?!\d)", text):
+        text = fold(task_text(t))
+        for k, x in keys.items():
+            if x["status"] == "open" and re.search(rf"(?<![\w-]){re.escape(k)}(?!\d)", text):
                 x["status"], x["task"] = "planned", t["id"]
                 x.setdefault("history", []).append({"date": now(), "event": f"planned in {t['id']}"})
                 linked.append(x["id"])
@@ -2161,7 +2235,8 @@ def cmd_ux(p: Project, a) -> None:
             if m:
                 items.append({"ref": m.group(1), "severity": m.group(2), "title": m.group(3).strip().rstrip("."),
                               "page": page, "detail": m.group(4).strip()[:600]})
-        added = ux_add(reg, items, "design audit")
+        reg["audits"] = reg.get("audits", 0) + 1
+        added = ux_add(reg, items, f"design audit {reg['audits']}", audit=reg["audits"])
         ux_save(p, reg)
         return emit({"ok": True, "found": len(items), "added": added})
     if a.action == "link":  # the open problems that tasks still to do name by id become planned in them
@@ -2195,6 +2270,9 @@ def cmd_ux(p: Project, a) -> None:
                 x["status"] = "resolved"
                 x["task"] = a.task or x.get("task")
                 done.append(x["id"])
+            elif x["status"] == "planned" and x.get("task") and x["task"] != a.task \
+                    and any(t["id"] == x["task"] and merged_status(p, t) == "done" for t in p.plan()["tasks"]):
+                x["status"], x["task"] = "open", None  # its task is done and did not solve it: open again
             x.setdefault("history", []).append({"date": now(), "event": f"{v.get('status')} ({a.source or 'review'})",
                                                 "note": str(v.get("note") or "")})
         ux_save(p, reg)

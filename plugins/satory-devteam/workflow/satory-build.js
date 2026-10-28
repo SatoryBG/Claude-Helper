@@ -189,7 +189,7 @@ const UI_SCHEMA = {
     verified: VERIFIED,
     ux_verified: UX_VERIFIED,
   },
-  required: ['verdict', 'summary', 'pages_checked', 'findings', 'verified'],
+  required: ['verdict', 'summary', 'pages_checked', 'findings', 'verified', 'ux_verified'],
 }
 const SEC_SCHEMA = {
   type: 'object',
@@ -756,8 +756,8 @@ ${bullets(tasks.map(t => `${t.id} - ${t.title}`))}
 The app runs on staging: the URL is deploy.environments.staging.url in .satory/project.json. Walk every
 page, menu and dialog of the whole app (not only this milestone) and find what should be presented or work
 better. The register of known UX problems is in .satory/run/ux.md (id, page, status): do not propose again
-the planned, resolved or dismissed ones; check each open one in the app and return it in \`verified\`
-(resolved or open). Report in \`items\` only problems that are not in the register. Already planned - do not
+the planned, resolved or dismissed ones; check each open one, and each planned one whose task is done, in the
+app and return it in \`verified\` (resolved or open). Report in \`items\` only problems that are not in the register. Already planned - do not
 propose it again:
 ${todo.length ? bullets(todo.map(t => `${t.id} - ${t.title}`)) : '- (nothing)'}`
 }
@@ -806,7 +806,7 @@ ${JSON.stringify(draft, null, 1)}`,
     note: JSON.stringify({ title: `UX improvements after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
   }), 'plan add')
   log(`🎨 ${m} UX review: ${items.length} improvement(s) → ${res.added.join(', ')}`)
-  try {  // the register: the new problems are planned in the improvement task
+  if (res.added && res.added[0]) try {  // the register: the new problems are planned in the improvement task
     await sh(`ux add --task ${res.added[0]} --source ${q(`ux review ${m}`)}`, { phase: 'Milestone review', label: `ux register ${m}`,
       note: JSON.stringify(items.map(x => ({ title: x.title, page: (x.pages || []).join(', '), severity: x.impact, detail: x.description }))) })
   } catch (e) { log(`Could not update the UX register: ${e.message}`) }

@@ -62,7 +62,8 @@ list is a valid result.
 ## The UX register
 `.satory/run/ux.md` lists the known design and usability problems of the app (from the design audit and the
 earlier UX reviews) with their status. Do not propose again a planned, resolved or dismissed one. Check every
-open one in the running app and return it in `verified` (resolved / open, with a short note). Your `items`
+open one, and every planned one whose task is done (marked so in the list), in the running app and return it
+in `verified` (resolved / open, with a short note); a planned one its task did not solve becomes open again. Your `items`
 are only problems that are not in the register.
 
 ## Working efficiently
