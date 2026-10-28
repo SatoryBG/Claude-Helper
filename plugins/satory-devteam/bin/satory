@@ -1420,10 +1420,10 @@ def cmd_task_start(p: Project, a) -> None:
                   findings_path(p, tid), p.run / "findings" / f"{tid}.md"]:
             f.unlink(missing_ok=True)
         shutil.rmtree(p.run / "findings" / tid, ignore_errors=True)
-    p.state["tasks"][tid] = st
-    p.save_state()
     for k in ("reviewer", "ui", "security", "qa"):  # check notes of 1.4.x; the findings are in the register now
         (st.get("reviews") or {}).pop(k, None)
+    p.state["tasks"][tid] = st
+    p.save_state()
     open_findings = []
     if resumed:
         still = [f for f in findings_load(p, tid)["items"] if f["status"] in FINDING_OPEN]
@@ -1493,10 +1493,12 @@ def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",), crit: tuple[
     errors: list[str] = []
     warnings: list[str] = []
     reqs = []  # requirement headings: (start, end, id)
+    head_prefixes = {m.group(1).split("-")[0] for _, _, h in heads if (m := ID_HEAD.match(h))} - set(NOT_REQ)
+    id_prefixes = head_prefixes | set(cross) | set(crit)
     for k, (i, level, text) in enumerate(heads):
         m = ID_HEAD.match(text)
         lead = REQ_ID.match(text)
-        if not m and lead and lead.group(0).split("-")[0] not in NOT_REQ:
+        if not m and lead and lead.group(0).split("-")[0] in id_prefixes:
             errors.append(f"line {i + 1}: heading {text[:60]!r} starts with an id but is not `### <ID> - Title`"
                           + (" (a criterion is a bullet `- **AC-001.1** - ...`)" if "." in lead.group(0) else ""))
         if not m or m.group(1).split("-")[0] in NOT_REQ:
@@ -1520,6 +1522,10 @@ def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",), crit: tuple[
         if num and num.group(1).split("-")[0] in known_prefixes:
             errors.append(f"line {i + 1}: {num.group(1)} is in a numbered list; write it as a bullet `- **{num.group(1)}** - ...`")
         m = ID_BULLET.match(line)
+        if m and m.group(2).split("-")[0] not in known_prefixes and m.group(2).split("-")[0] not in NOT_REQ \
+                and re.match(r"\s+-\s", m.group(3) or "") and "." not in m.group(2):
+            warnings.append(f"line {i + 1}: {m.group(2)} looks like a requirement, but the SPEC does not use the prefix "
+                            f"{m.group(2).split('-')[0]} (a typo?)")
         if not m or m.group(2).split("-")[0] not in known_prefixes:
             continue  # other bold words (SHA-256, TLS-1.2, Q-001, T-010) are not requirements
         bid, indent = m.group(2), len(m.group(1))
@@ -1528,12 +1534,16 @@ def parse_spec(lines: list[str], cross: tuple[str, ...] = ("NFR",), crit: tuple[
         parent = next((rid for a0, b0, rid in reversed(reqs) if a0 < i < b0), None)
         if "." in bid:
             if bid.split("-")[0] not in crit:
+                errors.append(f"line {i + 1}: {bid} - criteria use the prefix {'/'.join(crit)} (spec.criterion_prefixes)")
                 continue
             if not parent:
                 errors.append(f"line {i + 1}: criterion {bid} is not under a requirement heading")
             elif int(bid.split(".")[0].split("-")[1]) != int(parent.split("-")[1]):
                 warnings.append(f"line {i + 1}: criterion {bid} is under {parent} (numbers differ)")
             items.append({"id": bid, "kind": "criterion", "title": title, "parent": parent, "start": i, "end": end})
+        elif bid.split("-")[0] in crit:
+            errors.append(f"line {i + 1}: {bid} - a criterion id has the requirement's number and its own: `AC-001.1`")
+            continue
         else:
             kind = "cross" if bid.split("-")[0] in cross else "requirement"
             if kind == "requirement":
@@ -1571,8 +1581,8 @@ def spec_model(p: Project, lines: list[str]) -> dict:
 
 def task_req_ids(t: dict, model: dict) -> list[str]:
     """The requirement ids a task refers to, in order: its `requirements`, then every id in its text, with
-    ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. Ids the SPEC does not define are
-    kept only when the task lists them explicitly (then they are reported as missing)."""
+    ranges ("AC-003.8 - AC-003.10") and wildcards ("AC-003.*") expanded. An id the SPEC does not define is
+    kept when the task lists it or its prefix is one the SPEC uses, so the digest reports it as not found."""
     subs = t.get("subtasks") or []
     text = "\n".join([t.get("title") or "", t.get("description") or "", *(t.get("acceptance") or []),
                       *[f"{x.get('title') or ''}\n{x.get('description') or ''}\n" + "\n".join(x.get("acceptance") or [])
@@ -1844,7 +1854,9 @@ def cmd_finding(p: Project, a) -> None:
         raise SatoryError(f"finding {a.action} expects JSON on stdin: {e}")
     if a.action == "record":
         stage = a.stage
-        before = [f["id"] for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN]
+        only = [x for x in (a.only or "").split(",") if x]  # a re-ask: only these ids were asked about
+        before = [f["id"] for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN
+                  and (not only or f["id"] in only)]
         touched, warnings = set(), []
         for v in data.get("verified") or []:
             f = by_id.get(str(v.get("id", "")).strip())
@@ -2490,6 +2502,7 @@ def main() -> None:
     s.add_argument("--stage", help="record: the check (reviewer, qa, ui, security); list: only its findings")
     s.add_argument("--round", type=int, default=0)
     s.add_argument("--open", action="store_true", help="list: only open and disputed")
+    s.add_argument("--only", help="record: a re-ask - only these ids (comma-separated) were asked about")
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("design")

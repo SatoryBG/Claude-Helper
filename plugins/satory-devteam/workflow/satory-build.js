@@ -924,24 +924,36 @@ async function runTask(t) {
   const open = {}  // check -> its open findings in the register after its last run (for the next round's prompt)
   // records a check's new findings and its verdict on its open ones; returns the register's view of the check
   const ROLE = { reviewer: ['reviewer', REVIEW_SCHEMA], qa: ['qa', QA_SCHEMA], ui: ['ui-reviewer', UI_SCHEMA], security: ['security', SEC_SCHEMA] }
-  const recordOnce = async (stage, items, verified, phase, label) => {
-    const res = must(await sh(`finding record ${t.id} --stage ${stage} --round ${round}`,
+  const recordOnce = async (stage, items, verified, phase, label, only) => {
+    const res = must(await sh(`finding record ${t.id} --stage ${stage} --round ${round}${only ? ` --only ${only.join(',')}` : ''}`,
       { phase, label, note: JSON.stringify({ new: items, verified: verified || [] }) }), `findings ${stage}`)
     for (const w of res.warnings || []) log(`⚠ ${t.id} r${round} ${stage}: ${w}`)
     return res
   }
-  const record = async (stage, items, verified, phase) => {
+  // mainPrompt: the check's own prompt of this round, so a re-ask has the same context (staging, scans);
+  // reask=false where the task is about to be blocked anyway
+  const record = async (stage, items, verified, phase, mainPrompt, reask = true) => {
     let res = await recordOnce(stage, items, verified, phase, `findings ${stage} ${t.id} r${round}`)
-    const missed = (res.blocking || []).filter(f => (res.unverified || []).includes(f.id))
-    if (missed.length) {  // a blocking finding the check did not verify would send the task back: ask once
+    let unverified = res.unverified || []
+    const missed = (res.blocking || []).filter(f => unverified.includes(f.id))
+    if (missed.length && reask) {  // a blocking finding the check did not verify would send the task back: ask once
       const [role, schema] = ROLE[stage]
-      const again = await spawn(role, `${ctx}\nRound: ${round}.\n\nYou did not verify these open findings of yours. ` +
-        `Check each one now and return it in \`verified\` (fixed / open / worse / dismissed); return no new findings.\n${bullets(missed.map(fline))}`,
+      const again = await spawn(role, `${mainPrompt}\n\n## ONLY VERIFY - this is a second, short pass\nYou did not verify these ` +
+        `open findings of yours. Check each one now and return it in \`verified\` (fixed / open / worse / dismissed). ` +
+        `Return no new findings and change no file.\n${bullets(missed.map(fline))}`,
         { phase, label: `${stage} verify ${t.id} r${round}`, model: MODELS[role], schema })
-      if (again && (again.verified || []).length) res = await recordOnce(stage, [], again.verified, phase, `findings ${stage} verify ${t.id} r${round}`)
+      if (stage === 'qa') {  // QA may write files: whatever this pass changed is reverted (it only verifies)
+        must(await sh(`step readonly ${t.id} --round ${round} --stage qa-verify --verdict ok`,
+          { phase, label: `guard qa verify ${t.id} r${round}`, note: 'QA verified its open findings' }), 'qa verify guard')
+      }
+      if (again && (again.verified || []).length) {
+        const ids = missed.map(f => f.id)
+        res = await recordOnce(stage, [], again.verified, phase, `findings ${stage} verify ${t.id} r${round}`, ids)
+        unverified = [...unverified.filter(id => !ids.includes(id)), ...(res.unverified || [])]
+      }
     }
-    open[stage] = (res.open || []).map(f => ({ ...f, unverified: (res.unverified || []).includes(f.id) }))
-    return res
+    open[stage] = (res.open || []).map(f => ({ ...f, unverified: unverified.includes(f.id) }))
+    return { ...res, unverified }
   }
   if (RESUMED) {  // the checks verify their open findings from the register in the first round after a resume
     try {
@@ -982,12 +994,13 @@ async function runTask(t) {
       ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
 
     // ---- Review -------------------------------------------------------
-    const rev = await spawn('reviewer', reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known,
+    const revPrompt = reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known
+    const rev = await spawn('reviewer', revPrompt,
       { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
     if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
     known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
     const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
-      rev.verified, 'Review')
+      rev.verified, 'Review', revPrompt)
     const revBlocking = revRes.blocking.length > 0
     contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
       { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`))
@@ -1006,9 +1019,10 @@ async function runTask(t) {
         (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
       continue
     }
-    let qa = null, aq = null, retryNote = ''
+    let qa = null, aq = null, retryNote = '', qaText = ''
     for (let attempt = 1; ; attempt++) {
-      qa = await spawn('qa', qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa) + known,
+      qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa) + known
+      qa = await spawn('qa', qaText,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
       known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
@@ -1017,7 +1031,7 @@ async function runTask(t) {
       if (!aq.qa_violation) { contextLog(aq); break }
       flakyLog(aq.gates, tag)
       if (attempt >= QA_ATTEMPTS) {
-        await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA').catch(() => null)
+        await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA', '', false).catch(() => null)
         return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       }
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
@@ -1025,7 +1039,7 @@ async function runTask(t) {
         `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
     }
     const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
-      qa.verified, 'QA')
+      qa.verified, 'QA', qaText)
     const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
     if (qaFailed) {
       lastStage = 'qa'
@@ -1035,11 +1049,12 @@ async function runTask(t) {
 
     // ---- UI -----------------------------------------------------------
     if (needsUi(t, staging)) {
-      const ui = await spawn('ui-reviewer', uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt),
+      const uiText = uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt)
+      const ui = await spawn('ui-reviewer', uiText,
         { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
       if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
       const uiRes = await record('ui', ui.findings.map(f => ({ severity: f.severity, title: f.title, where: at(f),
-        detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI')
+        detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI', uiText)
       contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiRes.blocking.length ? 'fail' : 'pass'}`,
         { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`))
       uiReviewedAt = aq.checkpoint
@@ -1052,12 +1067,13 @@ async function runTask(t) {
 
     // ---- Security -----------------------------------------------------
     const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
-    const sec = await spawn('security', secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt),
+    const secText = secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt)
+    const sec = await spawn('security', secText,
       { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
     if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
     secReviewedAt = aq.checkpoint
     const secRes = await record('security', sec.findings.map(f => ({ severity: f.severity, title: f.title, where: `${f.category} ${where(f)}`,
-      detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security')
+      detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security', secText)
     contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secRes.blocking.length ? 'fail' : 'pass'}`,
       { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`))
     if (secRes.blocking.length) {
