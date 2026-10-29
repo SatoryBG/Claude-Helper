@@ -344,6 +344,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.2** - QA runs only the tests of its task: the unit tests it touches, its own e2e tests, the earlier
+  e2e tests it adapted (by name) and at most a few earlier e2e files that test exactly what the task changes,
+  never a prefix or a background batch. Once it has a blocking defect with a test, it finishes the round
+  instead of searching earlier features for more. A task that changed the shell had QA run most of the e2e
+  suite itself for over two hours, which the checks after it run anyway.
 - **1.6.1** - the time limit of one command of a check is 90 minutes instead of 45 and can be set with
   `command_timeout_minutes` in `.satory/project.json`: a full e2e suite of 2,600 tests ran past 45 minutes
   and failed every round as a timeout, not as a failing test.

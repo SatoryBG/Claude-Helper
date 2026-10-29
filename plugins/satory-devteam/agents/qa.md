@@ -78,13 +78,19 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 3. **UI regression guards** (when `docs/UI.md` exists and the task adds or changes a page): for every such
    page add permanent e2e tests that (a) run `@axe-core/playwright` and fail on `serious` or `critical`
    violations, and (b) fail if the page scrolls horizontally at any viewport listed in `docs/UI.md`.
-4. Run the unit tests you added or changed in this round and the unit tests of the code this task
-   changes, filtered to those classes or files (e.g. `dotnet test --project <test project> -- --filter-class
-   "<namespace>.*"`, `npx vitest run <path>`, `mvnw test -Dtest=<pattern>`), plus the e2e tests you added
-   or changed and the e2e files of earlier tasks the change obviously touches. Do **not** run the whole
+4. **Run only this task's tests.** Run the unit tests you added or changed in this round and the unit
+   tests of the code this task changes, filtered to those classes or files (e.g. `dotnet test --project
+   <test project> -- --filter-class "<namespace>.*"`, `npx vitest run <path>`, `mvnw test -Dtest=<pattern>`),
+   the e2e tests you added, and the e2e tests you changed (an adapted or a flaky test, selected by its name
+   with `--grep`, not its whole file). An e2e file of an earlier task you run only when it tests exactly
+   the behaviour this task changes on purpose (at most about three files, each named, in the foreground):
+   never a prefix, a pattern or a directory (`t002-`, `tests/`), and never a batch in the background that
+   you wait for. A task that changes a shared component, the layout or the shell touches nearly every e2e
+   file; finding those regressions is the job of the checks after you, not yours. Do **not** run the whole
    unit suite (the `test` command from `.satory/project.json`) or the whole e2e suite: the orchestrator
-   runs both after you (the whole e2e suite once more before the task is finished), and a failure there
-   comes back to Dev with the log.
+   runs this task's e2e tests and the whole unit suite right after you and the whole e2e suite once more
+   before the task is finished, and a failure there comes back to Dev with the log. A test run that takes
+   more than about ten minutes means you are running too much: stop it and narrow it.
 5. Fill in "QA: coverage": which test covers which criterion or point.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
@@ -136,6 +142,11 @@ Only if you cannot, say so in the summary with the cause - Dev cannot change tes
 alone would only cost rounds.
 For every failure give the test, expected, actual and how to reproduce it, so Dev can act without asking
 you. Give `pass` only if everything passes and every criterion is covered.
+**Finish the round once the verdict is clear.** When you have a blocking defect and a test that shows
+it, finish only what the round still needs - a test for every criterion of the task, the exploration of
+the pages this task changes, "QA: coverage" and your notes - and return `fail`. Do not widen the search
+to earlier features or run more suites to find further defects: Dev fixes these first, and the next round
+and the checks after you test again.
 
 ## Working efficiently
 Every tool call sends your whole conversation again, so the number of calls drives the cost far more
