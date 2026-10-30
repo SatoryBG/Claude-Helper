@@ -87,7 +87,7 @@ including `e2e/**`. Also fill in `commands`:
 - `security`
 
 Set `ui.review` to `true` for projects with a UI and staging (it turns on the UI reviewer in the build
-workflow), otherwise `false`.
+workflow), otherwise `false` (a missing value counts as `true`).
 
 For web apps and services also add `deploy` (`image`, `build`, `environments.staging/prod` with `url`,
 `health`, `up`). For libraries and CLI tools leave `deploy` empty. The commands do not work yet:

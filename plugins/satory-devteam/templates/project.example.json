@@ -29,9 +29,6 @@
     "e2e_task": [
       "cd e2e && npx playwright test --reporter=line --grep \"{task}|@smoke\""
     ],
-    "e2e_retry": [
-      "cd e2e && npx playwright test --last-failed --reporter=line"
-    ],
     "test_list": [
       "dotnet test --nologo --list-tests | sed -n '/The following Tests are available:/,$p' | tail -n +2 | sed 's/^ *//'",
       "cd e2e && npx playwright test --list --reporter=list | grep -E '›' | sed 's/^ *//'"

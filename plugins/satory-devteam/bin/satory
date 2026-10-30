@@ -14,6 +14,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -162,6 +163,37 @@ class Project:
         """Opt-in trial settings under "experimental" in project.json; removing the block turns them off."""
         return as_list(self.config.get("experimental", {}).get(name))
 
+    def e2e_retry_commands(self, cmds: list[str]) -> list[str]:
+        """The commands that run the failed tests of an e2e check once more: commands.e2e_retry, or - for
+        Playwright, by default - the commands just run with --last-failed. "e2e_retry": false (or empty) turns it
+        off."""
+        raw = self.config.get("commands", {}).get("e2e_retry")
+        if raw is not None:
+            return as_list(raw) if raw is not True else []
+        if cmds and all(pw_tail(c) for c in cmds):
+            return [c + " --last-failed" for c in cmds]
+        return []
+
+    def e2e_failed_commands(self, names: list[str]) -> list[str]:
+        """The e2e command that runs only the given failed tests of an earlier run (Playwright, one e2e command):
+        their files, a --grep of their exact titles (not their lines: an adapted test file may grow above them)
+        and the projects they failed in. Empty when that cannot be derived."""
+        e2e = self.commands("e2e")
+        if not names or len(names) > E2E_FAILED_MAX or len(e2e) != 1 or not pw_tail(e2e[0]):
+            return []
+        files, projects, titles = set(), set(), set()
+        for n in names:
+            m = E2E_LOC.match(n.strip())
+            if not m:
+                return []
+            projects.add(m.group(1))
+            files.add(m.group(2))
+            # Playwright matches --grep against the title path joined with spaces
+            titles.add(re.sub(r"[\\^$.*+?()\[\]{}|/]", lambda x: "\\" + x.group(0), m.group(3).replace(" › ", " ")))
+        return [e2e[0] + " " + " ".join(shlex.quote(x) for x in sorted(files))
+                + " --grep " + shlex.quote("|".join(sorted(titles)))
+                + "".join(f" --project={shlex.quote(x)}" for x in sorted(projects))]
+
     def e2e_task_commands(self, tid: str) -> list[str]:
         """The e2e commands for one task's own tests plus the smoke tests ({task} becomes the task id):
         commands.e2e_task or - for Playwright - the e2e commands with --grep "{task}|@smoke" appended.
@@ -296,7 +328,7 @@ def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str) -> dict:
     if not again["ok"]:
         return res
     for test in names:
-        question_flaky(p, f"unit › {test}", f"test {tid} r{rnd}", tid)
+        question_flaky(p, f"unit › {test}", f"test {tid} r{rnd}", tid, "unit")
     return {**again, "flaky": names, "retry_log": again["log"], "log": res["log"]}
 
 
@@ -316,6 +348,22 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     return again
 
 
+# a plain Playwright run at the end of a command: arguments can be appended to it (quoted text, e.g. a
+# --grep "a|b", does not count as a pipe)
+PW_TAIL = re.compile(r"playwright test[^|;&>]*$")
+
+
+def ui_review(p: Project) -> bool:
+    """The UI reviewer runs unless "ui": {"review": false} (or "ui": false) turns it off."""
+    ui = p.config.get("ui")
+    return (ui.get("review", True) is not False) if isinstance(ui, dict) else ui is not False
+
+
+def pw_tail(cmd: str) -> bool:
+    return bool(PW_TAIL.search(re.sub(r'"[^"]*"|\'[^\']*\'', '""', cmd)))
+# a failed test in the summary: "[project] › path/file.spec.ts:12:5 › title"
+E2E_LOC = re.compile(r"^\[([^\]]+)\] › (\S+?\.\w+):\d+:\d+ › (.+?)\s*$")
+E2E_FAILED_MAX = 100  # more failed tests than this: the next round runs the whole suite again
 E2E_COUNT = re.compile(r"^\s*(\d+) (passed|failed|flaky|skipped|did not run|interrupted)\b", re.M)
 E2E_FAILED = re.compile(r"^\s*\d+ failed\s*$(.*?)(?=^\s*\d+ (?:passed|flaky|skipped|did not run|interrupted)\b|^\[satory\]|\Z)",
                         re.M | re.S)
@@ -334,13 +382,18 @@ def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
 
 def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
     """Run e2e commands; when a few tests fail (at most e2e_retry_max_percent of the run), run only those
-    once more with commands.e2e_retry. Passing then counts as passing; the tests go to the register as flaky."""
+    once more (p.e2e_retry_commands). Passing then counts as passing; the tests go to the register as flaky.
+    A failing result lists the failed tests (failed_tests) when the summary names them all."""
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
     res = run_cmds(p, cmds, log, p.env(tid, rnd))
-    retry = p.commands("e2e_retry")
-    if res["ok"] or res.get("skipped") or not retry:
+    if res["ok"] or res.get("skipped"):
         return res
     failed, total, names = e2e_failures(log)
+    if failed and len(names) == failed:
+        res["failed_tests"] = names
+    retry = p.e2e_retry_commands(cmds)
+    if not retry:
+        return res
     limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 3)) / 100))
     if not failed or not total or failed > limit or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
@@ -469,7 +522,7 @@ def question_append(reg: dict, item: dict, source: str, task: str | None, milest
 FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing problem: major, reopened
 
 
-def question_flaky(p: Project, test: str, source: str, task: str) -> None:
+def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e2e") -> None:
     """Record a test that failed and passed on the retry; repeated flakiness raises the severity."""
     name = re.sub(r":\d+:\d+", "", test).strip()
     reg = questions_load(p)
@@ -478,14 +531,14 @@ def question_flaky(p: Project, test: str, source: str, task: str) -> None:
     if q is None:
         question_append(reg, {
             "kind": "test", "severity": "minor", "key": key, "occurrences": [source],
-            "title": f"Flaky e2e test: {name}",
+            "title": f"Flaky {kind} test: {name.removeprefix('unit › ')}",
             "detail": "The test failed and passed when it was run again, so the task went on. A test that fails "
                       "now and then either waits for time instead of a state, or hides a real timing problem in "
                       "the app; it is escalated when it keeps happening.",
             "options": ["Plan it: make the test wait for the state it checks (QA), or fix the race in the app",
                         "Not needed"],
             "refs": [test.split(" › ")[1] if " › " in test else test]}, source, task, None)
-        progress(p, f"❓ {reg['items'][-1]['id']}: flaky e2e test ({source}) - {name.split(' › ')[-1]}")
+        progress(p, f"❓ {reg['items'][-1]['id']}: flaky {kind} test ({source}) - {name.split(' › ')[-1]}")
     else:
         q.setdefault("occurrences", []).append(source)
         if q["status"] == "deferred":  # it happened again: back to the user
@@ -1369,7 +1422,7 @@ def cmd_plan(p: Project, a) -> None:
         emit({"ok": not errors, "errors": errors, "root": str(p.root), "name": p.config.get("name"),
               "max_rounds": p.config.get("max_rounds", 33),
               "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
-              "ui_review": bool(p.config.get("ui", {}).get("review")),
+              "ui_review": ui_review(p),
               "language": p.config.get("language", "en"),
               "experimental": sorted(p.config.get("experimental", {})),
               "milestone_review": p.config.get("milestone_review", True) is not False,
@@ -1453,7 +1506,8 @@ def cmd_task_start(p: Project, a) -> None:
     progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
           "rounds_used": st["rounds"], "resumed": resumed, "task_file": f"docs/tasks/{tid}.md",
-          "known_tests": len(st["known_tests"]), "open_findings": open_findings, "context_error": context_error})
+          "known_tests": len(st["known_tests"]), "open_findings": open_findings, "context_error": context_error,
+          "suite_failed": (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []})
 
 
 # ---------------------------------------------------------- context digest ---
@@ -2410,23 +2464,37 @@ def cmd_step(p: Project, a) -> None:
         if listed:
             st["known_tests"] = sorted(known | names)
         gates = {"test": gate(p, tid, rnd, "test")}
-        # only this task's e2e tests (+ smoke) here; the whole suite runs in step full-e2e after Security -
-        # or here again when it failed in the previous round. Only for a workflow that runs that step
-        # (--split-e2e): an older one would otherwise finish without the whole suite.
+        # only this task's e2e tests (+ smoke) here; the whole suite runs in step full-e2e after Security.
+        # When it failed in the previous round, the tests that failed there run here too (or, when they cannot
+        # be selected, the whole suite). Only for a workflow that runs that step (--split-e2e): an older one
+        # would otherwise finish without the whole suite.
         first = p.e2e_task_commands(tid)
-        if first and a.split_e2e and not st.get("full_e2e_failed"):
+        failed_before = (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []
+        again = p.e2e_failed_commands(failed_before)
+        if first and a.split_e2e and (not st.get("full_e2e_failed") or again):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
+            if again:
+                g = {**e2e_run(p, tid, rnd, again, "e2e-failed"), "scope": "failed", "count": len(failed_before)}
+                if not g["ok"] and not g.get("failed_tests"):
+                    # no named failure (no test found, a crash): the whole suite decides instead
+                    g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
+                    st["full_e2e_failed"] = not g["ok"]
+                if not g["ok"]:
+                    st["full_e2e_failed_tests"] = g.get("failed_tests", [])
+                gates["e2e_failed"] = g
         else:
             gates["e2e"] = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
             st["full_e2e_failed"] = not gates["e2e"]["ok"]
+            st["full_e2e_failed_tests"] = gates["e2e"].get("failed_tests", [])
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
+        scope_note = {"task": " (only this task and smoke tests; the whole suite runs after Security)",
+                      "failed": " (the tests that failed in the whole suite before)"}
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
-                  f"{' (only this task and smoke tests; the whole suite runs after Security)' if g.get('scope') == 'task' else ''}"
-                  for k, g in gates.items()]
+                  f"{scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
@@ -2458,8 +2526,12 @@ def cmd_step(p: Project, a) -> None:
         # the whole e2e suite, once Review, QA, UI and Security have passed
         g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
         st["full_e2e_failed"] = not g["ok"]
+        st["full_e2e_failed_tests"] = g.get("failed_tests", [])
         guard(p, ck, lambda path, status: "test run artifact")
-        extra = [f"- Whole e2e suite: {'✓' if g['ok'] else '✗ - back to Dev; the next round runs it again in QA'}"]
+        rerun = ("the next round runs the failed tests in QA's check and the whole suite again after Security"
+                 if p.e2e_failed_commands(st["full_e2e_failed_tests"]) else "the next round runs it again in QA")
+        extra = [f"- Whole e2e suite: {'✓' if g['ok'] else f'✗ - back to Dev; {rerun}'}"]
+        extra += [f"- Failed: {t}" for t in st["full_e2e_failed_tests"][:30]]
         extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
         save_review(p, st, "full e2e", rnd, "pass" if g["ok"] else "fail", "\n".join(extra + [f"- Log: {g.get('log')}"]))

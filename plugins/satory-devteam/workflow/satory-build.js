@@ -484,7 +484,19 @@ function gateLines(gates) {
   return Object.entries(gates || {})
     .filter(([, g]) => !g.ok)
     .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}` +
-      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : ''))
+      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : '') +
+      (g.scope === 'failed' ? ' (the tests that failed in the whole e2e suite before)' : ''))
+}
+
+// a failing e2e test of an earlier feature: fixed in the code, or disputed when the task changes it on purpose
+const SUITE_HINT = 'For each failing test of an earlier feature: if your change broke behaviour the test rightly expects, ' +
+  'fix the code. If the test expects something this task changes on purpose (its requirements, docs/UI.md, a ' +
+  'clarification from the user) or pins a file the task has to change, do not work around it: dispute it in ' +
+  '"Test disputes" in the task file in this round, citing the source - QA decides it in the next round.'
+
+// the earlier tests that failed in the whole e2e suite (or in their rerun), for QA's next prompt
+function suiteFailures(gates) {
+  return Object.values(gates || {}).filter(g => !g.ok && g.scope !== 'task').flatMap(g => g.failed_tests || [])
 }
 
 function skippedLog(res) {
@@ -498,7 +510,7 @@ function contextLog(res) {
 }
 
 function flakyLog(gates, tag) {
-  const flaky = (gates && gates.e2e && gates.e2e.flaky) || []
+  const flaky = ['e2e', 'e2e_failed'].flatMap(k => (gates && gates[k] && gates[k].flaky) || [])
   if (flaky.length) log(`⚠ ${tag}: ${flaky.length} e2e test(s) passed only on the retry - recorded as flaky for the user`)
 }
 
@@ -581,19 +593,24 @@ ${dev.summary}
 ${bullets(dev.changes)}${prev}${disputes}`
 }
 
-function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa) {
+function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa, suiteFailed) {
   const env = staging.skipped
     ? 'The project has no staging environment (not a web app or no deploy) - no e2e and no browser exploration.'
     : `The app is running on staging: ${staging.url} (the same is in SATORY_BASE_URL).`
   const disputes = dev.disputes.length
     ? `\n## Dev disputes these tests (judge them by the SPEC)\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
+  const suite = (suiteFailed || []).length
+    ? `\n\n## The whole e2e suite failed in the previous round\nThese tests of earlier features failed; the check after you runs them again:\n` +
+      `${bullets(suiteFailed.slice(0, 30))}${suiteFailed.length > 30 ? `\n- ... and ${suiteFailed.length - 30} more` : ''}\n` +
+      'Decide every one Dev disputes in this round: adapt it under your rules when this task\'s requirements contradict it; ' +
+      'otherwise it stays as it is and is a regression for Dev.' : ''
   return `${ctx}
 Round: ${round}.
 ${env}
 
 Scope of the changes: \`git diff ${base}..HEAD\`
 Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the orchestrator runs it after you.
-Dev reports: ${dev.summary}${disputes}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+Dev reports: ${dev.summary}${disputes}${suite}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
 function uiPrompt(ctx, round, base, staging, dev, openUi, uiReviewedAt) {
@@ -671,6 +688,7 @@ function qaFeedback(r, after, res) {
     bullets(res.open.map(f => `${fline(f)}${f.detail && f.detail !== f.title ? `: ${f.detail}` : ''}`)))
   const gates = gateLines(after.gates)
   if (gates.length) parts.push('Automatic checks (the whole test suite):\n' + bullets(gates))
+  if (suiteFailures(after.gates).length) parts.push(SUITE_HINT)
   return parts.join('\n\n')
 }
 
@@ -950,6 +968,7 @@ async function runTask(t) {
       (lastFailed.length ? `\n\nThe open findings and the failed checks before the interruption - address every point that is still open (your last round may already have fixed some; dispute a finding in \`finding_disputes\` if you disagree):\n\n${lastFailed.join('\n\n')}` : '')
     : ''
   let reviewedAt = null, uiReviewedAt = null, secReviewedAt = null, lastStage = ''
+  let suiteFailed = start.suite_failed || []  // the earlier e2e tests that failed in the whole suite before, for QA
   const open = {}  // check -> its open findings in the register after its last run (for the next round's prompt)
   // records a check's new findings and its verdict on its open ones; returns the register's view of the check
   const ROLE = { reviewer: ['reviewer', REVIEW_SCHEMA], qa: ['qa', QA_SCHEMA], ui: ['ui-reviewer', UI_SCHEMA], security: ['security', SEC_SCHEMA] }
@@ -1050,15 +1069,14 @@ async function runTask(t) {
     }
     let qa = null, aq = null, retryNote = '', qaText = ''
     for (let attempt = 1; ; attempt++) {
-      qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa) + known
+      qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed) + known
       qa = await spawn('qa', qaText,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
       if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
       known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
-      if (!aq.qa_violation) { contextLog(aq); break }
-      flakyLog(aq.gates, tag)
+      if (!aq.qa_violation) { contextLog(aq); flakyLog(aq.gates, tag); break }
       if (attempt >= QA_ATTEMPTS) {
         await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA', '', false).catch(() => null)
         return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
@@ -1069,6 +1087,7 @@ async function runTask(t) {
     }
     const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
       qa.verified, 'QA', qaText)
+    suiteFailed = suiteFailures(aq.gates)
     const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
     if (qaFailed) {
       lastStage = 'qa'
@@ -1125,10 +1144,13 @@ async function runTask(t) {
       contextLog(full)
       if (!full.ok) {
         lastStage = 'full e2e'
+        suiteFailed = suiteFailures(full.gates)
         feedback = `### The whole e2e suite fails
 This task's own tests pass, but tests of earlier features fail - ` +
           `most likely a regression caused by this task.
-${bullets(gateLines(full.gates))}`
+${bullets(gateLines(full.gates))}${suiteFailed.length ? `\nFailed:\n${bullets(suiteFailed.slice(0, 30))}` : ''}
+
+${SUITE_HINT}`
         continue
       }
     }

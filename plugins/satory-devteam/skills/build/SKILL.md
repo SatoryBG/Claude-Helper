@@ -17,7 +17,8 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
 - `$SATORY [--project <path>] plan json`: `ok` must be true, with no `errors`, and at least one task
   `todo` or `in_progress`. If the plan is empty, point to `/satory-devteam:architect`.
 - `docs/SPEC.md` must have the status "Approved".
-- If `ui_review` is true, `docs/UI.md` must exist. If it does not, point to `/satory-devteam:architect`.
+- If `ui_review` and `has_deploy` are true, `docs/UI.md` must exist. If it does not, point to
+  `/satory-devteam:architect`.
 - `git status`: you must be on `main` and clean, or on a `satory/T-…` branch of an interrupted task.
   If there are someone else's uncommitted changes, stop and ask.
 - `$SATORY doctor`: if there are `problems`, show them. Blocking are: a missing git identity, docker

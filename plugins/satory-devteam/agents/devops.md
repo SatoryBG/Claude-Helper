@@ -13,7 +13,7 @@ write your notes for the next round to `.satory/run/notes/<ID>-devops.md` (as th
 - The solution skeleton according to `docs/ARCHITECTURE.md`: projects, configuration, a `/health` endpoint for web services.
 - **Test infrastructure**: test projects and, for web projects, `e2e/` with Playwright (TypeScript,
   `@playwright/test`, Chromium). `baseURL` comes from `process.env.SATORY_BASE_URL`. If `ui.review` in
-  `.satory/project.json` is true, also add `@axe-core/playwright` to `e2e/` (QA and the UI reviewer use it
+  `.satory/project.json` is not false, also add `@axe-core/playwright` to `e2e/` (QA and the UI reviewer use it
   for accessibility checks). You may create NEW files under `paths.tests` (projects, configuration, one
   smoke test with `@smoke` in its title - the check after QA runs it with each task's own e2e tests), but
   you may not change existing tests.

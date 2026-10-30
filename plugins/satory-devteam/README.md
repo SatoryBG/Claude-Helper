@@ -62,8 +62,8 @@ Projects with a UI get two extra safeguards:
   checks the result against `docs/UI.md`. Blocker/major findings send the task back to Dev. QA also adds
   permanent axe and no-horizontal-scroll e2e tests for every new page.
 
-It is enabled with `"ui": { "review": true }` in `.satory/project.json`; per task, `"ui": false` in the
-plan skips it.
+It is on by default (it runs for projects with a staging environment); `"ui": { "review": false }` in
+`.satory/project.json` turns it off, and per task `"ui": false` in the plan skips it.
 
 ## Following the progress
 
@@ -175,9 +175,10 @@ of an extension). A plan change can also only name them, for any task: `"links":
 
 ## Flaky e2e tests
 
-With `commands.e2e_retry` in `.satory/project.json` (for Playwright:
-`cd e2e && npx playwright test --last-failed --reporter=line`), an e2e check that fails runs only the
-failed tests once more. If they pass, the check passes and the task goes on; each such test goes to the
+An e2e check that fails runs only the failed tests once more: for Playwright by default (the same
+command with `--last-failed`), otherwise with `commands.e2e_retry` in `.satory/project.json`;
+`"e2e_retry": false` there turns it off. The failed tests are read from Playwright's summary, so the
+default needs named projects in its config (`[project] › file › title`). If they pass, the check passes and the task goes on; each such test goes to the
 register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a test flaky 3 times becomes
 `major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
@@ -264,7 +265,14 @@ task touches. The check after QA runs the whole unit suite (`test`) and only thi
 the smoke tests. The whole e2e suite runs once, after Review, QA, UI and Security have passed and before
 Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished without
 a green whole suite. If it fails there, the task goes back to Dev and the next round runs the whole suite
-already in QA's check, so UI and Security do not review a build with a known regression.
+already in QA's check, so UI and Security do not review a build with a known regression. For Playwright
+with one e2e command, that check runs only the tests that failed (their files, a `--grep` of their exact
+titles and the projects they failed in; at most 100, more run the whole suite, and a selection that finds
+no test falls back to the whole suite) - minutes instead of the whole suite, which then runs again after
+Security as usual. The failed tests are read from Playwright's summary, which names them only when the
+config has named projects (`[project] › file › title`); without them the whole suite runs as before. The failing tests go to Dev with the hint to fix the code or, when the task
+changes the tested behaviour on purpose, to dispute the test; QA gets them too and decides the disputes in
+the same round.
 
 The task's e2e tests are selected by `commands.e2e_task` in `.satory/project.json` (`{task}` becomes the
 task id). For Playwright it is derived from `commands.e2e` by appending `--grep "{task}|@smoke"`: QA puts
@@ -343,6 +351,15 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.6.3** - an e2e check that fails runs its failed tests once more by default (Playwright: the same
+  command with `--last-failed`; `"e2e_retry": false` turns it off): a single test that timed out under load
+  cost a whole round of an hour. After the whole e2e suite fails, the next round runs only the tests that
+  failed in QA's check (selected by file, exact title and project; minutes instead of 35) and the whole suite
+  again after Security. Dev is told to
+  dispute an earlier test that the task changes on purpose instead of working around it, and QA gets the
+  failed tests to decide those disputes in the same round. The UI review is on by default (`"ui":
+  {"review": false}` turns it off). A flaky unit test is recorded as "Flaky unit test", not "e2e".
 
 - **1.6.2** - QA runs only the tests of its task: the unit tests it touches, its own e2e tests, the earlier
   e2e tests it adapted (by name) and at most a few earlier e2e files that test exactly what the task changes,

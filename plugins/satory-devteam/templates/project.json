@@ -8,7 +8,7 @@
     "tests": []
   },
   "ui": {
-    "review": false
+    "review": true
   },
   "commands": {
     "build": [],

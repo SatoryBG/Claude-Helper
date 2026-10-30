@@ -88,7 +88,8 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    you wait for. A task that changes a shared component, the layout or the shell touches nearly every e2e
    file; finding those regressions is the job of the checks after you, not yours. Do **not** run the whole
    unit suite (the `test` command from `.satory/project.json`) or the whole e2e suite: the orchestrator
-   runs this task's e2e tests and the whole unit suite right after you and the whole e2e suite once more
+   runs this task's e2e tests (and, after the whole e2e suite failed, the earlier tests that failed there) and
+   the whole unit suite right after you and the whole e2e suite once more
    before the task is finished, and a failure there comes back to Dev with the log. A test run that takes
    more than about ten minutes means you are running too much: stop it and narrow it.
 5. Fill in "QA: coverage": which test covers which criterion or point.
