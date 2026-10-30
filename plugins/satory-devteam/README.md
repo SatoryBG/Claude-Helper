@@ -352,6 +352,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.5** - a runner that does not run its command (a negative exit code and no JSON, e.g. it took a
+  message the user wrote to the main session as its own task and refused) gets the command once more
+  instead of stopping the build; the runner is told that any other request it may see is not for it.
 - **1.6.4** - `/satory-devteam:status` is a report first: it shows the progress and the remaining tasks and
   then asks what to do ("Only the overview", answer the questions, unblock the blocked tasks) instead of
   starting with the questions; `view`, `questions` or `blocked` as its argument skips that question. QA may
