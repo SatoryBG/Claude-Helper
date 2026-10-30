@@ -832,7 +832,8 @@ def clarifications_block(t: dict) -> str:
 
 
 ADAPTED_HEADING = re.compile(r"^##\s+QA: adapted tests\s*$", re.M)
-ADAPTED_ENTRY = re.compile(r"^\s*[-*]\s+`([^`]+)`\s*[:\-–—]\s*(\S.*)$")
+# "- `path`: reason", also several files on one line: "- `a`, `b`: reason"
+ADAPTED_ENTRY = re.compile(r"^\s*[-*]\s+((?:`[^`]+`[\s,;&+]*(?:and\s+|и\s+)?)+)[:\-–—]\s*(\S.*)$")
 
 
 def adapted_tests(path: Path) -> dict[str, str]:
@@ -847,7 +848,8 @@ def adapted_tests(path: Path) -> dict[str, str]:
         for line in body.splitlines():
             e = ADAPTED_ENTRY.match(line)
             if e:
-                entries[e.group(1).strip()] = e.group(2).strip()
+                for name in re.findall(r"`([^`]+)`", e.group(1)):
+                    entries[name.strip()] = e.group(2).strip()
     return entries
 
 

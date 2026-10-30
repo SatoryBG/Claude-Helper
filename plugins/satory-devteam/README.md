@@ -27,7 +27,7 @@ keeps the task branches local.
 | `/satory-devteam:analyst <name or GitHub repo> [idea]` | Interview → `docs/SPEC.md`. Clones a given repo, creates a new private repo or works locally only. |
 | `/satory-devteam:architect` | Stack (chosen together with you), architecture, ADRs, UI guide, `.satory/project.json`, task plan. |
 | `/satory-devteam:build [milestone=M2] [max=N] [rounds=33]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
-| `/satory-devteam:status` | How far the project has got, the blocked tasks and your answers to them. |
+| `/satory-devteam:status` | How far the project has got and what is left; then, if you want, your answers to the questions and the blocked tasks (`view` for the report only). |
 | `/satory-devteam:request [what you found or want]` | A new input at any time - a defect, a change, an idea: the analyst puts it into the SPEC, the architect into the architecture and the plan. No restart of a running build. |
 | `/satory-devteam:design [brief \| show \| use <direction>]` | A new design of the app as a UX consultant makes it - audit, directions as mockups, every page designed, the tasks that build it; the build runs it at the next boundary. `show` shows the result. |
 | `/satory-devteam:release [version]` | Production after explicit approval. Production gets the same Docker image that passed staging. |
@@ -352,6 +352,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.4** - `/satory-devteam:status` is a report first: it shows the progress and the remaining tasks and
+  then asks what to do ("Only the overview", answer the questions, unblock the blocked tasks) instead of
+  starting with the questions; `view`, `questions` or `blocked` as its argument skips that question. QA may
+  list several adapted test files on one line of "QA: adapted tests" (`` `a`, `b`: reason ``): such a line was
+  not recognised, the files were restored and QA had to redo the round's adaptations.
 - **1.6.3** - an e2e check that fails runs its failed tests once more by default (Playwright: the same
   command with `--last-failed`; `"e2e_retry": false` turns it off): a single test that timed out under load
   cost a whole round of an hour. After the whole e2e suite fails, the next round runs only the tests that

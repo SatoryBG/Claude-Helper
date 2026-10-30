@@ -1,13 +1,15 @@
 ---
 name: status
 description: Satory status - shows how far the project has got, the blocked tasks and the questions for the user; records the answers and unblocks the tasks.
-argument-hint: "[path to the project]"
+argument-hint: "[view|questions|blocked] [path to the project]"
 disable-model-invocation: true
 ---
 
 # Satory: status and unblocking
 
-CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`. The project is in `$ARGUMENTS` or the current directory.
+CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`. The project is the path in `$ARGUMENTS` or the current
+directory; the words `view`, `questions` and `blocked` in `$ARGUMENTS` choose what happens after the report
+(step 2).
 Talk to the user in the language they write in.
 
 1. `$SATORY status` and `$SATORY plan json`. Show briefly:
@@ -25,7 +27,16 @@ Talk to the user in the language they write in.
      reported that one could not be merged (a conflict with what a task changed), rebase its branch onto
      main and resolve it with the user (`git rebase main <branch>` in a worktree of that branch); the
      build retries it at the next boundary.
-2. For every **blocked** task show the reason (`reason`) and classify it:
+2. **The user decides what comes next.** The status is a report first: show step 1 and the table of the
+   remaining tasks (step 6), and change or record nothing unless the user chooses it. Then, only when there
+   are blocked tasks or open questions, ask once with AskUserQuestion (multiSelect) what to do now:
+   - "Only the overview" - first and recommended; nothing else happens;
+   - "Answer the questions" - with how many are open and how many critical (step 5);
+   - "Unblock the blocked tasks" - with their ids (steps 3 and 4).
+   The argument skips the question: `view` shows only the report, `questions` goes straight to the
+   questions, `blocked` straight to the blocked tasks. Open critical questions keep the next milestone from
+   starting - say so in the report, but the user still decides when to answer them.
+3. **Blocked tasks** (when the user chose them): for each, show the reason (`reason`) and classify it:
    - **Question from an agent** (business decision): ask the user (AskUserQuestion with options or a
      free answer). If the answer changes the requirements, update `docs/SPEC.md` (version + a history
      row) and commit on main. If it changes the UI direction, update `docs/UI.md` the same way.
@@ -34,7 +45,7 @@ Talk to the user in the language they write in.
      (c) it stays blocked. If the last stage was `ui`, also offer (d) adjusting `docs/UI.md` when the
      findings show that the guide itself is unclear or too strict.
    - **Technical error**: show the log and propose a fix.
-3. Unblocking, with the answer or the guidance as text:
+4. Unblocking, with the answer or the guidance as text:
    ```bash
    $SATORY task unblock T-00X --note-stdin <<'SATORY_EOF'
    <the user's answer>
@@ -42,11 +53,11 @@ Talk to the user in the language they write in.
    ```
    The answer is recorded in the task as a "Clarification from the user", the round counter is reset,
    and the work on the branch continues from where it stopped.
-4. **Questions for the user** (they never stop the work; the user answers when it suits them).
+5. **Questions for the user** (when the user chose them; they never stop the work, the user answers when
+   it suits them).
    `$SATORY question list --open` returns them: `question` (the SPEC does not define it), `decision` (Dev
    chose, confirm it), `fix` (defined but not enforced), `test` (not covered by a test), from Dev, the
-   Reviewer, QA and the milestone reviews. If there are any, ask whether to go through them now; the user
-   may also pick only the critical ones or postpone everything.
+   Reviewer, QA and the milestone reviews. The user may also pick only the critical ones.
    - Items that ask the same thing (another wording or language, from different agents) are asked once:
      say which ids they are and record the same answer for each.
    - Go from critical to minor. For each, show the title, the concrete scenario from `detail` and the
@@ -80,7 +91,7 @@ Talk to the user in the language they write in.
    at the next task finish, or now with `$SATORY question flush` when on main).
    Open `critical` items keep the next milestone from starting (the started ones are finished): say so
    when there are any.
-5. **The remaining tasks** - always last in the report, as one table (headers in the user's language),
+6. **The remaining tasks** - always last in the report, as one table (headers in the user's language),
    from `$SATORY plan json`: every task that is not done, in plan order:
 
    | # | Task | What it covers | Status | Waits for | Source |
@@ -95,5 +106,5 @@ Talk to the user in the language they write in.
    Under the table, in two short paragraphs: what will still be added (queued changes, answered
    questions the planner has not turned into tasks yet, and where they will likely go) and what comes
    after the last milestone (its code health review, then `/satory-devteam:release`).
-6. If there are tasks to run, suggest `/satory-devteam:build`. For a defect the user found or a new idea,
+7. If there are tasks to run, suggest `/satory-devteam:build`. For a defect the user found or a new idea,
    point to `/satory-devteam:request` (it works while a build is running).
