@@ -352,6 +352,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.6** - every CLI step of the workflow writes its output to `.satory/run/sh/` (as the long steps
+  did): when a runner returns something else than the output (a placeholder, a refusal), the workflow reads
+  the real result from there, and runs the step again only when it never started. 1.6.5 handled only a
+  refusal with a negative exit code; a placeholder with exit 0 still stopped the build. A flaky test whose
+  name carried its duration ("(36s 277ms)") is recognised as the same test, so it escalates as it should.
 - **1.6.5** - a runner that does not run its command (a negative exit code and no JSON, e.g. it took a
   message the user wrote to the main session as its own task and refused) gets the command once more
   instead of stopping the build; the runner is told that any other request it may see is not for it.

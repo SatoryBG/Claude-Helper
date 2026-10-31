@@ -432,8 +432,9 @@ function parseOut(text) {
   }
 }
 
-// A long step also writes its stdout and exit code to .satory/run/sh/<id>.*, so its result survives a
-// runner that returns before the step ends (see collect). `satory workflow` empties the folder.
+// Every step also writes its stdout and exit code to .satory/run/sh/<id>.*, so its result survives a
+// runner that returns before the step ends or returns something else than the output (see collect), and a
+// step that never started is told apart from one that ran. `satory workflow` empties the folder.
 let SH_SEQ = 0
 function captured(full, id) {
   const f = `${q(PROJECT)}/.satory/run/sh/${id}`
@@ -459,7 +460,7 @@ async function sh(cmd, { phase, label, note, long = false } = {}) {
     const body = String(note).replace(/^SATORY_EOF$/gm, 'SATORY_EOF_')
     full += ` --note-stdin <<'SATORY_EOF'\n${body}\nSATORY_EOF`
   }
-  const id = long && PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
+  const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
   const prompt = runPrompt(id ? captured(full, id) : full)
   const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
   for (let attempt = 1; ; attempt++) {

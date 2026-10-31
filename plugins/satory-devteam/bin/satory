@@ -314,7 +314,9 @@ CRASH = re.compile(r"Internal CLR error|^Fatal error\.|Segmentation fault|core d
                    re.M)
 
 
-UNIT_FAILED = re.compile(r"^\s*(?:failed|FAIL|×|✗)\s+(.+?)(?:\s+\(\d[\d.]*\s*m?s\))?\s*$", re.M)
+# a test's duration after its name: "(559ms)", "(36s 277ms)", "(1m 2s)" - not part of the name
+DURATION = r"\s+\((?:\d[\d.]*\s*(?:ms|s|m|h)\s*)+\)"
+UNIT_FAILED = re.compile(r"^\s*(?:failed|FAIL|×|✗)\s+(.+?)(?:" + DURATION + r")?\s*$", re.M)
 
 
 def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str) -> dict:
@@ -524,10 +526,13 @@ FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing probl
 
 def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e2e") -> None:
     """Record a test that failed and passed on the retry; repeated flakiness raises the severity."""
-    name = re.sub(r":\d+:\d+", "", test).strip()
+    norm = lambda t: re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip()
+    name = norm(test)
     reg = questions_load(p)
     key = f"flaky:{name}"
-    q = next((x for x in reg["items"] if x.get("key") == key), None)
+    # an older entry may still carry the duration in its key ("(36s 277ms)"): it is the same test
+    q = next((x for x in reg["items"] if str(x.get("key") or "").startswith("flaky:")
+              and norm(str(x["key"])[6:]) == name), None)
     if q is None:
         question_append(reg, {
             "kind": "test", "severity": "minor", "key": key, "occurrences": [source],
