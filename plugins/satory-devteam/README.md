@@ -352,6 +352,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.7** - the note of a CLI step goes on the command line (`--note-stdin <<< $'...'`, ANSI-C quoted)
+  instead of in a here-document: the Workflow runtime now indents the task text its runner gets, the runner
+  copied the indentation, and an indented `SATORY_EOF` no longer ended the here-document, so the step never
+  started and the build stopped. The captured step is one line as well.
 - **1.6.6** - every CLI step of the workflow writes its output to `.satory/run/sh/` (as the long steps
   did): when a runner returns something else than the output (a placeholder, a refusal), the workflow reads
   the real result from there, and runs the step again only when it never started. 1.6.5 handled only a

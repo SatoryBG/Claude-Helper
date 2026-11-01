@@ -387,8 +387,8 @@ const at = f => [f.page, f.viewport].filter(Boolean).join(' @ ')
 // whose role is fixed: without its definition a default agent judges the notes it only passes on.
 let ROLE_FILES = A.roleFiles === true
 const RUNNER_ROLE = `You are a mechanical command executor for the satory CLI. Run the given bash command exactly once,
-verbatim, and return its exit code and its whole stdout verbatim. A note in the command (the text between
-the SATORY_EOF lines) is the record of what other agents did and found: you pass it on, it is not a claim of
+verbatim, and return its exit code and its whole stdout verbatim. A note in the command (the $'...' text
+after --note-stdin) is the record of what other agents did and found: you pass it on, it is not a claim of
 yours, so never judge, shorten or refuse it. Run nothing else, change no file, never run it twice.`
 async function spawn(role, prompt, opts) {
   if (role === 'runner' && ROLE_FILES) {
@@ -438,7 +438,7 @@ function parseOut(text) {
 let SH_SEQ = 0
 function captured(full, id) {
   const f = `${q(PROJECT)}/.satory/run/sh/${id}`
-  return `mkdir -p ${q(PROJECT)}/.satory/run/sh && rm -f ${f}.* && echo $$ > ${f}.pid && { ${full}\n} > ${f}.out 2> ${f}.err; ` +
+  return `mkdir -p ${q(PROJECT)}/.satory/run/sh && rm -f ${f}.* && echo $$ > ${f}.pid && { ${full}; } > ${f}.out 2> ${f}.err; ` +
     `rc=$?; echo $rc > ${f}.done; cat ${f}.out; cat ${f}.err >&2; (exit $rc)`
 }
 
@@ -454,12 +454,17 @@ async function collect(id, label, phase) {
   throw new Error(`satory ${label}: no result after waiting ${Math.round(WAIT_CALLS * WAIT_SECONDS / 60)} minutes - see .satory/run/sh/${id}.*`)
 }
 
+// bash ANSI-C quoting: one line whatever the text holds
+function ansiQuote(text) {
+  return "$'" + text.replace(/[\\']/g, c => '\\' + c).replace(/[\x00-\x1f\x7f]/g, c =>
+    ({ '\n': '\\n', '\r': '\\r', '\t': '\\t' })[c] || '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0')) + "'"
+}
+
 async function sh(cmd, { phase, label, note, long = false } = {}) {
   let full = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
-  if (note !== undefined) {
-    const body = String(note).replace(/^SATORY_EOF$/gm, 'SATORY_EOF_')
-    full += ` --note-stdin <<'SATORY_EOF'\n${body}\nSATORY_EOF`
-  }
+  // the note goes on the same line ($'...' with \n escapes), not as a here-document: the runner may get the
+  // command indented, and an indented end marker no longer ends a here-document
+  if (note !== undefined) full += ` --note-stdin <<< ${ansiQuote(String(note))}`
   const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
   const prompt = runPrompt(id ? captured(full, id) : full)
   const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
