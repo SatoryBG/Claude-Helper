@@ -352,6 +352,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.8** - a flaky e2e test is one question whatever Playwright project it failed in
+  (`[tablet-768]`, `[desktop-1280]`): before, each project opened its own question, so the occurrences never
+  added up and the test was never escalated to `major`.
 - **1.6.7** - the note of a CLI step goes on the command line (`--note-stdin <<< $'...'`, ANSI-C quoted)
   instead of in a here-document: the Workflow runtime now indents the task text its runner gets, the runner
   copied the indentation, and an indented `SATORY_EOF` no longer ended the here-document, so the step never

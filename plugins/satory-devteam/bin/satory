@@ -526,7 +526,8 @@ FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing probl
 
 def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e2e") -> None:
     """Record a test that failed and passed on the retry; repeated flakiness raises the severity."""
-    norm = lambda t: re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip()
+    # the same test in another Playwright project ("[tablet-768] › ") or with another duration is the same test
+    norm = lambda t: re.sub(r"^\[[^\]]+\] › ", "", re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip())
     name = norm(test)
     reg = questions_load(p)
     key = f"flaky:{name}"
