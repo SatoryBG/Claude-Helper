@@ -19,7 +19,8 @@ Talk to the user in the language they write in.
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
    - the open questions for the user (`questions` in the status): how many, how many critical.
    - the coverage of the acceptance criteria: `$SATORY coverage` (from the latest test list): the counts,
-     and the `untested` and `claimed` criteria by id and title (details in `.satory/run/coverage.md`).
+     the share of all criteria that have a test (`tested` of the sum, in %), the number of tests listed
+     (`tests_listed`), and the `untested` and `claimed` criteria by id and title (details in `.satory/run/coverage.md`).
    - the UX register: `$SATORY ux list` - the counts (open, planned, resolved, dismissed); the open ones by
      id, page and title when the user asks. A problem the user does not want solved:
      `$SATORY ux dismiss <id> --note-stdin` with their reason.

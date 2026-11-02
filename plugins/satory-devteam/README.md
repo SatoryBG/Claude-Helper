@@ -72,8 +72,10 @@ a round ends with its verdict, a task is done or blocked, new questions, plan an
 - `/satory-devteam:build` follows that file with a monitor and reports each event in the conversation in
   a short line, while the session is open.
 - `satory statusline` turns it into the Claude Code status line, e.g.
-  `satory 29/41 · ▶ T-014 r3 · 17:40 ✓ T-014 r3 e2e: pass · ❓3 · 🗂1` (tasks done, the task and round in
-  progress, the last event, open questions, queued changes). `/satory-devteam:setup` offers to add it
+  `satory 29/41 · ▶ T-014 r3 · 17:40 ✓ T-014 r3 e2e: pass · 🧪 e2e 5237/5757 (91%) · AC 93/201 tested (46%) ·
+  9109 tests · ❓3 · 🗂1` (tasks done, the task and round in progress, the last event, how far a running e2e
+  check is, the acceptance criteria with a test of all of them and the number of tests from the coverage
+  register, open questions, queued changes). `/satory-devteam:setup` offers to add it
   to `~/.claude/settings.json`; outside a satory project it prints nothing. The text is bright cyan;
   `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `97` white, `""` for the terminal's own).
 - `/satory-devteam:status` shows the last events too.
@@ -363,6 +365,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.14** - the status line shows how far a running e2e check is (`🧪 e2e 5237/5757 (91%)`, from its log)
+  and the coverage: the acceptance criteria with a test of all of them and the number of tests
+  (`AC 93/201 tested (46%) · 9109 tests`); `/satory-devteam:status` gives the same numbers.
 - **1.6.13** - the whole e2e suite can no longer be skipped silently: the CLI remembers that it is due after
   QA's check ran only the task's tests (`full_e2e_due`), the workflow calls `step full-e2e` every round and
   the CLI runs it or reports it was not needed, and `task finish` refuses a task whose whole suite is still

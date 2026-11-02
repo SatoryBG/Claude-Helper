@@ -2884,6 +2884,27 @@ def cmd_status(p: Project, a) -> None:
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 
 
+E2E_DONE = re.compile(rb"\[(\d+)/(\d+)\]")
+
+
+def e2e_progress(p: Project, fresh: float = 120) -> str:
+    """How far a running e2e check is: the last "[done/total]" of the newest e2e log written in the last
+    `fresh` seconds (the line reporter of Playwright), e.g. "🧪 e2e 5081/5757 (88%)"; "" when none runs."""
+    logs = [f for f in p.logs.glob("*e2e*.log")] if p.logs.is_dir() else []
+    if not logs:
+        return ""
+    log = max(logs, key=lambda f: f.stat().st_mtime)
+    if time.time() - log.stat().st_mtime > fresh:
+        return ""
+    with open(log, "rb") as f:
+        f.seek(max(0, f.seek(0, 2) - 8192))
+        found = E2E_DONE.findall(f.read())
+    if not found:
+        return ""
+    done, total = (int(x) for x in found[-1])
+    return f"🧪 e2e {done}/{total} ({round(100 * done / total) if total else 0}%)"
+
+
 def cmd_statusline(a) -> None:
     """One plain line for the Claude Code status line. Claude Code passes the session as JSON on stdin;
     outside a satory project, or on any error, it prints nothing (the status line must never break)."""
@@ -2914,6 +2935,15 @@ def cmd_statusline(a) -> None:
                 tail = f.read().decode("utf-8", "replace").splitlines()
             if tail:
                 parts.append(first_line(tail[-1], 70))
+        run = e2e_progress(p)
+        if run:
+            parts.append(run)
+        cov = load_json(p.run / "coverage.json", {})
+        counts = cov.get("counts") or {}
+        total = sum(counts.values())
+        if total:
+            parts.append(f"AC {counts.get('tested', 0)}/{total} tested ({round(100 * counts.get('tested', 0) / total)}%)"
+                         + (f" · {cov['tests_listed']} tests" if cov.get("tests_listed") else ""))
         items = questions_load(p)["items"]
         open_q = sum(q["status"] == "open" for q in items)
         critical = sum(q["status"] == "open" and q["severity"] == "critical" for q in items)
