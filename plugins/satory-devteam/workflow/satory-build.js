@@ -1086,18 +1086,25 @@ async function runTask(t) {
         (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
       continue
     }
+    // The UI reviewer only reads the app on staging, so it reviews while QA tests: the findings of both come
+    // back in the same round. Its CLI steps run after QA's, because the steps share the state file.
+    const uiText = needsUi(t, staging) ? uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt) : null
+    const uiRun = uiText ? stage('ui-reviewer', uiText, { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
+      .catch(e => ({ uiError: e })) : null
+    const settleUi = async () => { if (uiRun) await uiRun }
     let qa = null, aq = null, retryNote = '', qaText = ''
     for (let attempt = 1; ; attempt++) {
       qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed) + known
       qa = await stage('qa', qaText,
         { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
-      if (!qa) return block(t, round, `QA returned no result in round ${round}.`)
+      if (!qa) { await settleUi(); return block(t, round, `QA returned no result in round ${round}.`) }
       known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
       aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
         { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
       if (!aq.qa_violation) { contextLog(aq); flakyLog(aq.gates, tag); break }
       if (attempt >= QA_ATTEMPTS) {
         await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA', '', false).catch(() => null)
+        await settleUi()
         return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
       }
       retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
@@ -1108,17 +1115,12 @@ async function runTask(t) {
       qa.verified, 'QA', qaText)
     suiteFailed = suiteFailures(aq.gates)
     const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
-    if (qaFailed) {
-      lastStage = 'qa'
-      feedback = qaFeedback(qa, aq, qaRes)
-      continue
-    }
 
-    // ---- UI -----------------------------------------------------------
-    if (needsUi(t, staging)) {
-      const uiText = uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt)
-      const ui = await stage('ui-reviewer', uiText,
-        { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
+    // ---- UI (its review ran beside QA's) --------------------------------
+    let uiFeedback = ''
+    if (uiRun) {
+      const ui = await uiRun
+      if (ui && ui.uiError) throw ui.uiError
       if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
       const uiRes = await record('ui', ui.findings.map(f => ({ severity: f.severity, title: f.title, where: at(f),
         detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI', uiText)
@@ -1131,11 +1133,12 @@ async function runTask(t) {
           if (v && (v.resolved || []).length) log(`🎨 ${tag}: UX problem(s) solved: ${v.resolved.join(', ')}`)
         } catch (e) { log(`Could not update the UX register: ${e.message}`) }
       }
-      if (uiRes.blocking.length) {
-        lastStage = 'ui'
-        feedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
-        continue
-      }
+      if (uiRes.blocking.length) uiFeedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
+    }
+    if (qaFailed || uiFeedback) {
+      lastStage = qaFailed ? (uiFeedback ? 'qa and ui' : 'qa') : 'ui'
+      feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback].filter(Boolean).join('\n\n')
+      continue
     }
 
     // ---- Security -----------------------------------------------------

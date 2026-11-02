@@ -57,8 +57,8 @@ Projects with a UI get two extra safeguards:
   architect picks a component library (as an ADR) and writes `docs/UI.md` - design tokens, app shell,
   shared components, empty/loading/error states, content rules, viewports and accessibility rules. Task
   T-002 builds that foundation, and every UI task builds on it.
-- **A UI reviewer in every round.** After QA passes, `satory-devteam:ui-reviewer` opens the app on
-  staging, takes screenshots at mobile, tablet and desktop widths, runs an axe accessibility scan and
+- **A UI reviewer in every round.** While QA tests, `satory-devteam:ui-reviewer` opens the app on
+  staging (both only read it, and the findings of both come back to Dev in the same round), takes screenshots at mobile, tablet and desktop widths, runs an axe accessibility scan and
   checks the result against `docs/UI.md`. Blocker/major findings send the task back to Dev. QA also adds
   permanent axe and no-horizontal-scroll e2e tests for every new page.
 
@@ -352,6 +352,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.10** - the UI reviewer reviews the app on staging while QA tests it, instead of after QA passed:
+  when both find something, Dev gets both in the same round instead of in two rounds (10 of 31 UI reviews
+  had sent a task back, often the round after QA did). Their CLI steps still run one after the other. QA
+  asserts that the items a requirement names are present instead of pinning a whole list (unless the
+  requirement is exhaustive): two of seven failures of the whole e2e suite were exact lists (the sections
+  of a page, the secrets of a container) that a later task extended on purpose.
 - **1.6.9** - a build cut off by a usage limit no longer hangs unnoticed: a stage agent (Dev, Reviewer, QA,
   UI, Security) that returns no result runs once more, told that the work tree may hold its partial work,
   before the task is blocked; the new `satory stall [--minutes 45]` reports whether the build shows any

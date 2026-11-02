@@ -97,11 +97,18 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
    crash the next build or test run. Use the staging app instead when you can; otherwise stop every
    process you started (and its children) before you return.
-6. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
+6. **Assert what the requirement fixes, not a whole list.** When a requirement names items that must be
+   there (the sections of a page, menu entries, columns, the secrets a container uses), assert that each
+   of them is present - in order when the order is required - instead of asserting that the list is
+   exactly these items: a later task that adds an item must not break the test. Assert an exact list only
+   when the requirement itself is exhaustive ("only these secrets", "no other roles"), and say so in the
+   test name. An exact-list test of an earlier task that fails because this task adds an item on purpose is
+   adapted to this form (see "A test from an earlier task" above).
+7. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
    the test projects and use it; put a step you need in two places into a shared helper. Wait for the
    state you check (a response, a visible text, an enabled button), never for a fixed time.
-7. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
+8. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
    at most about 60 lines, facts only, not a log): the key files and what each does for this task, the
    commands that worked (run one test, reach a state on staging, log in as a role), the traps you hit
    and how you got past them, and what is still open. The next round starts from it (the digest lists
