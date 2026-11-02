@@ -2923,6 +2923,7 @@ def workflow_agents(p: Project, stale: float = 1800) -> list[dict]:
             if now - j.stat().st_mtime > 86400:
                 continue
             started: dict[str, dict] = {}
+            chain: tuple[str, str] = ("", "")  # a CLI step the runner waits on in turns: (its label, first agent)
             with open(j, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     m = JOURNAL_REC.match(line)  # results carry whole outputs: parse only the small "started"
@@ -2930,41 +2931,53 @@ def workflow_agents(p: Project, stale: float = 1800) -> list[dict]:
                         continue
                     if m.group(1) == "result":
                         started.pop(m.group(2), None)
-                    else:
-                        try:
-                            started[m.group(2)] = json.loads(line)
-                        except ValueError:
-                            pass
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    step = step_label(str(d.get("label", "")))
+                    if step is not None:  # "satory e2e T-1 r1", then "satory wait e2e T-1 r1 (1)", "(2)"…
+                        chain = (step, chain[1] if chain[0] == step else d.get("agentId", ""))
+                        d["first"] = chain[1]
+                    started[m.group(2)] = d
         except OSError:
             continue
         for d in started.values():
             aid = d.get("agentId", "")
             try:
                 last = (j.parent / f"agent-{aid}.jsonl").stat().st_mtime
-                begun = (j.parent / f"agent-{aid}.meta.json").stat().st_mtime
+                begun = (j.parent / f"agent-{d.get('first') or aid}.meta.json").stat().st_mtime
             except OSError:
                 continue
             if now - last > stale:
                 continue
-            label = str(d.get("label", ""))
-            runner = label.startswith("satory ")
-            if runner:  # "satory wait e2e T-017 r3 (2)" -> "e2e T-017 r3"
-                label = re.sub(r"\s*\(\d+\)$", "", label[7:])
-                label = label[5:] if label.startswith("wait ") else label
-            out.append({"id": aid, "label": label, "phase": str(d.get("phase", "")), "runner": runner,
+            step = step_label(str(d.get("label", "")))
+            runner = step is not None
+            label = step if runner else str(d.get("label", ""))
+            out.append({"id": d.get("first") or aid, "label": label, "phase": str(d.get("phase", "")), "runner": runner,
                         "started": begun, "minutes": int((now - begun) // 60)})
     return sorted(out, key=lambda x: x["started"])
+
+
+def step_label(label: str) -> str | None:
+    """The CLI step of a runner agent's label, the same for each turn of waiting on it ("satory wait e2e T-017
+    r3 (2)" -> "e2e T-017 r3"); None for a stage agent."""
+    if not label.startswith("satory "):
+        return None
+    label = re.sub(r"\s*\(\d+\)$", "", label[7:])
+    return label[5:] if label.startswith("wait ") else label
 
 
 def took(minutes: int) -> str:
     return f"{minutes}m" if minutes < 60 else f"{minutes // 60}h{minutes % 60:02d}"
 
 
-def activity(p: Project, running: list[str]) -> str:
+def activity(p: Project, running: list[str], agents: list[dict] | None = None) -> str:
     """What the build does now, for the status line: the stage agents (Dev, QA and UI side by side, the
     planner, a milestone review) with how long they run, else the CLI step a runner waits on (a check, a
     deploy). The task and round already shown are left out of the labels."""
-    agents = workflow_agents(p)
+    agents = workflow_agents(p) if agents is None else agents
     shown = [x for x in agents if not x["runner"]] or agents[-1:]
     if not shown:
         return ""
@@ -3026,9 +3039,13 @@ def cmd_statusline(a) -> None:
         tasks = plan["tasks"]
         parts = [f"satory {sum(t.get('status') == 'done' for t in tasks)}/{len(tasks)}"]
         running = list(p.state.get("tasks", {}))
+        agents = workflow_agents(p)
         for tid in running:
-            parts.append(f"▶ {tid} r{p.state['tasks'][tid].get('rounds', 0)}")
-        now_doing = activity(p, running)
+            # the round its agents work on: the counter grows only when Dev's round is recorded
+            rnd = max([p.state["tasks"][tid].get("rounds", 0)] +
+                      [int(m.group(1)) for x in agents for m in [re.search(rf"\b{re.escape(tid)} r(\d+)", x["label"])] if m])
+            parts.append(f"▶ {tid} r{rnd}")
+        now_doing = activity(p, running, agents)
         if now_doing:
             parts.append(now_doing)
         blocked = sum(t.get("status") == "blocked" for t in tasks)

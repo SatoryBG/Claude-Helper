@@ -367,6 +367,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.16** - a CLI step the build waits on (a check, the e2e suite) shows how long it has run since it
+  started, not since the last turn of waiting on it, and `satory watch` reports it once; the task in the
+  status line shows the round its agents work on (`▶ T-066 r4` while Dev's round 4 runs, not r3).
 - **1.6.15** - you see what the build does now: the status line shows the agents that run and for how long
   (`▶ T-014 r3 · qa 12m + ui 10m`, `Planning: plan 81 answer(s) 4m`, `⚙ full e2e 41m` while a step runs),
   from the journals of the workflow; `satory status` lists them in `running`; the build skill follows the
