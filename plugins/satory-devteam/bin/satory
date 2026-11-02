@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import functools
+import hashlib
 import json
 import os
 import re
@@ -175,17 +176,61 @@ class Project:
         return []
 
     def e2e_quick_commands(self) -> list[str]:
-        """The whole e2e suite at fewer widths, for the check of every task (two levels: every width runs once at
-        the end of a milestone): commands.e2e_quick, or the Playwright e2e command with --project for each of
-        e2e_quick_projects. Empty: every task runs the whole suite at every width, as before."""
+        """The whole e2e suite at one width, for the check of every task - two levels by default: every width runs
+        once at the end of a milestone. commands.e2e_quick, or the Playwright e2e command with --project for each
+        of e2e_quick_projects, or by default the widest Playwright project (found by listing the projects; the
+        name with "desktop" or the largest number). Empty - every task runs every width - when there is one
+        project or none, when the e2e command is not plain Playwright, or with "e2e_quick_projects": false."""
         cmds = self.commands("e2e_quick")
         if cmds:
             return cmds
-        projects = as_list(self.config.get("e2e_quick_projects"))
+        raw = self.config.get("e2e_quick_projects")
         e2e = self.commands("e2e")
-        if projects and e2e and all(pw_tail(c) for c in e2e):
-            return [c + "".join(f" --project={shlex.quote(x)}" for x in projects) for c in e2e]
-        return []
+        if raw is False or raw == [] or not e2e or not all(pw_tail(c) for c in e2e):
+            return []
+        projects = as_list(raw) if raw else self.e2e_widest_project()
+        return [c + "".join(f" --project={shlex.quote(x)}" for x in projects) for c in e2e] if projects else []
+
+    def e2e_widest_project(self) -> list[str]:
+        """The Playwright project every task runs the whole suite in, by default: listed once and kept in the
+        state until the e2e command or a playwright.config file changes. [] when it cannot be found."""
+        e2e = self.commands("e2e")
+        if len(e2e) != 1:
+            return []
+        configs = sorted(str(f.stat().st_mtime_ns) for f in self.root.glob("**/playwright.config.*")
+                         if "node_modules" not in f.parts)
+        key = hashlib.sha256(json.dumps([e2e[0], configs]).encode()).hexdigest()[:16]
+        cached = self.state.get("e2e_projects") or {}
+        if cached.get("key") != key:
+            # only the leading "cd <dir> &&" of the command, never its install steps: listing must not touch
+            # node_modules while another run uses them; with no node_modules yet it fails and is not kept
+            cd = re.match(r"\s*cd\s+[^&;|]+&&\s*", e2e[0])
+            names: list[str] = []
+            if re.search(r"playwright test", e2e[0]):
+                listing = (cd.group(0) if cd else "") + "npx --no-install playwright test --list --reporter=json"
+                try:
+                    r = subprocess.run(listing, shell=True, executable="/bin/bash", cwd=self.root, capture_output=True,
+                                       text=True, env=self.env(), timeout=600)
+                    out = r.stdout[r.stdout.find("{"):]
+                    names = [x["name"] for x in json.loads(out)["config"]["projects"] if x.get("name")]
+                except (subprocess.SubprocessError, ValueError, KeyError, TypeError):
+                    names = []
+            cached = {"key": key, "names": names}
+            if names:  # a failed listing is tried again next time
+                self.state["e2e_projects"] = cached
+                try:
+                    self.save_state()
+                except OSError:
+                    pass
+        names = cached.get("names") or []
+        if len(names) < 2:
+            return []
+        desktop = [n for n in names if "desktop" in n.lower()]
+        if desktop:
+            return desktop[:1]
+        width = lambda n: max([int(x) for x in re.findall(r"\d+", n)] or [-1])
+        best = max(names, key=width)
+        return [best] if width(best) >= 0 else []
 
     def e2e_suite_commands(self) -> list[str]:
         """The whole e2e suite as every task runs it: the quick level when set up, otherwise every width."""

@@ -13,7 +13,6 @@
   "ui": {
     "review": true
   },
-  "e2e_quick_projects": ["desktop-1280"],
   "commands": {
     "build": [
       "dotnet build --nologo -warnaserror"
