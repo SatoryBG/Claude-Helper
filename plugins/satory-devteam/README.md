@@ -352,6 +352,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.9** - a build cut off by a usage limit no longer hangs unnoticed: a stage agent (Dev, Reviewer, QA,
+  UI, Security) that returns no result runs once more, told that the work tree may hold its partial work,
+  before the task is blocked; the new `satory stall [--minutes 45]` reports whether the build shows any
+  activity (progress events, runner steps, changed files, commits, check processes, agent transcripts), and
+  the build skill checks it when the monitor expires quietly or a usage limit resets, then restarts a hung
+  workflow.
 - **1.6.8** - a flaky e2e test is one question whatever Playwright project it failed in
   (`[tablet-768]`, `[desktop-1280]`): before, each project opened its own question, so the occurrences never
   added up and the test was never escalated to `major`.

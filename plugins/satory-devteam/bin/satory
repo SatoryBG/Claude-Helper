@@ -1023,6 +1023,60 @@ def cmd_wait(p: Project, a) -> None:
     sys.stdout.write(out)
 
 
+# processes of a check or a test run started by the build (not the staging containers, which run all the time)
+BUSY = re.compile(r"playwright test|vitest|dotnet (test|build|ef)|npm (ci|run|test)|npx tsc|semgrep|gitleaks")
+
+
+def cmd_stall(p: Project, a) -> None:
+    """Is the build stalled? An agent cut off by a usage limit or an API error can leave its workflow waiting
+    for a result that never comes. Activity is any of: a progress event, a step of the runner, a changed
+    file of the work tree, a commit, a check or test process, an agent transcript of a workflow."""
+    stamps: dict[str, float] = {}
+
+    def mark(name: str, t: float | None) -> None:
+        if t and t > stamps.get(name, 0):
+            stamps[name] = t
+
+    def mtime(path: Path) -> float | None:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None
+
+    mark("progress", mtime(p.progress_path))
+    for d, name in ((p.run / "sh", "step"), (p.logs, "check log")):
+        if d.is_dir():
+            for f in d.iterdir():
+                mark(name, mtime(f))
+    r = p.git("status", "--porcelain", check=False)
+    for line in (r.stdout if r else "").splitlines():
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        if path:
+            mark("work tree", mtime(p.root / path))
+    r = p.git("log", "-1", "--format=%ct", check=False)
+    if r and r.stdout.strip().isdigit():
+        mark("commit", float(r.stdout.strip()))
+    agents = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(p.root))
+    if agents.is_dir():
+        for f in agents.glob("*/subagents/workflows/*/agent-*.jsonl"):
+            mark("agent", mtime(f))
+    busy = []
+    for proc in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            cmd = proc.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if BUSY.search(cmd):
+            busy.append(cmd.strip()[:120])
+    now_t = time.time()
+    last = max(stamps.values()) if stamps else None
+    idle = round((now_t - last) / 60, 1) if last else None
+    stalled = not busy and (idle is None or idle >= a.minutes)
+    emit({"ok": True, "stalled": stalled, "idle_minutes": idle, "threshold_minutes": a.minutes,
+          "last": {k: time.strftime("%Y-%m-%d %H:%M", time.localtime(v)) for k, v in sorted(stamps.items(), key=lambda kv: -kv[1])},
+          "busy": busy[:5], "branch": p.current_branch()})
+
+
 def cmd_where(p: Project, a) -> None:
     emit({"ok": True, "root": str(p.root), "name": p.config.get("name"), "branch": p.current_branch()})
 
@@ -2964,6 +3018,8 @@ def main() -> None:
     s = sub.add_parser("wait")
     s.add_argument("id")
     s.add_argument("--timeout", type=int, default=540)
+    s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
+    s.add_argument("--minutes", type=float, default=45)
 
     s = sub.add_parser("deploy")
     s.add_argument("env", choices=["staging", "prod"])
@@ -2981,7 +3037,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "stall": cmd_stall, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":

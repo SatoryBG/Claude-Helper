@@ -47,6 +47,12 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - On each event, write the user one short line in their language (what happened, in plain words; no
      tool calls needed). Several events that arrive together are one line or a few short bullets.
    - When the monitor expires and the workflow is still running, start it again the same way.
+   - When the monitor expires with no events, and right after a notice that a usage limit has reset, run
+     `$SATORY stall`. An agent cut off by a usage limit or an API error can leave the workflow waiting for a
+     result that never comes. If `stalled` is true (no progress event, runner step, changed file, commit,
+     check process or agent transcript for `threshold_minutes`, default 45), the workflow is hung: tell the
+     user in one line, stop it and its monitor (TaskStop), check `git status`, and start it again (step 2,
+     with a new `$SATORY workflow`). The task resumes from its branch and keeps its rounds.
    - When the workflow finishes, stop the monitor (TaskStop) and give the summary below.
 4. Tell the user briefly that the process runs in the background, that you will report each step here,
    the details are visible with `/workflows`, the history is written to `docs/JOURNAL.md`, and they can
