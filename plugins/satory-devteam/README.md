@@ -192,6 +192,37 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 `.satory/project.json` (default 90). A command that runs longer is stopped and the check fails with
 "timeout after N s" at the end of its log: raise the limit when the e2e suite has grown past it.
 
+### The whole e2e suite in parallel
+
+When the e2e tests share one database on staging, they run one after another, and a large suite takes
+more than an hour. With `e2e_parallel` the whole suite runs in shards at once, each against its own copy
+of staging with its own database:
+
+```json
+"e2e_parallel": {
+  "workers": "auto",
+  "ports": {"HOST_PORT": 8100, "STUB_HOST_PORT": 8200},
+  "env": {"SATORY_BASE_URL": "http://localhost:{HOST_PORT}", "MARKET_STUB_URL": "http://localhost:{STUB_HOST_PORT}"}
+}
+```
+
+- Each shard `i` (1..N) gets the variables of `ports` as base + `i` (8101, 8102 …): the staging `up`
+  command runs with them in its environment and its compose project renamed `<project>-e2e<i>`, with the
+  image of staging. The staging compose files must take their host ports from these variables.
+  `up` and `down` in `e2e_parallel` replace the derived commands (`{i}` and the port names are filled in).
+- The e2e command runs with `--shard=i/N`, its own `--output` and the variables of `env`, where
+  `{PORT_NAME}` is that shard's port. The copies are removed (`down -v`) after the run. If they do not
+  start, the suite runs the usual way. A few failed tests run once more by name against staging.
+- `"workers": "auto"` chooses N: at most half of the CPUs (a shard keeps more than one core busy - the
+  browser, the app, the test runner - and an overloaded machine makes timing-dependent tests fail) and
+  what the free memory allows (`memory_gb` per shard, default 1.5); `max` lowers it. The first run uses a
+  quarter of the CPUs (at least 2). After that the fastest measured count (seconds per test) is kept, and
+  two more are tried while untried. A count whose run had more than 0.2 % of the tests passing only on
+  the retry lowers the ceiling below it. A number in `workers` is used as it is. `satory parallel` shows
+  the choice, the reason and the measured runs; the status line shows a sharded run as `🧪 e2e … ⚡N`.
+- Shards are split by test file unless the Playwright config has `fullyParallel: true`; with files of
+  very different length the longest file sets the time.
+
 ## Cost of a round
 
 Most of the cost of an agent is its number of turns times the size of its context, which every turn sends
@@ -367,6 +398,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.17** - the whole e2e suite in parallel (`e2e_parallel`): N shards at once, each against its own copy
+  of staging (own compose project and database, ports from base + shard number), with N chosen
+  automatically from the CPUs, the free memory and the measured runs (fastest seconds per test without
+  signs of contention); `satory parallel` shows the choice; the status line sums the shards. In the project
+  that asked for it, the whole suite of 2,744 tests ran 84 minutes one after another.
 - **1.6.16** - a CLI step the build waits on (a check, the e2e suite) shows how long it has run since it
   started, not since the last turn of waiting on it, and `satory watch` reports it once; the task in the
   status line shows the round its agents work on (`▶ T-066 r4` while Dev's round 4 runs, not r3).

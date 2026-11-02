@@ -45,7 +45,9 @@ installed. The user chooses and the decision becomes ADR-001.
 Fill in `docs/ARCHITECTURE.md` from the template:
 - **Environments**: local Docker compose. Staging is on port 8081, prod on 8080. If the ports are taken
   (`ss -ltn`), pick others. The compose project names are `<name>-staging` and `<name>-prod`. The image
-  is built once and the same image moves from staging to prod.
+  is built once and the same image moves from staging to prod. The compose files take every host port
+  from a variable of the env file (`HOST_PORT`, and one per stub), so that the whole e2e suite can run in
+  parallel copies of staging (`e2e_parallel`, see the plugin README).
 - **Tests**: unit and integration with the stack's framework. For web: e2e with Playwright (TypeScript) in
   `e2e/`, with `baseURL` from `SATORY_BASE_URL`, plus `@axe-core/playwright` for projects with a UI. The
   test naming convention is stable and unique.

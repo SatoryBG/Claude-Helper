@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -439,28 +440,46 @@ def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
     counts: dict[str, int] = {}
     for n, kind in E2E_COUNT.findall(text):
         counts[kind] = int(n)
-    m = E2E_FAILED.search(text)
+    blocks = list(E2E_FAILED.finditer(text))  # the last one: a sharded run ends with the combined summary
+    m = blocks[-1] if blocks else None
     names = [x.strip() for x in m.group(1).splitlines() if x.strip().startswith("[")] if m else []
     return counts.get("failed", 0), sum(counts.values()), names
 
 
-def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
+def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
     """Run e2e commands; when a few tests fail (at most e2e_retry_max_percent of the run), run only those
     once more (p.e2e_retry_commands). Passing then counts as passing; the tests go to the register as flaky.
-    A failing result lists the failed tests (failed_tests) when the summary names them all."""
+    A failing result lists the failed tests (failed_tests) when the summary names them all. The whole suite
+    (whole=True) runs in parallel shards when e2e_parallel is set; their failed tests are run again by name,
+    against staging."""
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
-    res = run_cmds(p, cmds, log, p.env(tid, rnd))
+    cfg = parallel_cfg(p) if whole else None
+    n, why = e2e_workers(p, cfg) if cfg else (1, "")
+    res = e2e_sharded(p, tid, rnd, cmds, log, cfg, n) if cfg and n > 1 else None
+    sharded = res is not None
+    if sharded:
+        res["workers_reason"] = why
+    else:
+        res = run_cmds(p, cmds, log, p.env(tid, rnd))
+
+    def record(flaky: int) -> None:
+        if sharded:
+            e2e_parallel_record(p, n, res["seconds"], res["tests"], flaky, res["failed_count"] - flaky)
+
     if res["ok"] or res.get("skipped"):
+        record(0)
         return res
     failed, total, names = e2e_failures(log)
     if failed and len(names) == failed:
         res["failed_tests"] = names
-    retry = p.e2e_retry_commands(cmds)
+    retry = p.e2e_failed_commands(names) if sharded else p.e2e_retry_commands(cmds)
     if not retry:
+        record(0)
         return res
     limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 3)) / 100))
     if not failed or not total or failed > limit or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
+        record(0)
         return res
     rlog = p.logs / f"{tid}-r{rnd}-{name}-retry.log"
     again = run_cmds(p, retry, rlog, p.env(tid, rnd))
@@ -469,6 +488,7 @@ def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str) -> dict:
         res.update(ok=True, exit=0, flaky=names)
         for test in names:
             question_flaky(p, test, f"{name} {tid} r{rnd}", tid)
+    record(len(names) if again["ok"] else 0)
     return res
 
 
@@ -958,6 +978,191 @@ def wait_health(url: str) -> bool:
     return False
 
 
+# ----------------------------------------------------------- parallel e2e ---
+# The whole e2e suite in N shards at once, each against its own copy of staging (its own database), when
+# "e2e_parallel" is set in .satory/project.json. The staging "up" command is run N times with its compose
+# project name suffixed (-e2e1 … -eN) and the ports of "ports" (base + shard number) in the environment; each
+# shard gets the variables of "env" ({PORT_NAME} is that shard's port) and runs the e2e command with
+# --shard=i/N and its own --output. "workers": "auto" picks N from the CPUs and the memory and then from the
+# measured runs (see e2e_workers); the copies are removed after the run.
+
+PARALLEL_MEM_GB = 1.5      # one shard: a browser, the app and its stubs
+PARALLEL_FLAKY_RATIO = 0.002  # more tests passing only on the retry than this: contention, fewer shards
+
+
+def parallel_cfg(p: Project) -> dict | None:
+    cfg = p.config.get("e2e_parallel")
+    if not isinstance(cfg, dict) or cfg.get("workers") in (None, False, 0, 1):
+        return None
+    staging = (p.config.get("deploy") or {}).get("environments", {}).get("staging") or {}
+    if not (cfg.get("up") or staging.get("up")) or not cfg.get("ports") or not cfg.get("env"):
+        return None
+    return {**cfg, "staging_up": staging.get("up"), "health": cfg.get("health", staging.get("health", ""))}
+
+
+def shard_vars(cfg: dict, i: int) -> dict:
+    return {k: str(int(v) + i) for k, v in cfg["ports"].items()}
+
+
+def shard_fill(text: str, vars_: dict, i: int) -> str:
+    return re.sub(r"\{(\w+)\}", lambda m: vars_.get(m.group(1), str(i) if m.group(1) == "i" else m.group(0)), text)
+
+
+def shard_cmds(cfg: dict, i: int, down: bool = False) -> list[str]:
+    """The up (or down) command of shard i: from "up"/"down" in the config ({i} and the port names are
+    filled in), or the staging up with its compose project renamed and - for down - `down -v` instead of up."""
+    vars_ = shard_vars(cfg, i)
+    own = cfg.get("down" if down else "up")
+    if own:
+        return [shard_fill(c, vars_, i) for c in as_list(own)]
+    out = []
+    for c in as_list(cfg.get("staging_up")):
+        if not re.search(r"(?:^|\s)-p\s+\S+", c) or not re.search(r"\scompose\s", c):
+            return []
+        c = re.sub(r"((?:^|\s)-p\s+)(\S+)", lambda m: f"{m.group(1)}{m.group(2)}-e2e{i}", c, count=1)
+        if down:
+            c = re.sub(r"\s+up(\s.*)?$", " down -v --remove-orphans", c)
+        out.append(c)
+    return out
+
+
+def meminfo_gb(key: str = "MemAvailable") -> float | None:
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith(key + ":"):
+                return int(line.split()[1]) / 1024 / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
+    """How many shards to run, with the reason. A number in "workers" is used as it is. "auto": a ceiling from
+    the machine - half of the CPUs (a shard keeps more than one core busy: the browser, the app, the test
+    runner; more makes timing-dependent tests fail) and the free memory - and within it the best measured run:
+    the fewest seconds per test among runs with no sign of contention, trying two more shards while that is
+    untried. A count whose run had more tests passing only on the retry than PARALLEL_FLAKY_RATIO lowers the
+    ceiling below it."""
+    w = cfg.get("workers")
+    if isinstance(w, int) and not isinstance(w, bool):
+        return max(1, w), "set in e2e_parallel.workers"
+    cpus = os.cpu_count() or 2
+    cap = max(1, cpus // 2)
+    mem = meminfo_gb()
+    if mem is not None:
+        cap = min(cap, max(1, int((mem - 2) // float(cfg.get("memory_gb", PARALLEL_MEM_GB)))))
+    if cfg.get("max"):
+        cap = min(cap, int(cfg["max"]))
+    hist = (p.state.get("e2e_parallel") or {}).get("runs", [])
+    stats: dict[int, list[dict]] = {}
+    for r in hist[-30:]:
+        stats.setdefault(int(r["workers"]), []).append(r)
+    for n, runs in stats.items():
+        if sum(r["flaky"] for r in runs) / max(1, sum(r["tests"] for r in runs)) > PARALLEL_FLAKY_RATIO:
+            cap = min(cap, n - 1)
+    cap = max(1, cap)
+    clean = {n: sum(r["seconds"] for r in runs) / max(1, sum(r["tests"] for r in runs))
+             for n, runs in stats.items() if n <= cap}
+    if not clean:
+        start = min(cap, max(2, cpus // 4))
+        return start, f"first measured run: {start} of at most {cap} (CPUs {cpus}, free memory {mem or 0:.0f} GB)"
+    best = min(clean, key=clean.get)
+    up = min(cap, best + 2)
+    if up > best and up not in stats:
+        return up, f"trying {up}: {best} was the fastest so far ({clean[best]:.2f} s per test), at most {cap}"
+    return best, f"{best} is the fastest measured ({clean[best]:.2f} s per test), at most {cap}"
+
+
+def e2e_parallel_record(p: Project, n: int, seconds: float, tests: int, flaky: int, failed: int) -> None:
+    st = p.state.setdefault("e2e_parallel", {})
+    runs = st.setdefault("runs", [])
+    runs.append({"workers": n, "seconds": round(seconds), "tests": tests, "flaky": flaky, "failed": failed,
+                 "at": now()})
+    del runs[:-30]
+    p.save_state()
+
+
+def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg: dict, n: int) -> dict | None:
+    """Run the whole suite in n shards. None when the copies of staging cannot be started (the caller runs it
+    the usual way). The log gets every shard's output and one summary in the Playwright format."""
+    if not all(pw_tail(c) for c in cmds) or not shard_cmds(cfg, 1):
+        return None
+    image = ((p.state.get("deploy") or {}).get("staging") or {}).get("image")
+    base_env = dict(p.env(tid, rnd), **({"SATORY_IMAGE": image} if image else {}))
+    shards = list(range(1, n + 1))
+    logs = {i: log.with_name(f"{log.stem}-shard{i}.log") for i in shards}
+    started: list[int] = []
+
+    def up(i: int) -> bool:
+        env = dict(base_env, **shard_vars(cfg, i))
+        r = run_cmds(p, shard_cmds(cfg, i), log.with_name(f"{log.stem}-shard{i}-up.log"), env)
+        url = shard_fill(cfg["env"].get("SATORY_BASE_URL", ""), shard_vars(cfg, i), i)
+        return r["ok"] and (not url or wait_health(url.rstrip("/") + cfg.get("health", "")))
+
+    def down(i: int) -> None:
+        env = dict(base_env, **shard_vars(cfg, i))
+        run_cmds(p, shard_cmds(cfg, i, down=True), log.with_name(f"{log.stem}-shard{i}-down.log"), env)
+
+    progress(p, f"⚡ {tid} r{rnd}: whole e2e suite in {n} parallel shards")
+    ok = up(1)  # the first one alone: it may build images the others reuse
+    if ok:
+        started.append(1)
+        results: dict[int, bool] = {}
+        threads = [threading.Thread(target=lambda i=i: results.__setitem__(i, up(i))) for i in shards[1:]]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        started += [i for i in shards[1:] if results.get(i)]
+        ok = len(started) == n
+    if not ok:
+        for i in started:
+            down(i)
+        progress(p, f"⚠ {tid} r{rnd}: the parallel copies of staging did not start - the suite runs in one")
+        return None
+
+    t0 = time.time()
+    res: dict[int, dict] = {}
+
+    def run(i: int) -> None:
+        env = dict(base_env, **shard_vars(cfg, i))
+        env.update({k: shard_fill(v, shard_vars(cfg, i), i) for k, v in cfg["env"].items()})
+        own = [f"{c} --shard={i}/{n} --output={shlex.quote(f'test-results/shard-{i}')}" for c in cmds]
+        res[i] = run_cmds(p, own, logs[i], env)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in shards]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    seconds = time.time() - t0
+    for i in shards:
+        down(i)
+
+    kinds = ("failed", "flaky", "skipped", "did not run", "interrupted", "passed")
+    counts, names, parts = dict.fromkeys(kinds, 0), [], []
+    for i in shards:
+        text = logs[i].read_text(encoding="utf-8", errors="replace") if logs[i].exists() else ""
+        own: dict[str, int] = {}
+        for c, kind in E2E_COUNT.findall(text):
+            own[kind] = int(c)
+        for kind, c in own.items():
+            counts[kind] += c
+        names += e2e_failures(logs[i])[2]
+        parts.append(f"===== shard {i}/{n} =====\n" + text)
+    failed, total = counts["failed"], sum(counts.values())
+    # one summary in the Playwright format, last in the log: every kind, so a parser reads the sums
+    summary = [f"===== {n} shards: {seconds / 60:.1f} min ====="]
+    for kind in kinds:
+        summary.append(f"  {counts[kind]} {kind}")
+        if kind == "failed":
+            summary += [f"    {x}" for x in names]
+    log.write_text("\n".join(parts + summary) + "\n", encoding="utf-8")
+    code = next((res[i]["exit"] for i in shards if not res[i]["ok"]), 0)
+    return {"ok": all(res[i]["ok"] for i in shards), "exit": code, "log": p.rel(log), "shards": n,
+            "seconds": round(seconds), "tests": total, "failed_count": failed}
+
+
 def deploy(p: Project, env_name: str, image: str | None = None, label: str = "") -> dict:
     d = p.config.get("deploy") or {}
     e = d.get("environments", {}).get(env_name)
@@ -1094,12 +1299,24 @@ def cmd_milestone_e2e(p: Project, a) -> None:
     Run on main between two tasks; a failure lists the failed tests for the regression task of the workflow."""
     if not p.e2e_quick_commands():
         return emit({"ok": True, "skipped": True, "milestone": a.milestone})
-    g = e2e_run(p, a.milestone, 0, p.commands("e2e"), "e2e-every-width")
+    g = e2e_run(p, a.milestone, 0, p.commands("e2e"), "e2e-every-width", whole=True)
     failed = g.get("failed_tests", [])
     progress(p, f"{'✓' if g['ok'] else '✗'} {a.milestone}: whole e2e suite at every width"
                 + ("" if g["ok"] else f" - {len(failed) or 'some'} test(s) fail, a task fixes them"))
     emit({"ok": g["ok"], "milestone": a.milestone, "failed_tests": failed, "log": g.get("log"),
           "flaky": g.get("flaky", []), "gates": {"e2e": g}})
+
+
+def cmd_parallel(p: Project, a) -> None:
+    """The parallel e2e setting: whether it is on, how many shards the next whole suite runs in and why, and
+    the measured runs."""
+    cfg = parallel_cfg(p)
+    if not cfg:
+        return emit({"ok": True, "enabled": False,
+                     "reason": "no e2e_parallel with workers, ports and env in .satory/project.json"})
+    n, why = e2e_workers(p, cfg)
+    emit({"ok": True, "enabled": True, "workers": n, "reason": why, "up": shard_cmds(cfg, 1),
+          "down": shard_cmds(cfg, 1, down=True), "runs": (p.state.get("e2e_parallel") or {}).get("runs", [])})
 
 
 def cmd_stall(p: Project, a) -> None:
@@ -2614,13 +2831,13 @@ def cmd_step(p: Project, a) -> None:
                 g = {**e2e_run(p, tid, rnd, again, "e2e-failed"), "scope": "failed", "count": len(failed_before)}
                 if not g["ok"] and not g.get("failed_tests"):
                     # no named failure (no test found, a crash): the whole suite decides instead
-                    g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
+                    g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
                     st["full_e2e_failed"] = not g["ok"]
                 if not g["ok"]:
                     st["full_e2e_failed_tests"] = g.get("failed_tests", [])
                 gates["e2e_failed"] = g
         else:
-            gates["e2e"] = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
+            gates["e2e"] = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
             st["full_e2e_failed"] = not gates["e2e"]["ok"]
             st["full_e2e_failed_tests"] = gates["e2e"].get("failed_tests", [])
         # the CLI, not the workflow, remembers that the whole suite is still due: the workflow learns it
@@ -2671,7 +2888,7 @@ def cmd_step(p: Project, a) -> None:
         if st.get("full_e2e_due") is None:
             return emit({"ok": True, "skipped": True, "gates": {},
                          "reason": "the whole e2e suite already ran in QA's check of this round"})
-        g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
+        g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
         st.pop("full_e2e_due", None)
         st["full_e2e_failed"] = not g["ok"]
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
@@ -2895,6 +3112,18 @@ def e2e_progress(p: Project, fresh: float = 120) -> str:
     logs = [f for f in p.logs.glob("*e2e*.log")] if p.logs.is_dir() else []
     if not logs:
         return ""
+    # a sharded run: every shard's log counts (not the up/down logs of the copies of staging)
+    shards = [f for f in logs if re.search(r"-shard\d+\.log$", f.name) and time.time() - f.stat().st_mtime <= fresh]
+    if shards:
+        done = total = 0
+        for f in shards:
+            with open(f, "rb") as fh:
+                fh.seek(max(0, fh.seek(0, 2) - 8192))
+                found = E2E_DONE.findall(fh.read())
+            if found:
+                done, total = done + int(found[-1][0]), total + int(found[-1][1])
+        if total:
+            return f"🧪 e2e {done}/{total} ({round(100 * done / total)}%) ⚡{len(shards)}"
     log = max(logs, key=lambda f: f.stat().st_mtime)
     if time.time() - log.stat().st_mtime > fresh:
         return ""
@@ -3270,6 +3499,7 @@ def main() -> None:
     s.add_argument("--interval", type=float, default=5)
     s.add_argument("--step-minutes", type=float, default=2, help="report a CLI step once it has run this long")
 
+    sub.add_parser("parallel", help="the parallel e2e setting: shards for the next whole suite, why, the measured runs")
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
@@ -3289,7 +3519,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "watch": cmd_watch, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "parallel": cmd_parallel, "watch": cmd_watch, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":
