@@ -783,6 +783,30 @@ async function healthTask(m, tasks, plan) {
   log(`🧹 ${m} code health: ${items.length} finding(s) → ${res.added.join(', ')}`)
 }
 
+// Two levels of e2e tests: every task runs the whole suite at fewer widths, and the end of a milestone at every
+// width. What fails only there becomes one task ahead of the work still to do (behaviour, not a refactoring).
+async function widthsTask(m, res, plan) {
+  const next = plan.tasks.find(t => t.status === 'todo')
+  const failed = res.failed_tests || []
+  const bg = LANG === 'bg'
+  const ok = bg ? 'Всички e2e тестове минават на всички ширини' : 'The whole e2e suite passes at every width'
+  const task = {
+    ref: `widths-${m}`, milestone: next ? next.milestone : m, owner: 'dev', ui: true, depends_on: [], requirements: [], questions: [],
+    title: bg ? `Регресии на всички ширини след ${m}` : `Regressions at every width after ${m}`,
+    description: (bg
+      ? `Пускането на всички e2e тестове на всички ширини в края на ${m} намери тестове, които падат (задачите ги пускат на по-малко ширини). Поправете кода; тест, който тази промяна прави грешен, се оспорва. Лог: ${res.log}`
+      : `The whole e2e suite at every width at the end of ${m} found failing tests (the tasks run it at fewer widths). Fix the code; dispute a test this change makes wrong. Log: ${res.log}`)
+      + (failed.length ? `\n\n${bullets(failed.slice(0, 40))}` : ''),
+    acceptance: [ok], subtasks: null,
+    ...(next ? { insert_before: next.id } : {}),
+  }
+  const out = must(await sh(`plan add --source e2e-${m}`, {
+    phase: 'Milestone review', label: `widths task ${m}`,
+    note: JSON.stringify({ title: `regressions at every width after ${m}`, summary: `${failed.length} failing test(s)`, tasks: [task], depends: [], resolved: [] }),
+  }), 'plan add')
+  log(`📐 ${m}: ${failed.length || 'some'} e2e test(s) fail at every width → ${out.added.join(', ')}`)
+}
+
 function uxPrompt(m, tasks, plan) {
   const todo = plan.tasks.filter(t => t.status !== 'done')
   return `Project: ${PROJECT}
@@ -898,6 +922,13 @@ async function reviewMilestones(plan) {
     const tasks = plan.tasks.filter(t => t.milestone === m)
     if (reg.milestones_reviewed.includes(m) || !tasks.every(t => t.status === 'done')) continue
     if (MILESTONE && m !== MILESTONE) continue
+    try {
+      const e2e = await sh(`milestone-e2e ${m}`, { phase: 'Milestone review', label: `e2e every width ${m}`, long: true })
+      if (e2e && !e2e.skipped && !e2e.ok) {
+        await widthsTask(m, e2e, plan)
+        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+      }
+    } catch (e) { log(`The e2e run at every width after ${m} failed (${e.message}); the review goes on.`) }
     let coverage = null
     try { coverage = await sh('coverage', { phase: 'Milestone review', label: `coverage ${m}` }) } catch (e) { /* the review goes on without it */ }
     const audit = await spawn('auditor', auditPrompt(m, tasks, reg.path, coverage && coverage.ok ? coverage : null),

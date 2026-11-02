@@ -286,6 +286,15 @@ does not fit, e.g. smoke tests without the tag:
 With no `e2e_task` and an e2e command that is not a plain Playwright run, the whole suite runs in QA's
 check as before.
 
+**Two levels.** With `e2e_quick_projects` in `.satory/project.json` (the Playwright projects every task runs
+the whole suite in, e.g. `["desktop-1280"]`; or a command in `commands.e2e_quick`), every task runs the whole
+suite only in those projects - its own e2e tests still run at every width in QA's check - and the end of a
+milestone runs the whole suite at every width once (`satory milestone-e2e <milestone>`). What fails only
+there becomes one task ahead of the work still to do. Regressions of behaviour show at any width, so they
+are still caught by the task that causes them; a layout problem of an older page at another width shows at
+the end of the milestone (the UI reviewer checks every width of the pages a task changes). Without the
+setting, every task runs every width, as before.
+
 ## Experimental settings
 
 Trial settings live in an `"experimental"` block of `.satory/project.json`. The workflow lists the ones
@@ -352,6 +361,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.11** - two levels of e2e tests (`e2e_quick_projects` or `commands.e2e_quick`): every task runs the
+  whole suite in the given Playwright projects (its own tests at every width), and the end of a milestone
+  runs it at every width once; what fails only there becomes one task. In the project that asked for it,
+  the whole suite of a task took 85 minutes at three widths, about a third of a task's time.
 - **1.6.10** - the UI reviewer reviews the app on staging while QA tests it, instead of after QA passed:
   when both find something, Dev gets both in the same round instead of in two rounds (10 of 31 UI reviews
   had sent a task back, often the round after QA did). Their CLI steps still run one after the other. QA

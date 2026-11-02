@@ -86,6 +86,10 @@ including `e2e/**`. Also fill in `commands`:
 - `test_list`: one stable test identifier per line and nothing else
 - `security`
 
+For a web app tested with Playwright at several widths (projects), you may set `e2e_quick_projects` (e.g.
+`["desktop-1280"]`): every task then runs the whole e2e suite only in those projects, and the end of each
+milestone at every width.
+
 Set `ui.review` to `true` for projects with a UI and staging (it turns on the UI reviewer in the build
 workflow), otherwise `false` (a missing value counts as `true`).
 

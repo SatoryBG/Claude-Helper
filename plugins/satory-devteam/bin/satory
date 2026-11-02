@@ -174,6 +174,23 @@ class Project:
             return [c + " --last-failed" for c in cmds]
         return []
 
+    def e2e_quick_commands(self) -> list[str]:
+        """The whole e2e suite at fewer widths, for the check of every task (two levels: every width runs once at
+        the end of a milestone): commands.e2e_quick, or the Playwright e2e command with --project for each of
+        e2e_quick_projects. Empty: every task runs the whole suite at every width, as before."""
+        cmds = self.commands("e2e_quick")
+        if cmds:
+            return cmds
+        projects = as_list(self.config.get("e2e_quick_projects"))
+        e2e = self.commands("e2e")
+        if projects and e2e and all(pw_tail(c) for c in e2e):
+            return [c + "".join(f" --project={shlex.quote(x)}" for x in projects) for c in e2e]
+        return []
+
+    def e2e_suite_commands(self) -> list[str]:
+        """The whole e2e suite as every task runs it: the quick level when set up, otherwise every width."""
+        return self.e2e_quick_commands() or self.commands("e2e")
+
     def e2e_failed_commands(self, names: list[str]) -> list[str]:
         """The e2e command that runs only the given failed tests of an earlier run (Playwright, one e2e command):
         their files, a --grep of their exact titles (not their lines: an adapted test file may grow above them)
@@ -1025,6 +1042,19 @@ def cmd_wait(p: Project, a) -> None:
 
 # processes of a check or a test run started by the build (not the staging containers, which run all the time)
 BUSY = re.compile(r"playwright test|vitest|dotnet (test|build|ef)|npm (ci|run|test)|npx tsc|semgrep|gitleaks")
+
+
+def cmd_milestone_e2e(p: Project, a) -> None:
+    """The whole e2e suite at every width at the end of a milestone, when the tasks run it at fewer (two levels).
+    Run on main between two tasks; a failure lists the failed tests for the regression task of the workflow."""
+    if not p.e2e_quick_commands():
+        return emit({"ok": True, "skipped": True, "milestone": a.milestone})
+    g = e2e_run(p, a.milestone, 0, p.commands("e2e"), "e2e-every-width")
+    failed = g.get("failed_tests", [])
+    progress(p, f"{'✓' if g['ok'] else '✗'} {a.milestone}: whole e2e suite at every width"
+                + ("" if g["ok"] else f" - {len(failed) or 'some'} test(s) fail, a task fixes them"))
+    emit({"ok": g["ok"], "milestone": a.milestone, "failed_tests": failed, "log": g.get("log"),
+          "flaky": g.get("flaky", []), "gates": {"e2e": g}})
 
 
 def cmd_stall(p: Project, a) -> None:
@@ -2539,13 +2569,13 @@ def cmd_step(p: Project, a) -> None:
                 g = {**e2e_run(p, tid, rnd, again, "e2e-failed"), "scope": "failed", "count": len(failed_before)}
                 if not g["ok"] and not g.get("failed_tests"):
                     # no named failure (no test found, a crash): the whole suite decides instead
-                    g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
+                    g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
                     st["full_e2e_failed"] = not g["ok"]
                 if not g["ok"]:
                     st["full_e2e_failed_tests"] = g.get("failed_tests", [])
                 gates["e2e_failed"] = g
         else:
-            gates["e2e"] = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
+            gates["e2e"] = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
             st["full_e2e_failed"] = not gates["e2e"]["ok"]
             st["full_e2e_failed_tests"] = gates["e2e"].get("failed_tests", [])
         gates_ok = all(g["ok"] for g in gates.values())
@@ -2586,13 +2616,14 @@ def cmd_step(p: Project, a) -> None:
 
     elif a.step == "full-e2e":
         # the whole e2e suite, once Review, QA, UI and Security have passed
-        g = e2e_run(p, tid, rnd, p.commands("e2e"), "e2e")
+        g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
         st["full_e2e_failed"] = not g["ok"]
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
         guard(p, ck, lambda path, status: "test run artifact")
         rerun = ("the next round runs the failed tests in QA's check and the whole suite again after Security"
                  if p.e2e_failed_commands(st["full_e2e_failed_tests"]) else "the next round runs it again in QA")
-        extra = [f"- Whole e2e suite: {'✓' if g['ok'] else f'✗ - back to Dev; {rerun}'}"]
+        level = " (the quick level; every width at the end of the milestone)" if p.e2e_quick_commands() else ""
+        extra = [f"- Whole e2e suite{level}: {'✓' if g['ok'] else f'✗ - back to Dev; {rerun}'}"]
         extra += [f"- Failed: {t}" for t in st["full_e2e_failed_tests"][:30]]
         extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
@@ -3018,6 +3049,8 @@ def main() -> None:
     s = sub.add_parser("wait")
     s.add_argument("id")
     s.add_argument("--timeout", type=int, default=540)
+    s = sub.add_parser("milestone-e2e", help="the whole e2e suite at every width at the end of a milestone (two levels)")
+    s.add_argument("milestone")
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
@@ -3037,7 +3070,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "stall": cmd_stall, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":
