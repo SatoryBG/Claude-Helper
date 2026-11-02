@@ -63,7 +63,8 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
 
 ## 3. When the workflow finishes
 Summarise the result:
-- finished tasks (with the number of rounds, whether they were pushed, and the staging URL);
+- finished tasks (with the number of rounds, whether they were pushed, and the preview URL - or the staging
+  URL when there is no preview);
 - blocked tasks with the reason → `/satory-devteam:status` to answer them;
 - `stopped_on_error`, if any: show the error and propose a fix;
 - remaining tasks and what they wait for;

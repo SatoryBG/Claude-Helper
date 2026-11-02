@@ -92,7 +92,10 @@ Set `ui.review` to `true` for projects with a UI and staging (it turns on the UI
 workflow), otherwise `false` (a missing value counts as `true`).
 
 For web apps and services also add `deploy` (`image`, `build`, `environments.staging/prod` with `url`,
-`health`, `up`). For libraries and CLI tools leave `deploy` empty. The commands do not work yet:
+`health`, `up`). Add `environments.preview` too (the user's own copy of the app, updated after every task,
+its data kept: like prod - no test API, no stubs - on its own port and compose project, with `backup` and
+`restore` commands for its data), and set `"ephemeral": true` on staging (it is then created for a task's
+rounds and removed after it). For libraries and CLI tools leave `deploy` empty. The commands do not work yet:
 task T-001 (devops) makes them work and may correct them.
 
 ## 6. Plan: `.satory/plan.json`

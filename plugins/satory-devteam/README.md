@@ -192,6 +192,30 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 `.satory/project.json` (default 90). A command that runs longer is stopped and the check fails with
 "timeout after N s" at the end of its log: raise the limit when the e2e suite has grown past it.
 
+### Environments: staging for the tests, preview for you
+
+`staging` is where the agents and the tests work; the tests reset its database all the time. `preview`
+(optional) is your own copy of the app, to look at the progress and to keep your data:
+
+```json
+"environments": {
+  "staging": {"url": "http://localhost:8082", "health": "/health", "ephemeral": true, "up": "docker compose -p app-staging … up -d"},
+  "preview": {"url": "http://localhost:8081", "health": "/health", "up": "docker compose -p app-preview … up -d",
+              "backup": "…copy the data to {dir}/{stamp}…", "restore": "…copy {dir}/{stamp} back…", "keep_backups": 10},
+  "prod": {"…": "…"}
+}
+```
+
+- **preview** is updated with main after every finished task (the image is built once, from main). Its data
+  stays: before the update `backup` runs (with `SATORY_PREVIOUS_IMAGE` set, `{stamp}` and `{dir}` =
+  `.satory/run/backups/preview` filled in; the last `keep_backups` are kept); when the new image does not
+  start or is not healthy, `restore` puts that backup back and the previous image runs again, and the
+  progress log says so. No agent and no test uses preview; give it no test API. `satory env status preview`.
+- **staging** with `"ephemeral": true` exists only while it is needed: it is created with a fresh database
+  for every round of a task (pre-qa), for a review of the running app between two tasks (`satory env ensure
+  staging`, the image of main), and removed (`down -v`, or its own `down` command) when the task is done or
+  blocked, after a release and when the build ends. Without it staging keeps running as before.
+
 ### The whole e2e suite in parallel
 
 When the e2e tests share one database on staging, they run one after another, and a large suite takes
@@ -398,6 +422,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.18** - a preview environment for the user and an ephemeral staging for the tests: `preview` is updated
+  with main after every task, its data kept, with a backup before each update and the previous image and
+  backup restored when the new one does not start; `staging` with `"ephemeral": true` gets a fresh database
+  for every round and is removed after the task, a release and the build; `satory env ensure|down|status`;
+  the agents are told never to use preview.
 - **1.6.17** - the whole e2e suite in parallel (`e2e_parallel`): N shards at once, each against its own copy
   of staging (own compose project and database, ports from base + shard number), with N chosen
   automatically from the CPUs, the free memory and the measured runs (fastest seconds per test without

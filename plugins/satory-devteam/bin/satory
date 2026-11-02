@@ -978,6 +978,139 @@ def wait_health(url: str) -> bool:
     return False
 
 
+# ----------------------------------------------------------- environments ---
+# staging is where the agents and the tests work: with "ephemeral": true it exists only while it is needed
+# (a task's round, a review of the running app) and is removed after the task, with its database. preview,
+# when configured, is the user's own copy of the app: updated with main after every finished task, its data
+# kept, a backup taken before every update, and the previous image and backup restored when the new one does
+# not start. No agent and no test ever uses preview.
+
+def env_cfg(p: Project, name: str) -> dict:
+    return ((p.config.get("deploy") or {}).get("environments") or {}).get(name) or {}
+
+
+def staging_ephemeral(p: Project) -> bool:
+    return env_cfg(p, "staging").get("ephemeral") is True
+
+
+def compose_down(up_cmds: list[str]) -> list[str]:
+    """`docker compose … up …` → `docker compose … down -v --remove-orphans`; [] for anything else."""
+    out = []
+    for c in up_cmds:
+        if not re.search(r"\scompose\s", " " + c) or not re.search(r"\sup(\s|$)", c):
+            return []
+        out.append(re.sub(r"\s+up(\s.*)?$", " down -v --remove-orphans", c))
+    return out
+
+
+def env_down(p: Project, name: str, label: str = "") -> dict:
+    e = env_cfg(p, name)
+    cmds = as_list(e.get("down")) or compose_down(as_list(e.get("up")))
+    if not cmds:
+        return {"ok": True, "skipped": True}
+    image = ((p.state.get("deploy") or {}).get(name) or {}).get("image") or ""
+    r = run_cmds(p, cmds, p.logs / f"down-{name}-{label or now('%Y%m%d-%H%M%S')}.log",
+                 dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=name))
+    if r["ok"]:
+        p.state.setdefault("deploy", {}).setdefault(name, {})["down"] = now()
+        p.save_state()
+    return r
+
+
+def staging_down_if_ephemeral(p: Project, label: str) -> None:
+    if staging_ephemeral(p):
+        env_down(p, "staging", label)
+
+
+def staging_ensure(p: Project) -> dict:
+    """An ephemeral staging with the image of main, for a step between two tasks that looks at the running app
+    (a UX review, the design step, the whole suite at every width). Skipped for a staging that always runs."""
+    if not staging_ephemeral(p) or not env_cfg(p, "staging"):
+        return {"ok": True, "skipped": True}
+    d = p.state.get("deploy") or {}
+    image = d.get("main_image")
+    cur = d.get("staging") or {}
+    e = env_cfg(p, "staging")
+    url = e["url"].rstrip("/") + e.get("health", "")
+    if image and cur.get("image") == image and not cur.get("down") and wait_health_quick(url):
+        return {"ok": True, "url": e["url"], "image": image, "reused": True}
+    return deploy(p, "staging", image=image, label="main")
+
+
+def wait_health_quick(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return 200 <= r.status < 400
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def deploy_preview(p: Project, image: str, label: str) -> dict:
+    """Update preview to `image`, keeping its data: a backup first (when it already runs and "backup" is set),
+    then up and the health check; on failure the backup and the previous image come back."""
+    e = env_cfg(p, "preview")
+    if not e:
+        return {"ok": True, "skipped": True}
+    prev = ((p.state.get("deploy") or {}).get("preview") or {})
+    prev_image = prev.get("image") if prev.get("healthy") else prev.get("previous")
+    bdir = p.run / "backups" / "preview"
+    stamp = now("%Y%m%d-%H%M%S")
+    fill = lambda c: c.replace("{stamp}", stamp).replace("{dir}", str(bdir))
+    backup = None
+    if prev_image and e.get("backup"):
+        bdir.mkdir(parents=True, exist_ok=True)
+        env = dict(p.env(), SATORY_IMAGE=prev_image, SATORY_PREVIOUS_IMAGE=prev_image, SATORY_ENV="preview")
+        backup = run_cmds(p, [fill(c) for c in as_list(e["backup"])], p.logs / f"preview-backup-{stamp}.log", env)
+        if not backup["ok"]:
+            progress(p, f"⚠ preview: the backup failed ({backup['log']}) - preview is not updated")
+            return {"ok": False, "stage": "backup", "log": backup["log"], "url": e.get("url")}
+        keep = int(e.get("keep_backups", 10))
+        olds = sorted(x for x in bdir.iterdir() if x.name[:8].isdigit())
+        for old in olds[:-keep] if keep > 0 else []:
+            shutil.rmtree(old, ignore_errors=True) if old.is_dir() else old.unlink(missing_ok=True)
+    res = deploy(p, "preview", image=image, label=label)
+    if res.get("ok") or not prev_image:
+        res["backup"] = stamp if backup else None
+        return res
+    # the new image does not start: the data as it was, the previous image
+    if backup and e.get("restore"):
+        env = dict(p.env(), SATORY_IMAGE=prev_image, SATORY_PREVIOUS_IMAGE=prev_image, SATORY_ENV="preview")
+        run_cmds(p, [fill(c) for c in as_list(e["restore"])], p.logs / f"preview-restore-{stamp}.log", env)
+    back = deploy(p, "preview", image=prev_image, label=f"rollback-{stamp}")
+    progress(p, f"⚠ preview: {image} did not start ({res.get('stage')}, {res.get('log')}) - "
+                f"back to {prev_image}{' and the backup ' + stamp if backup else ''}")
+    return {**res, "rolled_back": back.get("ok", False), "kept_image": prev_image, "backup": stamp if backup else None}
+
+
+def build_main_image(p: Project, label: str) -> dict:
+    """Build the image of HEAD (main) once, for preview and staging; {"ok", "image", "log"}."""
+    d = p.config.get("deploy") or {}
+    sha = p.git("rev-parse", "--short=12", "HEAD")
+    image = f"{d['image']}:{sha}"
+    log = p.logs / f"build-{label}.log"
+    built = run_cmds(p, as_list(d.get("build")), log, dict(p.env(), SATORY_IMAGE=image))
+    return {"ok": built["ok"], "image": image, "log": built.get("log")}
+
+
+def cmd_env(p: Project, a) -> None:
+    """satory env ensure|down|status <staging|preview>."""
+    if a.action == "ensure":
+        if a.env != "staging":
+            raise SatoryError("env ensure is for staging (preview is updated when a task finishes)")
+        return emit(staging_ensure(p))
+    if a.action == "down":
+        if a.env == "preview" and not a.force:
+            raise SatoryError("preview holds the user's data: env down preview needs --force")
+        if a.env == "staging" and not staging_ephemeral(p) and not a.force:
+            return emit({"ok": True, "skipped": True, "reason": "staging is not ephemeral: it keeps running"})
+        return emit(env_down(p, a.env, "manual"))
+    e = env_cfg(p, a.env)
+    st = (p.state.get("deploy") or {}).get(a.env) or {}
+    url = (e.get("url") or "").rstrip("/") + e.get("health", "")
+    emit({"ok": True, "env": a.env, "configured": bool(e), "ephemeral": e.get("ephemeral") is True,
+          "url": e.get("url"), "running": bool(e) and wait_health_quick(url), **st})
+
+
 # ----------------------------------------------------------- parallel e2e ---
 # The whole e2e suite in N shards at once, each against its own copy of staging (its own database), when
 # "e2e_parallel" is set in .satory/project.json. The staging "up" command is run N times with its compose
@@ -1299,6 +1432,9 @@ def cmd_milestone_e2e(p: Project, a) -> None:
     Run on main between two tasks; a failure lists the failed tests for the regression task of the workflow."""
     if not p.e2e_quick_commands():
         return emit({"ok": True, "skipped": True, "milestone": a.milestone})
+    up = staging_ensure(p)
+    if not up.get("ok"):
+        return emit({"ok": False, "milestone": a.milestone, "error": f"staging does not start: {up.get('log')}"})
     g = e2e_run(p, a.milestone, 0, p.commands("e2e"), "e2e-every-width", whole=True)
     failed = g.get("failed_tests", [])
     progress(p, f"{'✓' if g['ok'] else '✗'} {a.milestone}: whole e2e suite at every width"
@@ -2749,6 +2885,8 @@ def cmd_step(p: Project, a) -> None:
               "context_error": refresh_context(p, tid)})
 
     elif a.step == "pre-qa":
+        if staging_ephemeral(p):  # a fresh database for every round
+            env_down(p, "staging", f"{tid}-r{rnd}-before")
         res = deploy(p, "staging", label=f"{tid}-r{rnd}")
         emit(res)
 
@@ -2976,16 +3114,35 @@ def cmd_task_finish(p: Project, a) -> None:
         pushed = push_error is None
         if pushed and p.git_ok("ls-remote", "--exit-code", "--heads", "origin", branch):
             push_quiet(p, "origin", "--delete", branch)  # the copy of the work in progress is merged
-    staging = deploy(p, "staging", label=f"main-{commit[:12]}")
-    if not staging.get("skipped"):
-        p.state.setdefault("deploy", {})["main_image"] = staging.get("image")
-        p.state["deploy"]["main_sha"] = commit
-        p.save_state()
-    progress(p, f"✓ {tid} done in {st['rounds']} round(s) ({commit[:7]}){', pushed' if pushed else ''}"
-                f"{', staging updated' if staging.get('ok') and not staging.get('skipped') else ''}"
+    preview: dict = {"skipped": True}
+    if env_cfg(p, "preview") or staging_ephemeral(p):
+        built = build_main_image(p, f"main-{commit[:12]}")
+        if not built["ok"]:
+            staging = {"ok": False, "stage": "build", "log": built["log"]}
+        else:
+            if env_cfg(p, "preview"):
+                preview = deploy_preview(p, built["image"], f"main-{commit[:12]}")
+            if staging_ephemeral(p):
+                env_down(p, "staging", f"{tid}-done")
+                staging = {"ok": True, "skipped": True, "ephemeral": True, "image": built["image"]}
+            else:
+                staging = deploy(p, "staging", image=built["image"], label=f"main-{commit[:12]}")
+            p.state.setdefault("deploy", {})["main_image"] = built["image"]
+            p.state["deploy"]["main_sha"] = commit
+            p.save_state()
+    else:
+        staging = deploy(p, "staging", label=f"main-{commit[:12]}")
+        if not staging.get("skipped"):
+            p.state.setdefault("deploy", {})["main_image"] = staging.get("image")
+            p.state["deploy"]["main_sha"] = commit
+            p.save_state()
+    updated = ", preview updated" if preview.get("ok") and not preview.get("skipped") else (
+        ", preview NOT updated" if not preview.get("skipped") else "")
+    updated += ", staging updated" if staging.get("ok") and not staging.get("skipped") else ""
+    progress(p, f"✓ {tid} done in {st['rounds']} round(s) ({commit[:7]}){', pushed' if pushed else ''}{updated}"
                 f" - {done_count(p, plan)}")
     emit({"ok": True, "commit": commit, "violations": violations, "pushed": pushed,
-          "push_error": push_error, "staging": staging})
+          "push_error": push_error, "staging": staging, "preview": preview})
 
 
 def cmd_task_block(p: Project, a) -> None:
@@ -3006,6 +3163,7 @@ def cmd_task_block(p: Project, a) -> None:
     p.git("add", "-A")
     p.git("commit", "-q", "-m", f"chore(plan): {tid} is blocked\n\n{TRAILER}")
     p.save_state()
+    staging_down_if_ephemeral(p, f"{tid}-blocked")
     emit({"ok": True, "task": tid, "branch_kept": st["branch"]})
 
 
@@ -3078,6 +3236,7 @@ def cmd_release(p: Project, a) -> None:
             return
         image = staging.get("image")
     prod = deploy(p, "prod", image=image, label=f"v{version}")
+    staging_down_if_ephemeral(p, f"release-{version}")
     pushed = None
     if p.git_ok("remote", "get-url", "origin"):
         pushed = p.git("push", "-q", "--follow-tags", "origin", p.main, check=False).returncode == 0
@@ -3499,12 +3658,16 @@ def main() -> None:
     s.add_argument("--interval", type=float, default=5)
     s.add_argument("--step-minutes", type=float, default=2, help="report a CLI step once it has run this long")
 
+    s = sub.add_parser("env", help="staging and preview: ensure (staging), down, status")
+    s.add_argument("action", choices=["ensure", "down", "status"])
+    s.add_argument("env", choices=["staging", "preview"])
+    s.add_argument("--force", action="store_true", help="down preview (it holds the user's data)")
     sub.add_parser("parallel", help="the parallel e2e setting: shards for the next whole suite, why, the measured runs")
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
     s = sub.add_parser("deploy")
-    s.add_argument("env", choices=["staging", "prod"])
+    s.add_argument("env", choices=["staging", "preview", "prod"])
     s.add_argument("--image")
     s = sub.add_parser("release")
     s.add_argument("--version", required=True)
@@ -3519,7 +3682,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "parallel": cmd_parallel, "watch": cmd_watch, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":
