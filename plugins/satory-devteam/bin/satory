@@ -275,6 +275,8 @@ class Project:
         staging = self.config.get("deploy", {}).get("environments", {}).get("staging")
         if staging:
             env["SATORY_BASE_URL"] = staging["url"]
+            # more variables the tests need to reach staging (e.g. the URL of a stub): "env" of staging
+            env.update({k: str(v) for k, v in (staging.get("env") or {}).items()})
         return env
 
     # git

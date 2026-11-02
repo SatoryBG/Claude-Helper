@@ -215,6 +215,10 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
   for every round of a task (pre-qa), for a review of the running app between two tasks (`satory env ensure
   staging`, the image of main), and removed (`down -v`, or its own `down` command) when the task is done or
   blocked, after a release and when the build ends. Without it staging keeps running as before.
+- `env` of staging: more variables for the checks and the tests besides `SATORY_BASE_URL` (e.g.
+  `{"MARKET_STUB_URL": "http://localhost:8182"}`), so that test defaults never point anywhere else.
+- Ports in order: preview on the familiar port (e.g. 8081), staging on the next (8082), the parallel copies
+  after it (`e2e_parallel.ports` base 8082: 8083, 8084 …), the stubs 100 higher (8182, 8183 …).
 
 ### The whole e2e suite in parallel
 
@@ -422,6 +426,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.19** - `env` of staging: more variables for the checks and the tests (e.g. the URL of a stub), so
+  that ports can be laid out in order (preview, staging, the parallel copies) without relying on test defaults.
 - **1.6.18** - a preview environment for the user and an ephemeral staging for the tests: `preview` is updated
   with main after every task, its data kept, with a backup before each update and the previous image and
   backup restored when the new one does not start; `staging` with `"ephemeral": true` gets a fresh database
