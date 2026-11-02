@@ -69,12 +69,14 @@ It is on by default (it runs for projects with a staging environment); `"ui": { 
 
 The CLI writes one line per event to `.satory/run/progress.log` (gitignored): a task starts, a stage of
 a round ends with its verdict, a task is done or blocked, new questions, plan and queue changes.
-- `/satory-devteam:build` follows that file with a monitor and reports each event in the conversation in
-  a short line, while the session is open.
+- `/satory-devteam:build` follows the build with a monitor (`satory watch`: the lines of that file, and a
+  line when an agent of the build starts or a CLI step has run for 2 minutes) and reports each event in
+  the conversation in a short line, while the session is open.
 - `satory statusline` turns it into the Claude Code status line, e.g.
-  `satory 29/41 · ▶ T-014 r3 · 17:40 ✓ T-014 r3 e2e: pass · 🧪 e2e 5237/5757 (91%) · AC 93/201 tested (46%) ·
-  9109 tests · ❓3 · 🗂1` (tasks done, the task and round in progress, the last event, how far a running e2e
-  check is, the acceptance criteria with a test of all of them and the number of tests from the coverage
+  `satory 29/41 · ▶ T-014 r3 · qa 12m + ui 10m · 17:40 ✓ T-014 r3 review: approve · 🧪 e2e 5237/5757 (91%) ·
+  AC 93/201 tested (46%) · 9109 tests · ❓3 · 🗂1` (tasks done, the task and round in progress, what runs now
+  and for how long - the stage agents, else the CLI step they wait on (⚙), or the planner or a milestone
+  review between tasks (`Planning: plan 81 answer(s) 4m`) - the last event, how far a running e2e check is, the acceptance criteria with a test of all of them and the number of tests from the coverage
   register, open questions, queued changes). `/satory-devteam:setup` offers to add it
   to `~/.claude/settings.json`; outside a satory project it prints nothing. The text is bright cyan;
   `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `97` white, `""` for the terminal's own).
@@ -365,6 +367,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.15** - you see what the build does now: the status line shows the agents that run and for how long
+  (`▶ T-014 r3 · qa 12m + ui 10m`, `Planning: plan 81 answer(s) 4m`, `⚙ full e2e 41m` while a step runs),
+  from the journals of the workflow; `satory status` lists them in `running`; the build skill follows the
+  build with `satory watch`, which adds a line when an agent starts (▷) or a CLI step has run for 2 minutes
+  (⚙) to the events of the progress log.
 - **1.6.14** - the status line shows how far a running e2e check is (`🧪 e2e 5237/5757 (91%)`, from its log)
   and the coverage: the acceptance criteria with a test of all of them and the number of tests
   (`AC 93/201 tested (46%) · 9109 tests`); `/satory-devteam:status` gives the same numbers.

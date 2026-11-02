@@ -14,6 +14,8 @@ Talk to the user in the language they write in.
 
 1. `$SATORY status` and `$SATORY plan json`. Show briefly:
    - how many tasks are done, in progress, blocked and to do, and which one is next;
+   - what runs now: `running` in the status (the agents of the build and how many minutes each has run;
+     `runner` marks a CLI step such as a check) and `e2e_progress` when an e2e check runs;
    - what happened last: `tail -n 10 .satory/run/progress.log` (one line per event of the build);
    - staging and prod (URL, image, when), the remote;
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);

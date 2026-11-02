@@ -40,10 +40,12 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
      a local edit): Claude Code loads the agent definitions once per session, so without it the agents
      would follow their old rules. The roles are then read from `agentsDir`.
 3. Follow the progress in the conversation: start the **Monitor** tool with
-   `command` = `tail -n 0 -F <root>/.satory/run/progress.log 2>/dev/null`, `description` = "satory build
-   progress" and `timeout_ms` = 1800000. The CLI writes one line per event there: a task starts (▶), a
-   stage of a round ends (✓/✗ with the stage and round), a task is done (✓ … done in N round(s)) or
-   blocked (⛔), new questions (❓), plan and queue changes (🗂).
+   `command` = `python3 <bin> --project <root> watch`, `description` = "satory build progress" and
+   `timeout_ms` = 1800000. It prints one line per event: a task starts (▶), a stage of a round ends (✓/✗
+   with the stage and round), a task is done (✓ … done in N round(s)) or blocked (⛔), new questions (❓),
+   plan and queue changes (🗂) - the lines of `.satory/run/progress.log` - and an agent of the build starts
+   (▷ with its label: Dev, QA, the planner, a milestone review…) or a CLI step has run for 2 minutes
+   (⚙: a check, the e2e suite, a deploy).
    - On each event, write the user one short line in their language (what happened, in plain words; no
      tool calls needed). Several events that arrive together are one line or a few short bullets.
    - When the monitor expires and the workflow is still running, start it again the same way.

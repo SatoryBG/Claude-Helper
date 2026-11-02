@@ -2881,6 +2881,8 @@ def cmd_status(p: Project, a) -> None:
                         "critical_open": sum(q["status"] == "open" and q["severity"] == "critical"
                                              for q in questions_load(p)["items"]),
                         "deferred": sum(q["status"] == "deferred" for q in questions_load(p)["items"])},
+          "running": [{k: x[k] for k in ("label", "phase", "minutes", "runner")} for x in workflow_agents(p)],
+          "e2e_progress": e2e_progress(p) or None,
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 
 
@@ -2905,6 +2907,110 @@ def e2e_progress(p: Project, fresh: float = 120) -> str:
     return f"🧪 e2e {done}/{total} ({round(100 * done / total) if total else 0}%)"
 
 
+JOURNAL_REC = re.compile(r'^\{"type":"(started|result)","key":"([^"]+)"')
+
+
+def workflow_agents(p: Project, stale: float = 1800) -> list[dict]:
+    """The agents of the build that run now, oldest first: a "started" record in the journal of a workflow of
+    this project with no "result" yet. An agent whose transcript was not written for `stale` seconds is left
+    out (a stopped workflow leaves its last agents "started"). Runner steps have `runner` true."""
+    base = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(p.root))
+    if not base.is_dir():
+        return []
+    now, out = time.time(), []
+    for j in base.glob("*/subagents/workflows/*/journal.jsonl"):
+        try:
+            if now - j.stat().st_mtime > 86400:
+                continue
+            started: dict[str, dict] = {}
+            with open(j, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = JOURNAL_REC.match(line)  # results carry whole outputs: parse only the small "started"
+                    if not m:
+                        continue
+                    if m.group(1) == "result":
+                        started.pop(m.group(2), None)
+                    else:
+                        try:
+                            started[m.group(2)] = json.loads(line)
+                        except ValueError:
+                            pass
+        except OSError:
+            continue
+        for d in started.values():
+            aid = d.get("agentId", "")
+            try:
+                last = (j.parent / f"agent-{aid}.jsonl").stat().st_mtime
+                begun = (j.parent / f"agent-{aid}.meta.json").stat().st_mtime
+            except OSError:
+                continue
+            if now - last > stale:
+                continue
+            label = str(d.get("label", ""))
+            runner = label.startswith("satory ")
+            if runner:  # "satory wait e2e T-017 r3 (2)" -> "e2e T-017 r3"
+                label = re.sub(r"\s*\(\d+\)$", "", label[7:])
+                label = label[5:] if label.startswith("wait ") else label
+            out.append({"id": aid, "label": label, "phase": str(d.get("phase", "")), "runner": runner,
+                        "started": begun, "minutes": int((now - begun) // 60)})
+    return sorted(out, key=lambda x: x["started"])
+
+
+def took(minutes: int) -> str:
+    return f"{minutes}m" if minutes < 60 else f"{minutes // 60}h{minutes % 60:02d}"
+
+
+def activity(p: Project, running: list[str]) -> str:
+    """What the build does now, for the status line: the stage agents (Dev, QA and UI side by side, the
+    planner, a milestone review) with how long they run, else the CLI step a runner waits on (a check, a
+    deploy). The task and round already shown are left out of the labels."""
+    agents = workflow_agents(p)
+    shown = [x for x in agents if not x["runner"]] or agents[-1:]
+    if not shown:
+        return ""
+    def name(x: dict) -> str:
+        label = x["label"]
+        mine = not re.search(r"\bT-\d+", label)  # a planner, a milestone review: say which phase
+        for tid in running:
+            label = re.sub(rf"\s*{re.escape(tid)}(\s+r\d+)?", "", label)
+        if x["phase"] and not x["runner"] and mine:
+            label = f"{x['phase']}: {label}"
+        return f"{label.strip()} {took(x['minutes'])}"
+    return ("⚙ " if shown[0]["runner"] else "") + " + ".join(name(x) for x in shown)
+
+
+def cmd_watch(p: Project, a) -> None:
+    """The event stream of a running build, for the Monitor of the build skill: every new line of the
+    progress log, and a line when an agent of the build starts (▷) or a CLI step has run for a while (⚙).
+    Runs until stopped."""
+    pos = p.progress_path.stat().st_size if p.progress_path.exists() else 0
+    seen = {x["id"] for x in workflow_agents(p)}
+    while True:
+        lines = []
+        if p.progress_path.exists():
+            size = p.progress_path.stat().st_size
+            if size < pos:
+                pos = 0
+            if size > pos:
+                with open(p.progress_path, "rb") as f:
+                    f.seek(pos)
+                    chunk = f.read()
+                cut = chunk.rfind(b"\n") + 1  # only whole lines; the rest is read next time
+                pos += cut
+                lines += chunk[:cut].decode("utf-8", "replace").splitlines()
+        for x in workflow_agents(p):
+            if x["id"] in seen or (x["runner"] and x["minutes"] < a.step_minutes):
+                continue
+            seen.add(x["id"])
+            at = time.strftime("%H:%M", time.localtime(x["started"]))
+            lines.append(f"{at} ⚙ {x['label']} running ({took(x['minutes'])})" if x["runner"]
+                         else f"{at} ▷ {x['label']} started" + (f" ({x['phase']})" if x["phase"] else ""))
+        for line in lines:
+            if line.strip():
+                print(line, flush=True)
+        time.sleep(a.interval)
+
+
 def cmd_statusline(a) -> None:
     """One plain line for the Claude Code status line. Claude Code passes the session as JSON on stdin;
     outside a satory project, or on any error, it prints nothing (the status line must never break)."""
@@ -2922,6 +3028,9 @@ def cmd_statusline(a) -> None:
         running = list(p.state.get("tasks", {}))
         for tid in running:
             parts.append(f"▶ {tid} r{p.state['tasks'][tid].get('rounds', 0)}")
+        now_doing = activity(p, running)
+        if now_doing:
+            parts.append(now_doing)
         blocked = sum(t.get("status") == "blocked" for t in tasks)
         if blocked:
             parts.append(f"⛔{blocked}")
@@ -3140,6 +3249,10 @@ def main() -> None:
     s.add_argument("--timeout", type=int, default=540)
     s = sub.add_parser("milestone-e2e", help="the whole e2e suite at every width at the end of a milestone (two levels)")
     s.add_argument("milestone")
+    s = sub.add_parser("watch", help="the events of a running build, one line each, until stopped (for the Monitor)")
+    s.add_argument("--interval", type=float, default=5)
+    s.add_argument("--step-minutes", type=float, default=2, help="report a CLI step once it has run this long")
+
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
@@ -3159,7 +3272,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "watch": cmd_watch, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":
