@@ -363,6 +363,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.13** - the whole e2e suite can no longer be skipped silently: the CLI remembers that it is due after
+  QA's check ran only the task's tests (`full_e2e_due`), the workflow calls `step full-e2e` every round and
+  the CLI runs it or reports it was not needed, and `task finish` refuses a task whose whole suite is still
+  due. Before, the workflow decided from the after-qa output relayed by the runner; one relayed without the
+  scope let a task finish with only its own e2e tests, and the next task found 300+ failing tests.
 - **1.6.12** - the two levels of e2e tests are the default: the widest Playwright project is found by listing
   the projects (without installing anything), and `"e2e_quick_projects": false` turns them off. 1.6.11 turned
   them on only with a setting.

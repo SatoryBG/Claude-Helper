@@ -2623,6 +2623,12 @@ def cmd_step(p: Project, a) -> None:
             gates["e2e"] = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
             st["full_e2e_failed"] = not gates["e2e"]["ok"]
             st["full_e2e_failed_tests"] = gates["e2e"].get("failed_tests", [])
+        # the CLI, not the workflow, remembers that the whole suite is still due: the workflow learns it
+        # from this output through the runner, which may relay it incompletely
+        if gates["e2e"].get("scope") == "task":
+            st["full_e2e_due"] = rnd
+        else:
+            st.pop("full_e2e_due", None)
         gates_ok = all(g["ok"] for g in gates.values())
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
@@ -2660,8 +2666,13 @@ def cmd_step(p: Project, a) -> None:
         emit({"ok": all(s["ok"] or s.get("missing_tool") for s in scans), "scans": scans})
 
     elif a.step == "full-e2e":
-        # the whole e2e suite, once Review, QA, UI and Security have passed
+        # the whole e2e suite, once Review, QA, UI and Security have passed - when QA's check ran only this
+        # task's tests; the workflow calls this step every round and the CLI decides
+        if st.get("full_e2e_due") is None:
+            return emit({"ok": True, "skipped": True, "gates": {},
+                         "reason": "the whole e2e suite already ran in QA's check of this round"})
         g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e")
+        st.pop("full_e2e_due", None)
         st["full_e2e_failed"] = not g["ok"]
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
         guard(p, ck, lambda path, status: "test run artifact")
@@ -2709,6 +2720,9 @@ def cmd_task_finish(p: Project, a) -> None:
     tid = a.task
     st = p.task_state(tid)
     main_unchanged(p, st, tid)
+    if st.get("full_e2e_due") is not None:
+        raise SatoryError(f"{tid}: the whole e2e suite has not run since QA's check of round {st['full_e2e_due']} "
+                          f"(only this task's tests did) - run `step full-e2e {tid} --round {st['full_e2e_due']}` first")
     plan = p.plan()
     t = p.task(plan, tid)
     note = read_note(a)

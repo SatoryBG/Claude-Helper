@@ -1189,8 +1189,10 @@ async function runTask(t) {
       continue
     }
 
-    // ---- Full e2e (QA ran only this task's e2e tests and the smoke tests) ----
-    if (aq.gates && aq.gates.e2e && aq.gates.e2e.scope === 'task') {
+    // ---- Full e2e (when QA ran only this task's e2e tests and the smoke tests) ----
+    // called every round: the CLI knows whether the whole suite is due (a runner may relay the after-qa
+    // output incompletely)
+    {
       const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
       flakyLog(full.gates, tag)
