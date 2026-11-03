@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.3** - a note keeps every command on one line: a line break (and any control character) goes as `'$'\\xHH''`
+  between single-quoted pieces. A note with real line breaks reached the runner indented, the runner removed the
+  indent as markdown, and every part failed its cksum.
 - **1.7.2** - a note longer than 1,200 characters is not copied in one go: it is written in parts, each with its own
   cksum and resent until it arrives exactly, into `.satory/run/notes/`, and the command reads that file after a cksum
   of the whole. A QA summary of several kilobytes came back changed from the runner three times in a row and stopped

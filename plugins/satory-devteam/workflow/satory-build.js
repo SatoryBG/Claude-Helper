@@ -512,8 +512,14 @@ function cksum(bytes) {  // what `printf %s "$X" | cksum` prints: "<crc> <length
   for (let n = bytes.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
   return `${(~crc) >>> 0} ${bytes.length}`
 }
+// bash single quotes on one line: an apostrophe as '\'' and every control character (a new line above all) as
+// '$'\xHH'' - a note with real line breaks reached the runner indented, and it removed the indent as markdown
+function quote1(text) {
+  return "'" + text.replace(/'/g, "'\\''").replace(/[\x00-\x1f\x7f]/g,
+    c => "'$'\\x" + c.charCodeAt(0).toString(16).padStart(2, '0') + "''") + "'"
+}
 function withNote(full, note) {
-  const quoted = "'" + note.replace(/'/g, "'\\''") + "'"
+  const quoted = quote1(note)
   return `SATORY_NOTE=${quoted}; if [ "$(printf %s "$SATORY_NOTE" | cksum)" = "${cksum(utf8Bytes(note))}" ]; then ` +
     `${full} --note-stdin <<< "$SATORY_NOTE"; ` +
     `else echo '{"ok":false,"note_corrupted":true,"error":"the note was not copied exactly"}'; fi`
@@ -533,7 +539,7 @@ async function noteFile(note, phase, label) {
   for (let i = 0; i < chars.length; i += NOTE_PART) parts.push(chars.slice(i, i + NOTE_PART).join(''))
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
-    const quoted = "'" + part.replace(/'/g, "'\\''") + "'"
+    const quoted = quote1(part)
     const cmd = `mkdir -p ${dir} && ${i === 0 ? `rm -f ${file} && ` : ''}SATORY_PART=${quoted}; ` +
       `if [ "$(printf %s "$SATORY_PART" | cksum)" = "${cksum(utf8Bytes(part))}" ]; then printf %s "$SATORY_PART" >> ${file} && ` +
       `echo '{"ok":true}'; else echo '{"ok":false,"note_corrupted":true}'; fi`
