@@ -534,9 +534,20 @@ let NOTE_SEQ = 0
 async function noteFile(note, phase, label) {
   const dir = `${q(PROJECT)}/.satory/run/notes`
   const file = `${dir}/${++NOTE_SEQ}-${String(label || 'note').replace(/[^\w.-]/g, '-').slice(0, 40)}`
+  // parts end at a space or a line break, never inside a word: a part cut as "(_ot" came back as "(_other)…" -
+  // the runner completed what looked like truncated text
   const chars = Array.from(note)
   const parts = []
-  for (let i = 0; i < chars.length; i += NOTE_PART) parts.push(chars.slice(i, i + NOTE_PART).join(''))
+  for (let i = 0; i < chars.length;) {
+    let end = Math.min(chars.length, i + NOTE_PART)
+    if (end < chars.length) {
+      let cut = end
+      while (cut > i + NOTE_PART / 2 && !/\s/.test(chars[cut - 1])) cut--
+      if (cut > i + NOTE_PART / 2) end = cut
+    }
+    parts.push(chars.slice(i, end).join(''))
+    i = end
+  }
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
     const quoted = quote1(part)

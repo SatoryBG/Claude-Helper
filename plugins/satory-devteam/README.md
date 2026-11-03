@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.8** - the parts of a long note end at a space or a line break, never inside a word: a part cut as "(_ot"
+  came back from the runner as "(_other)…" four times - it completed what looked like truncated text.
 - **1.7.7** - more failures in the parallel copies than the retry limit (an overloaded machine: tests time out)
   run once more one after another, and only those that fail again count; the others are recorded as contention
   (not flaky questions), so the next runs use fewer copies. Up to 400 failed tests are run again by name (was
