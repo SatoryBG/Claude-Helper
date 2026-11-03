@@ -449,6 +449,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.7** - more failures in the parallel copies than the retry limit (an overloaded machine: tests time out)
+  run once more one after another, and only those that fail again count; the others are recorded as contention
+  (not flaky questions), so the next runs use fewer copies. Up to 400 failed tests are run again by name (was
+  100). In AGC 3 copies of the whole staging failed 136 of 2,126 tests, nearly all on timeouts.
 - **1.7.6** - a line of "QA: adapted tests" may have a remark in brackets before the colon ("- `path` (round 11):
   reason"): QA wrote one, the line was not recognised, and the adapted test file was restored.
 - **1.7.5** - the checks and the tests get the host ports of the tests' copy in the variables the compose file

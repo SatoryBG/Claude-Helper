@@ -527,7 +527,7 @@ def pw_tail(cmd: str) -> bool:
     return bool(PW_TAIL.search(re.sub(r'"[^"]*"|\'[^\']*\'', '""', cmd)))
 # a failed test in the summary: "[project] › path/file.spec.ts:12:5 › title"
 E2E_LOC = re.compile(r"^\[([^\]]+)\] › (\S+?\.\w+):\d+:\d+ › (.+?)\s*$")
-E2E_FAILED_MAX = 100  # more failed tests than this: the next round runs the whole suite again
+E2E_FAILED_MAX = 400  # more failed tests than this: the next round runs the whole suite again
 E2E_COUNT = re.compile(r"^\s*(\d+) (passed|failed|flaky|skipped|did not run|interrupted)\b", re.M)
 E2E_FAILED = re.compile(r"^\s*\d+ failed\s*$(.*?)(?=^\s*\d+ (?:passed|flaky|skipped|did not run|interrupted)\b|^\[satory\]|\Z)",
                         re.M | re.S)
@@ -631,18 +631,36 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
         record(0)
         return res
     limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 3)) / 100))
-    if not failed or not total or failed > limit or len(names) != failed:
+    # many failures in the parallel copies are mostly the machine overloaded (timeouts): they all run once
+    # more, one after another, and only those that fail again count; how many passed then tells the next
+    # runs to use fewer copies (e2e_workers)
+    contention = sharded and failed > limit
+    if not failed or not total or (failed > limit and not contention) or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
         record(0)
         return res
     rlog = p.logs / f"{tid}-r{rnd}-{name}-retry.log"
+    if contention:
+        progress(p, f"↻ {tid} r{rnd} {name}: {failed} of {total} failed in {n} parallel copies - running them "
+                    f"again one after another (an overloaded machine makes tests time out)")
     again = run_cmds(p, retry, rlog, p.env(tid, rnd))
     res["retry_log"] = again["log"]
     if again["ok"]:
         res.update(ok=True, exit=0, flaky=names)
-        for test in names:
-            question_flaky(p, test, f"{name} {tid} r{rnd}", tid)
-    record(len(names) if again["ok"] else 0)
+        if not contention:  # under contention the tests are not flaky: the machine was
+            for test in names:
+                question_flaky(p, test, f"{name} {tid} r{rnd}", tid)
+        record(len(names))
+        return res
+    if contention:
+        still = e2e_failures(rlog)[2]
+        e2e_parallel_record(p, n, res["seconds"], res["tests"], max(0, len(names) - len(still)), len(still))
+        if still:
+            res["failed_tests"] = still
+            res["failed_count"] = len(still)
+        res["retry"] = f"{failed} failed in the copies, {len(still)} of them again one after another"
+        return res
+    record(0)
     return res
 
 
