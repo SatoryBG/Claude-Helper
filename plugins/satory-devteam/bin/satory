@@ -1069,7 +1069,34 @@ def wait_health(url: str) -> bool:
 # not start. No agent and no test ever uses preview.
 
 def env_cfg(p: Project, name: str) -> dict:
-    return ((p.config.get("deploy") or {}).get("environments") or {}).get(name) or {}
+    e = ((p.config.get("deploy") or {}).get("environments") or {}).get(name)
+    if name == "preview" and e is None:
+        return derived_preview(p)
+    return e or {}
+
+
+PREVIEW_PORT_OFFSET = 1000  # a preview read from staging: its ports are staging's + 1000 (8081 -> 9081)
+
+
+def derived_preview(p: Project) -> dict:
+    """The user's preview when deploy.environments has none: a copy of staging under its own compose project
+    (<name>-preview) on staging's ports + 1000, with the env-file values that point at a port moved too.
+    `"preview": false` in deploy.environments turns it off; none when staging's ports cannot be read."""
+    staging = ((p.config.get("deploy") or {}).get("environments") or {}).get("staging") or {}
+    if not staging.get("up"):
+        return {}
+    auto, _ = compose_parallel(p, staging)
+    if not auto:
+        return {}
+    proj = auto["project"]
+    name = (proj[: -len("-staging")] if proj.endswith("-staging") else proj) + "-preview"
+    vars_ = {k: str(v + PREVIEW_PORT_OFFSET) for k, v in auto["ports"].items()}
+    vars_["project"] = name
+    up = [re.sub(r"((?:^|\s)-p\s+)(\S+)", lambda m: f"{m.group(1)}{name}", c, count=1) for c in as_list(staging["up"])]
+    env = {**{k: v for k, v in vars_.items() if k != "project"},
+           **{k: shard_fill(x, vars_, 0) for k, x in auto["compose_env"].items()}}
+    return {"url": shard_fill(auto["env"]["SATORY_BASE_URL"], vars_, 0), "health": staging.get("health", ""),
+            "up": up, "vars": env, "derived": True}
 
 
 def staging_ephemeral(p: Project) -> bool:
@@ -1093,7 +1120,7 @@ def env_down(p: Project, name: str, label: str = "") -> dict:
         return {"ok": True, "skipped": True}
     image = ((p.state.get("deploy") or {}).get(name) or {}).get("image") or ""
     r = run_cmds(p, cmds, p.logs / f"down-{name}-{label or now('%Y%m%d-%H%M%S')}.log",
-                 dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=name))
+                 dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=name, **(e.get("vars") or {})))
     if r["ok"]:
         p.state.setdefault("deploy", {}).setdefault(name, {})["down"] = now()
         p.save_state()
@@ -1468,6 +1495,38 @@ def staging_memory_gb(cfg: dict) -> float:
     return total
 
 
+def pinned_tests(p: Project, cfg: dict, cmds: list[str]) -> tuple[list[str], list[str]]:
+    """The spec files of the e2e folder (the `cd` of the run command) split into those that name staging's own
+    ports or compose project literally - they can only pass against staging itself - and the rest, which the
+    copies share. Paths are relative to that folder; ([], []) when it cannot be told."""
+    folder = next((m.group(1) for c in cmds if (m := CD_DIR.match(c))), ".")
+    base = p.root / folder.strip("'\"")
+    if not base.is_dir():
+        return [], []
+    # a host port: after localhost/127.0.0.1/0.0.0.0, or alone in quotes ("8081"); not "mailpit:8025", which is
+    # a container's own port inside the compose network
+    marks = [rf"(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):{v}\b|[\"'`]{v}[\"'`]" for v in (cfg.get("ports") or {}).values()]
+    if cfg.get("project"):
+        marks.append(re.escape(cfg["project"]) + r"(?!-)")
+    mark = re.compile("|".join(marks)) if marks else None
+    pinned, rest = [], []
+    for f in sorted(base.rglob("*")):
+        if "node_modules" in f.parts or not f.is_file() or not re.search(r"\.(spec|test)\.[cm]?[jt]sx?$", f.name):
+            continue
+        rel = str(f.relative_to(base))
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        (pinned if mark and mark.search(text) else rest).append(rel)
+    return pinned, rest
+
+
+def pw_files(cmd: str, files: list[str]) -> str:
+    """The Playwright run limited to these spec files (its file filters are regular expressions)."""
+    return f"{cmd} " + " ".join(shlex.quote(re.escape(f) + "$") for f in files)
+
+
 def pw_split(cmd: str) -> tuple[str | None, str]:
     """A Playwright command "cd e2e && npm ci && npx playwright install chromium && npx playwright test …" as
     (its setup, run once before the shards; the test run of each shard, with the same cd)."""
@@ -1548,14 +1607,28 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
         return None
 
     t0 = time.time()
-    res: dict[int, dict] = {}
+    res: dict = {}
+    # spec files that name staging's own ports or project run against staging itself, beside the copies;
+    # the copies share the rest
+    pinned, rest = pinned_tests(p, cfg, cmds) if cfg.get("auto_ports") else ([], [])
+    if pinned and rest:
+        progress(p, f"⚡ {tid} r{rnd}: {len(pinned)} spec file(s) name staging's own ports or project - they run "
+                    f"against staging, the other {len(rest)} in the copies")
 
-    def run(i: int) -> None:
+    def run(i) -> None:
+        if i == "main":
+            own = [f"{pw_files(c, pinned)} --output={shlex.quote('test-results/shard-main')}" for c in cmds]
+            res[i] = run_cmds(p, own, logs[i], base_env)
+            return
         env = dict(base_env, **shard_vars(cfg, i))
         env.update({k: shard_fill(v, shard_vars(cfg, i), i) for k, v in cfg["env"].items()})
-        own = [f"{c} --shard={i}/{n} --output={shlex.quote(f'test-results/shard-{i}')}" for c in cmds]
+        own = [f"{pw_files(c, rest) if pinned and rest else c} --shard={i}/{n} "
+               f"--output={shlex.quote(f'test-results/shard-{i}')}" for c in cmds]
         res[i] = run_cmds(p, own, logs[i], env)
 
+    if pinned and rest:
+        shards = shards + ["main"]
+        logs["main"] = log.with_name(f"{log.stem}-main.log")
     threads = [threading.Thread(target=run, args=(i,)) for i in shards]
     for t in threads:
         t.start()
@@ -1563,7 +1636,8 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
         t.join()
     seconds = time.time() - t0
     for i in shards:
-        down(i)
+        if i != "main":
+            down(i)
 
     kinds = ("failed", "flaky", "skipped", "did not run", "interrupted", "passed")
     counts, names, parts = dict.fromkeys(kinds, 0), [], []
@@ -1575,7 +1649,7 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
         for kind, c in own.items():
             counts[kind] += c
         names += e2e_failures(logs[i])[2]
-        parts.append(f"===== shard {i}/{n} =====\n" + text)
+        parts.append(f"===== {'staging itself' if i == 'main' else f'shard {i}/{n}'} =====\n" + text)
     failed, total = counts["failed"], sum(counts.values())
     # one summary in the Playwright format, last in the log: every kind, so a parser reads the sums
     summary = [f"===== {n} shards: {seconds / 60:.1f} min ====="]
@@ -1591,7 +1665,7 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
 
 def deploy(p: Project, env_name: str, image: str | None = None, label: str = "") -> dict:
     d = p.config.get("deploy") or {}
-    e = d.get("environments", {}).get(env_name)
+    e = env_cfg(p, env_name)
     if not e:
         return {"ok": True, "skipped": True}
     sha = p.git("rev-parse", "--short=12", "HEAD")
@@ -1602,7 +1676,7 @@ def deploy(p: Project, env_name: str, image: str | None = None, label: str = "")
         built = run_cmds(p, as_list(d.get("build")), log.with_suffix(".build.log"), env)
         if not built["ok"]:
             return {"ok": False, "stage": "build", "log": built["log"]}
-    env = dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=env_name)
+    env = dict(p.env(), SATORY_IMAGE=image, SATORY_ENV=env_name, **(e.get("vars") or {}))
     up = run_cmds(p, as_list(e["up"]), log, env)
     if not up["ok"]:
         return {"ok": False, "stage": "up", "log": up["log"], "image": image}
@@ -3587,6 +3661,7 @@ def cmd_status(p: Project, a) -> None:
                                              for q in questions_load(p)["items"]),
                         "deferred": sum(q["status"] == "deferred" for q in questions_load(p)["items"])},
           "running": [{k: x[k] for k in ("label", "phase", "minutes", "runner")} for x in workflow_agents(p)],
+          "urls": {n: e["url"] for n in ("preview", "staging", "prod") if (e := env_cfg(p, n)) and e.get("url")},
           "e2e_progress": e2e_progress(p) or None,
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 

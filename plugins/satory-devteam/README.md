@@ -195,7 +195,11 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 ### Environments: staging for the tests, preview for you
 
 `staging` is where the agents and the tests work; the tests reset its database all the time. `preview`
-(optional) is your own copy of the app, to look at the progress and to keep your data:
+is your own copy of the app, to look at the progress and to keep your data. Without a `preview` in
+`deploy.environments` it is a copy of staging (as for the parallel e2e copies, read from the staging compose
+files): its own compose project `<name>-preview`, staging's ports + 1000 (8081 -> 9081, the Mailpit of the
+example 8025 -> 9025) and the env-file values that point at a port moved too; `"preview": false` turns it
+off. It can also be set:
 
 ```json
 "environments": {
@@ -218,7 +222,8 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 - `env` of staging: more variables for the checks and the tests besides `SATORY_BASE_URL` (e.g.
   `{"MARKET_STUB_URL": "http://localhost:8182"}`), so that test defaults never point anywhere else.
 - Ports in order: preview on the familiar port (e.g. 8081), staging on the next (8082), the parallel copies
-  after it (`e2e_parallel.ports` base 8082: 8083, 8084 …), the stubs 100 higher (8182, 8183 …).
+  after it (`e2e_parallel.ports` base 8082: 8083, 8084 …), the stubs 100 higher (8182, 8183 …). Read from
+  the compose files instead: staging on its own ports, the copies on + 100 x slot, preview on + 1000.
 
 ### The whole e2e suite in parallel
 
@@ -234,7 +239,9 @@ base + 100 x its slot (8081 -> 8181, 8281 …; a slot with a busy port is skippe
 the public URL in the links of an email) with its ports. A published port without a variable, or a
 container with a fixed `container_name`, keeps the suite in one run; `satory parallel` says why. The
 Playwright setup of the command (`npm ci`, `playwright install`) runs once before the shards. Copies left
-behind by an interrupted run are removed first. The ports and the environment can also be set:
+behind by an interrupted run are removed first. Before the run the spec files are sorted: one that names
+staging's own host ports (`localhost:8081`, `"8081"`) or its compose project literally can pass only against
+staging itself, so those run there, beside the copies, and the copies share the rest. The ports and the environment can also be set:
 
 ```json
 "e2e_parallel": {
@@ -437,6 +444,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.24** - the user's preview exists by default: without one in `deploy.environments` it is a copy of
+  staging read from its compose files (`<name>-preview`, staging's ports + 1000), updated with main after
+  every finished task with its data kept; `"preview": false` turns it off; `satory status` lists the URLs.
+  Before a parallel e2e run the spec files that name staging's own host ports or compose project run
+  against staging itself, beside the copies, which share the rest.
 - **1.6.23** - the whole e2e suite runs in parallel copies of staging by default (`"e2e_parallel": false`
   turns it off): without `ports` and `env` they are read from the staging compose files (the host-port
   variables, the staging URL, the compose project, the env-file values that point at a port), each copy on
