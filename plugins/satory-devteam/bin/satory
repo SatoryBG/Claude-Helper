@@ -1075,7 +1075,8 @@ def clarifications_block(t: dict) -> str:
 
 ADAPTED_HEADING = re.compile(r"^##\s+QA: adapted tests\s*$", re.M)
 # "- `path`: reason", also several files on one line: "- `a`, `b`: reason"
-ADAPTED_ENTRY = re.compile(r"^\s*[-*]\s+((?:`[^`]+`[\s,;&+]*(?:and\s+|и\s+)?)+)[:\-–—]\s*(\S.*)$")
+# "- `path`: reason", also with several paths and a remark in brackets before the colon ("`path` (round 11): …")
+ADAPTED_ENTRY = re.compile(r"^\s*[-*]\s+((?:`[^`]+`[\s,;&+]*(?:and\s+|и\s+)?)+)(?:\([^)]*\)\s*)?[:\-–—]\s*(\S.*)$")
 
 
 def adapted_tests(path: Path) -> dict[str, str]:
