@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.10** - an apostrophe in a note goes as `'$'\\x27''` like the control characters, not as the shell idiom
+  `'\\''`: the runner "improved" that idiom into `'"'"'`, lost a quote on the way, and the command no longer parsed.
 - **1.7.9** - the parallel copies no longer multiply the browsers: Playwright's own workers (half of the CPUs
   by default, or `pw_workers`) are divided between the shards, so together they stay what one run uses. A whole
   suite in one run is measured too (as 1) and measured once as the baseline: the copies are kept only when they

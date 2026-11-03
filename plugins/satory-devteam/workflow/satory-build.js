@@ -512,10 +512,12 @@ function cksum(bytes) {  // what `printf %s "$X" | cksum` prints: "<crc> <length
   for (let n = bytes.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
   return `${(~crc) >>> 0} ${bytes.length}`
 }
-// bash single quotes on one line: an apostrophe as '\'' and every control character (a new line above all) as
+// bash single quotes on one line: an apostrophe and every control character (a new line above all) as
 // '$'\xHH'' - a note with real line breaks reached the runner indented, and it removed the indent as markdown
 function quote1(text) {
-  return "'" + text.replace(/'/g, "'\\''").replace(/[\x00-\x1f\x7f]/g,
+  // an apostrophe too goes as '$'\x27'', not as the idiom '\'': the runner "improved" that idiom into '"'"' and
+  // lost a quote on the way, so the command no longer parsed
+  return "'" + text.replace(/['\x00-\x1f\x7f]/g,
     c => "'$'\\x" + c.charCodeAt(0).toString(16).padStart(2, '0') + "''") + "'"
 }
 function withNote(full, note) {
