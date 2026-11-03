@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.4** - Dev's result no longer travels in the note of its checks (it made that note 10-14 KB, many parts
+  to copy, and a long payload is what a safety check stopped): the CLI reads it from the workflow's journal for
+  the point a resumed round goes on from.
 - **1.7.3** - a note keeps every command on one line: a line break (and any control character) goes as `'$'\\xHH''`
   between single-quoted pieces. A note with real line breaks reached the runner indented, the runner removed the
   indent as markdown, and every part failed its cksum.

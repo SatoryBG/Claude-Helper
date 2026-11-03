@@ -1179,7 +1179,7 @@ async function runTask(t) {
         } catch (e) { log(`Could not record the disputes of ${tag}: ${e.message}`) }
       }
       ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
-        { phase: 'Dev', label: `checks ${tag}`, note: JSON.stringify({ journal: devNote(role, dev), dev }), long: true }), `after-dev ${tag}`)
+        { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
       contextLog(ad)
       if (!ad.ok) {
         lastStage = 'build/lint'

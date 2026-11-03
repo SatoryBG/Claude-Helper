@@ -3437,6 +3437,8 @@ def cmd_step(p: Project, a) -> None:
             save_review(p, st, "build/lint", rnd, "gate-fail", "\n".join(extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
         else:
             (st.get("reviews") or {}).pop("build/lint", None)
+        if ok and not isinstance(dev, dict):
+            dev = dev_result(p, tid, rnd)
         if ok and isinstance(dev, dict):
             st["resume_at"] = {"round": rnd, "stage": "review", "dev": dev}
         else:
@@ -3941,6 +3943,36 @@ def step_label(label: str) -> str | None:
         return None
     label = re.sub(r"\s*\(\d+\)$", "", label[7:])
     return label[5:] if label.startswith("wait ") else label
+
+
+def dev_result(p: Project, tid: str, rnd: int) -> dict | None:
+    """Dev's (or DevOps') result of this round, from the journal of the workflow that runs it: what a round
+    resumed at its review gives the reviewer. None when it cannot be found."""
+    base = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(p.root))
+    labels = {f"{who} {tid} r{rnd}{again}" for who in ("dev", "devops") for again in ("", " (again)")}
+    best = None
+    journals = sorted(base.glob("*/subagents/workflows/*/journal.jsonl"), key=lambda f: f.stat().st_mtime) if base.is_dir() else []
+    for j in journals[-5:]:
+        keys: set[str] = set()
+        try:
+            with open(j, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    m = JOURNAL_REC.match(line)
+                    if not m:
+                        continue
+                    if m.group(1) == "started":
+                        if any(f'"label":"{x}"' in line for x in labels):
+                            keys.add(m.group(2))
+                    elif m.group(2) in keys:
+                        try:
+                            r = json.loads(line).get("result")
+                        except ValueError:
+                            continue
+                        if isinstance(r, dict) and "summary" in r:
+                            best = r
+        except OSError:
+            continue
+    return best
 
 
 def took(minutes: int) -> str:
