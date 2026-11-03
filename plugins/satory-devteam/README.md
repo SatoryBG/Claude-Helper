@@ -444,6 +444,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.26** - a note for the CLI (a check's findings, a journal entry) goes to the runner as base64 with its
+  POSIX cksum instead of a bash ANSI-C string: the runner retypes the command, and a long note full of quotes and
+  backslashes came back with one escape level less - invalid JSON that stopped a build. A copy that still differs
+  fails the cksum, nothing runs, and the step is sent again (up to 3 times).
 - **1.6.25** - the ports of a preview read from staging are chosen once (staging's + 1000, moved on by 10
   while one is taken) and kept from its first deploy; `satory status` gives `your_env` (the user's
   environment: its URL, its Mailpit, whether it runs yet) and `/satory-devteam:status` always starts with it,
