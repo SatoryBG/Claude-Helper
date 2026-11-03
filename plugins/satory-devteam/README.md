@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.5** - the checks and the tests get the host ports of the tests' copy in the variables the compose file
+  takes them from (e.g. `HOST_PORT`), and what points at them; a deploy never gets them (they would move
+  staging itself). A test of the published ports could not be made to pass in a copy without them.
 - **1.7.4** - Dev's result no longer travels in the note of its checks (it made that note 10-14 KB, many parts
   to copy, and a long payload is what a safety check stopped): the CLI reads it from the workflow's journal for
   the point a resumed round goes on from.

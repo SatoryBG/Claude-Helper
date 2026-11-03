@@ -285,6 +285,9 @@ class Project:
             if t:  # the tests' own copy of staging: its URL, its compose project, its ports in "env"
                 env["SATORY_BASE_URL"] = t["url"]
                 env["SATORY_COMPOSE_PROJECT"] = t["project"]
+                if tid:  # a check or a test (not a deploy: these would move staging itself): the copy's host
+                    # ports in the variables of the compose file (e.g. AGC_HTTP_PORT), and what points at them
+                    env.update({k: str(v) for k, v in (t.get("vars") or {}).items()})
                 for k, v in (staging.get("env") or {}).items():
                     v = str(v)
                     for name, b in (t.get("base") or {}).items():
