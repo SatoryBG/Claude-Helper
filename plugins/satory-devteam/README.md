@@ -449,6 +449,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.9** - the parallel copies no longer multiply the browsers: Playwright's own workers (half of the CPUs
+  by default, or `pw_workers`) are divided between the shards, so together they stay what one run uses. A whole
+  suite in one run is measured too (as 1) and measured once as the baseline: the copies are kept only when they
+  beat it, and no more are tried once more were slower. Contention counts against one run's own retries. In AGC
+  3 copies ran 21 browsers on 14 cores and were slower than one run.
 - **1.7.8** - the parts of a long note end at a space or a line break, never inside a word: a part cut as "(_ot"
   came back from the runner as "(_other)…" four times - it completed what looked like truncated text.
 - **1.7.7** - more failures in the parallel copies than the retry limit (an overloaded machine: tests time out)

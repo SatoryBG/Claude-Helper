@@ -614,11 +614,16 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     if sharded:
         res["workers_reason"] = why
     else:
+        t0 = time.time()
         res = run_cmds(p, cmds, log, p.env(tid, rnd))
+        if cfg:  # a whole suite in one run: measured as 1, so the copies are kept only when they are faster
+            f1, total1, _ = e2e_failures(log)
+            res.update(seconds=round(time.time() - t0), tests=total1, failed_count=f1)
+            n = 1
 
     def record(flaky: int) -> None:
-        if sharded:
-            e2e_parallel_record(p, n, res["seconds"], res["tests"], flaky, res["failed_count"] - flaky)
+        if sharded or (cfg and res.get("tests")):
+            e2e_parallel_record(p, n, res["seconds"], res["tests"], flaky, max(0, res["failed_count"] - flaky))
 
     if res["ok"] or res.get("skipped"):
         record(0)
@@ -1646,8 +1651,9 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     stats: dict[int, list[dict]] = {}
     for r in hist[-30:]:
         stats.setdefault(int(r["workers"]), []).append(r)
-    for n, runs in stats.items():
-        if sum(r["flaky"] for r in runs) / max(1, sum(r["tests"] for r in runs)) > PARALLEL_FLAKY_RATIO:
+    ratio = {n: sum(r["flaky"] for r in runs) / max(1, sum(r["tests"] for r in runs)) for n, runs in stats.items()}
+    for n in stats:  # more retries than one run has (or the fixed ratio): contention, fewer copies
+        if n > 1 and ratio[n] > max(PARALLEL_FLAKY_RATIO, 2 * ratio.get(1, 0)):
             cap = min(cap, n - 1)
     cap = max(1, cap)
     clean = {n: sum(r["seconds"] for r in runs) / max(1, sum(r["tests"] for r in runs))
@@ -1655,9 +1661,11 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     if not clean:
         start = min(cap, max(2, cpus // 4))
         return start, f"first measured run: {start} of at most {cap} (CPUs {cpus}, free memory {mem or 0:.0f} GB)"
+    if 1 not in stats:  # the copies are kept only when they beat one run: measure that once
+        return 1, "one run, once, to compare the parallel copies with"
     best = min(clean, key=clean.get)
     up = min(cap, best + 2)
-    if up > best and up not in stats:
+    if up > best and up not in stats and not any(m > best for m in stats):  # more were slower: no more tries
         return up, f"trying {up}: {best} was the fastest so far ({clean[best]:.2f} s per test), at most {cap}"
     return best, f"{best} is the fastest measured ({clean[best]:.2f} s per test), at most {cap}"
 
@@ -1810,7 +1818,11 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
             return
         env = dict(base_env, **shard_vars(cfg, i))
         env.update({k: shard_fill(v, shard_vars(cfg, i), i) for k, v in cfg["env"].items()})
-        own = [f"{pw_files(c, rest) if pinned and rest else c} --shard={i}/{n} "
+        # Playwright runs its own workers in each shard: together they stay what one run uses (half of the
+        # CPUs by default), divided between the shards - more browsers than cores only makes tests time out
+        per = "" if re.search(r"\s(--workers|-j)[=\s]", " ".join(cmds)) else \
+            f"--workers={max(1, int(cfg.get('pw_workers') or max(1, (os.cpu_count() or 2) // 2)) // n)} "
+        own = [f"{pw_files(c, rest) if pinned and rest else c} {per}--shard={i}/{n} "
                f"--output={shlex.quote(f'test-results/shard-{i}')}" for c in cmds]
         res[i] = run_cmds(p, own, logs[i], env)
 
