@@ -444,6 +444,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.25** - the ports of a preview read from staging are chosen once (staging's + 1000, moved on by 10
+  while one is taken) and kept from its first deploy; `satory status` gives `your_env` (the user's
+  environment: its URL, its Mailpit, whether it runs yet) and `/satory-devteam:status` always starts with it,
+  naming staging only as the tests' environment.
 - **1.6.24** - the user's preview exists by default: without one in `deploy.environments` it is a copy of
   staging read from its compose files (`<name>-preview`, staging's ports + 1000), updated with main after
   every finished task with its data kept; `"preview": false` turns it off; `satory status` lists the URLs.

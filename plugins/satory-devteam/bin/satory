@@ -1078,6 +1078,23 @@ def env_cfg(p: Project, name: str) -> dict:
 PREVIEW_PORT_OFFSET = 1000  # a preview read from staging: its ports are staging's + 1000 (8081 -> 9081)
 
 
+def your_env(p: Project) -> dict:
+    """Where the user looks at the app: preview (with whether it runs yet), else staging."""
+    for n in ("preview", "staging"):
+        e = env_cfg(p, n)
+        if e.get("url"):
+            st = (p.state.get("deploy") or {}).get(n) or {}
+            return {"env": n, "url": e["url"], "derived": bool(e.get("derived")), "deployed": bool(st.get("at")),
+                    "at": st.get("at"), "image": st.get("image"),
+                    **({"mailpit": u} if (u := mailpit_url(e)) else {})}
+    return {}
+
+
+def mailpit_url(e: dict) -> str | None:
+    port = next((v for k, v in (e.get("ports") or {}).items() if "MAIL" in k.upper()), None)
+    return f"http://localhost:{port}" if port else None
+
+
 def derived_preview(p: Project) -> dict:
     """The user's preview when deploy.environments has none: a copy of staging under its own compose project
     (<name>-preview) on staging's ports + 1000, with the env-file values that point at a port moved too.
@@ -1090,13 +1107,24 @@ def derived_preview(p: Project) -> dict:
         return {}
     proj = auto["project"]
     name = (proj[: -len("-staging")] if proj.endswith("-staging") else proj) + "-preview"
-    vars_ = {k: str(v + PREVIEW_PORT_OFFSET) for k, v in auto["ports"].items()}
+    # the ports are chosen once and kept: the ones recorded at its first deploy, else staging's + 1000, moved
+    # on by 10 while any of them is taken
+    saved = ((p.state.get("deploy") or {}).get("preview") or {}).get("ports") or {}
+    if saved and set(saved) == set(auto["ports"]):
+        vars_ = {k: str(v) for k, v in saved.items()}
+    else:
+        vars_ = {}
+        for extra in range(0, 500, 10):
+            vars_ = {k: str(v + PREVIEW_PORT_OFFSET + extra) for k, v in auto["ports"].items()}
+            if all(port_free(int(x)) for x in vars_.values()):
+                break
+    ports = dict(vars_)
     vars_["project"] = name
     up = [re.sub(r"((?:^|\s)-p\s+)(\S+)", lambda m: f"{m.group(1)}{name}", c, count=1) for c in as_list(staging["up"])]
     env = {**{k: v for k, v in vars_.items() if k != "project"},
            **{k: shard_fill(x, vars_, 0) for k, x in auto["compose_env"].items()}}
     return {"url": shard_fill(auto["env"]["SATORY_BASE_URL"], vars_, 0), "health": staging.get("health", ""),
-            "up": up, "vars": env, "derived": True}
+            "up": up, "vars": env, "derived": True, "ports": {k: int(v) for k, v in ports.items()}}
 
 
 def staging_ephemeral(p: Project) -> bool:
@@ -1685,7 +1713,8 @@ def deploy(p: Project, env_name: str, image: str | None = None, label: str = "")
     previous = p.state.setdefault("deploy", {}).get(env_name, {})
     p.state["deploy"][env_name] = {"image": image, "sha": sha, "at": now(), "healthy": healthy,
                                    "previous": previous.get("image") if previous.get("image") != image
-                                   else previous.get("previous")}
+                                   else previous.get("previous"),
+                                   **({"ports": e["ports"], "url": e["url"]} if e.get("derived") else {})}
     p.save_state()
     return {"ok": healthy, "stage": "health" if not healthy else "done", "url": e["url"],
             "health_url": health_url, "image": image, "log": up["log"]}
@@ -3662,6 +3691,7 @@ def cmd_status(p: Project, a) -> None:
                         "deferred": sum(q["status"] == "deferred" for q in questions_load(p)["items"])},
           "running": [{k: x[k] for k in ("label", "phase", "minutes", "runner")} for x in workflow_agents(p)],
           "urls": {n: e["url"] for n in ("preview", "staging", "prod") if (e := env_cfg(p, n)) and e.get("url")},
+          "your_env": your_env(p),
           "e2e_progress": e2e_progress(p) or None,
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 
