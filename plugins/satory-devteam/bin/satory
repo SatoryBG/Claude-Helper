@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
@@ -1201,25 +1202,183 @@ def cmd_env(p: Project, a) -> None:
 # --shard=i/N and its own --output. "workers": "auto" picks N from the CPUs and the memory and then from the
 # measured runs (see e2e_workers); the copies are removed after the run.
 
-PARALLEL_MEM_GB = 1.5      # one shard: a browser, the app and its stubs
+PARALLEL_MEM_GB = 1.5      # one shard: a browser, the app and its stubs (more when staging is seen to use more)
+PARALLEL_PORT_STEP = 100   # derived ports: shard i is base + 100 x i (8081 -> 8181, 8281 …)
 PARALLEL_FLAKY_RATIO = 0.002  # more tests passing only on the retry than this: contention, fewer shards
 
 
+PORT_ENTRY = re.compile(r"(\$\{(\w+)([^}]*)\}|\d+)\s*:\s*\d+(?:/\w+)?$")
+PUBLISHED = re.compile(r"^\s*published:\s*[\"']?(\$\{(\w+)([^}]*)\}|\d+)")
+
+
+def var_default(rest: str) -> str | None:
+    m = re.match(r":?-([^}]*)$", rest)
+    return m.group(1) if m else None
+
+
+def compose_parallel(p: Project, staging: dict) -> tuple[dict | None, str]:
+    """Ports and environment of the parallel copies of staging, read from its compose files when
+    e2e_parallel gives none: every published host port must come from a variable (its value in the env file
+    or its default is the base), the URL of staging must use one of them, and no container may have a fixed
+    name. Returns ({ports, env, project}, "") or (None, why not)."""
+    ups = [c for c in as_list(staging.get("up")) if re.search(r"\scompose\s", c)]
+    if not ups:
+        return None, "the staging up command is not a docker compose command"
+    files, envf, project = [], [], None
+    for c in ups:
+        files += re.findall(r"(?:^|\s)(?:-f|--file)[=\s]+(\S+)", c)
+        envf += re.findall(r"--env-file[=\s]+(\S+)", c)
+        m = re.search(r"(?:^|\s)-p\s+(\S+)", c)
+        project = project or (m.group(1) if m else None)
+    if not project:
+        return None, "the staging up command names no compose project (-p)"
+    files = files or [f for f in ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+                      if (p.root / f).exists()][:1]
+    values: dict[str, str] = {}
+    for f in envf:
+        try:
+            for line in (p.root / f.strip("'\"")).read_text(encoding="utf-8").splitlines():
+                m = re.match(r"^\s*(?:export\s+)?(\w+)\s*=\s*(.*?)\s*$", line)
+                if m and not line.lstrip().startswith("#"):
+                    values[m.group(1)] = m.group(2).strip("'\"")
+        except OSError:
+            return None, f"cannot read the env file {f}"
+    ports: dict[str, int] = {}
+    for f in files:
+        try:
+            text = (p.root / f.strip("'\"")).read_text(encoding="utf-8")
+        except OSError:
+            return None, f"cannot read the compose file {f}"
+        if re.search(r"^\s*container_name:", text, re.M):
+            return None, f"{f} gives a container a fixed name"
+        indent = None
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            lead = len(line) - len(line.lstrip())
+            if re.match(r"^\s*ports:\s*$", line):
+                indent = lead
+                continue
+            if indent is not None and lead <= indent:
+                indent = None
+            if indent is None:
+                continue
+            m = PUBLISHED.match(line)
+            if not m:
+                item = re.match(r"^\s*-\s*[\"']?([^\"'#]+?)[\"']?\s*(?:#.*)?$", line)
+                if not item or ":" not in item.group(1):
+                    continue
+                m = PORT_ENTRY.search(item.group(1).strip())
+                if not m:
+                    continue
+            if not m.group(2):
+                return None, f"{f} publishes the fixed port {m.group(1)}: give it a variable"
+            base = values.get(m.group(2)) or var_default(m.group(3) or "")
+            if not (base or "").isdigit():
+                return None, f"no value for the port variable {m.group(2)}"
+            ports[m.group(2)] = int(base)
+    url = staging.get("url") or ""
+    try:
+        port = urllib.parse.urlsplit(url).port
+    except ValueError:
+        port = None
+    var = next((k for k, v in ports.items() if v == port), None)
+    if not var:
+        return None, f"the staging URL {url} uses none of the published port variables"
+    env = {"SATORY_BASE_URL": url.replace(f":{port}", f":{{{var}}}", 1), "SATORY_COMPOSE_PROJECT": "{project}"}
+    for k, v in (staging.get("env") or {}).items():
+        v = str(v)
+        for name, base in ports.items():
+            v = re.sub(rf":{base}\b", f":{{{name}}}", v)
+        env[k] = v
+    # values of the env file that point at a published port (e.g. the public URL in the links of an email):
+    # each copy gets them with its own ports
+    compose_env = {}
+    for k, v in values.items():
+        if k in ports:
+            continue
+        w = v
+        for name, base in ports.items():
+            w = re.sub(rf":{base}\b", f":{{{name}}}", w)
+        if w != v:
+            compose_env[k] = w
+    return {"ports": ports, "env": env, "project": project, "compose_env": compose_env}, ""
+
+
+PARALLEL_WHY = {"why": ""}
+
+
 def parallel_cfg(p: Project) -> dict | None:
-    cfg = p.config.get("e2e_parallel")
-    if not isinstance(cfg, dict) or cfg.get("workers") in (None, False, 0, 1):
+    """The parallel e2e setting. On by default; `"e2e_parallel": false` (or "workers": 1) turns it off.
+    Without "ports" and "env" they are read from the staging compose files (compose_parallel)."""
+    raw = p.config.get("e2e_parallel", {})
+    if raw is False or (isinstance(raw, dict) and (raw.get("enabled") is False or raw.get("workers") in (False, 0, 1))):
+        PARALLEL_WHY["why"] = "turned off in e2e_parallel"
         return None
+    cfg = dict(raw) if isinstance(raw, dict) else {}
+    cfg.setdefault("workers", "auto")
     staging = (p.config.get("deploy") or {}).get("environments", {}).get("staging") or {}
-    if not (cfg.get("up") or staging.get("up")) or not cfg.get("ports") or not cfg.get("env"):
+    if not (cfg.get("up") or staging.get("up")):
+        PARALLEL_WHY["why"] = "no staging up command"
         return None
+    if not cfg.get("ports") or not cfg.get("env"):
+        auto, why = compose_parallel(p, staging)
+        if not auto:
+            PARALLEL_WHY["why"] = why
+            return None
+        if not cfg.get("ports"):
+            cfg["ports"] = auto["ports"]
+            cfg.setdefault("port_step", PARALLEL_PORT_STEP)
+            cfg["auto_ports"] = True
+        cfg.setdefault("env", auto["env"])
+        cfg.setdefault("project", auto["project"])
+        cfg.setdefault("compose_env", auto["compose_env"])
     return {**cfg, "staging_up": staging.get("up"), "health": cfg.get("health", staging.get("health", ""))}
 
 
 def shard_vars(cfg: dict, i: int) -> dict:
-    return {k: str(int(v) + i) for k, v in cfg["ports"].items()}
+    """Shard i's ports (base + step x its slot; the slot is i unless free_slots moved it) and its compose
+    project."""
+    step, slot = int(cfg.get("port_step", 1)), (cfg.get("slots") or {}).get(i, i)
+    out = {k: str(int(v) + step * slot) for k, v in cfg["ports"].items()}
+    if cfg.get("project"):
+        out["project"] = f"{cfg['project']}-e2e{i}"
+    return out
 
 
-def shard_fill(text: str, vars_: dict, i: int) -> str:
+def port_free(port: int) -> bool:
+    import socket
+    for host in ("127.0.0.1", "0.0.0.0"):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, port))
+            except OSError:
+                return False
+    return True
+
+
+def free_slots(cfg: dict, n: int) -> bool:
+    """Port slots for the shards whose ports are all free and differ from each other's (derived ports only:
+    ports set in e2e_parallel are used as given)."""
+    if not cfg.get("auto_ports"):
+        return True
+    step, used, slots = int(cfg.get("port_step", 1)), set(), {}
+    slot = 0
+    for i in range(1, n + 1):
+        while True:
+            slot += 1
+            if slot > 60:
+                return False
+            mine = {int(v) + step * slot for v in cfg["ports"].values()}
+            if not (mine & used) and all(port_free(x) for x in mine):
+                break
+        slots[i] = slot
+        used |= mine
+    cfg["slots"] = slots
+    return True
+
+
+def shard_fill(text: str, vars_: dict, i: int) -> str:  # {i}, {PORT_NAME} and {project}
     return re.sub(r"\{(\w+)\}", lambda m: vars_.get(m.group(1), str(i) if m.group(1) == "i" else m.group(0)), text)
 
 
@@ -1264,8 +1423,9 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     cpus = os.cpu_count() or 2
     cap = max(1, cpus // 2)
     mem = meminfo_gb()
+    per = float(cfg.get("memory_gb") or max(PARALLEL_MEM_GB, staging_memory_gb(cfg) + 0.7))
     if mem is not None:
-        cap = min(cap, max(1, int((mem - 2) // float(cfg.get("memory_gb", PARALLEL_MEM_GB)))))
+        cap = min(cap, max(1, int((mem - 2) // per)))
     if cfg.get("max"):
         cap = min(cap, int(cfg["max"]))
     hist = (p.state.get("e2e_parallel") or {}).get("runs", [])
@@ -1288,6 +1448,39 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     return best, f"{best} is the fastest measured ({clean[best]:.2f} s per test), at most {cap}"
 
 
+def staging_memory_gb(cfg: dict) -> float:
+    """What the running staging uses (docker stats of its compose project), 0 when unknown."""
+    if not cfg.get("project") or not shutil.which("docker"):
+        return 0.0
+    try:
+        ids = subprocess.run(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={cfg['project']}"],
+                             capture_output=True, text=True, timeout=20).stdout.split()
+        if not ids:
+            return 0.0
+        out = subprocess.run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", *ids],
+                             capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    unit = {"B": 1 / 1024 ** 3, "KiB": 1 / 1024 ** 2, "MiB": 1 / 1024, "GiB": 1.0, "kB": 1e3 / 1024 ** 3, "MB": 1e6 / 1024 ** 3, "GB": 1e9 / 1024 ** 3}
+    total = 0.0
+    for m in re.finditer(r"^\s*([\d.]+)\s*([A-Za-z]+)\s*/", out, re.M):
+        total += float(m.group(1)) * unit.get(m.group(2), 0)
+    return total
+
+
+def pw_split(cmd: str) -> tuple[str | None, str]:
+    """A Playwright command "cd e2e && npm ci && npx playwright install chromium && npx playwright test …" as
+    (its setup, run once before the shards; the test run of each shard, with the same cd)."""
+    parts = [x.strip() for x in re.split(r"\s*&&\s*", cmd)]
+    k = next((j for j in range(len(parts) - 1, -1, -1) if "playwright test" in parts[j]), None)
+    if k is None or k == 0:
+        return None, cmd
+    cds = [x for x in parts[:k] if re.match(r"^cd\s+\S+$", x)]
+    setup = [x for x in parts[:k] if not re.match(r"^cd\s+\S+$", x)]
+    run = " && ".join(cds + parts[k:])
+    return (" && ".join(parts[:k]) if setup else None), run
+
+
 def e2e_parallel_record(p: Project, n: int, seconds: float, tests: int, flaky: int, failed: int) -> None:
     st = p.state.setdefault("e2e_parallel", {})
     runs = st.setdefault("runs", [])
@@ -1302,22 +1495,40 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
     the usual way). The log gets every shard's output and one summary in the Playwright format."""
     if not all(pw_tail(c) for c in cmds) or not shard_cmds(cfg, 1):
         return None
+    setup = [x for x in (pw_split(c)[0] for c in cmds) if x]
+    if setup and not run_cmds(p, setup, log.with_name(f"{log.stem}-setup.log"), p.env(tid, rnd))["ok"]:
+        return None
+    cmds = [pw_split(c)[1] for c in cmds]
     image = ((p.state.get("deploy") or {}).get("staging") or {}).get("image")
     base_env = dict(p.env(tid, rnd), **({"SATORY_IMAGE": image} if image else {}))
     shards = list(range(1, n + 1))
     logs = {i: log.with_name(f"{log.stem}-shard{i}.log") for i in shards}
     started: list[int] = []
 
+    def shard_env(i: int) -> dict:
+        v = shard_vars(cfg, i)
+        return dict(base_env, **v, **{k: shard_fill(x, v, i) for k, x in (cfg.get("compose_env") or {}).items()})
+
     def up(i: int) -> bool:
-        env = dict(base_env, **shard_vars(cfg, i))
+        env = shard_env(i)
         r = run_cmds(p, shard_cmds(cfg, i), log.with_name(f"{log.stem}-shard{i}-up.log"), env)
         url = shard_fill(cfg["env"].get("SATORY_BASE_URL", ""), shard_vars(cfg, i), i)
         return r["ok"] and (not url or wait_health(url.rstrip("/") + cfg.get("health", "")))
 
     def down(i: int) -> None:
-        env = dict(base_env, **shard_vars(cfg, i))
+        env = shard_env(i)
         run_cmds(p, shard_cmds(cfg, i, down=True), log.with_name(f"{log.stem}-shard{i}-down.log"), env)
 
+    # copies left behind by an interrupted run hold ports and memory: removed first
+    if cfg.get("project") and shutil.which("docker"):
+        for i in range(1, 21):
+            r = subprocess.run(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={cfg['project']}-e2e{i}"],
+                               capture_output=True, text=True)
+            if r.stdout.strip():
+                down(i)
+    if not free_slots(cfg, n):
+        progress(p, f"⚠ {tid} r{rnd}: no free ports for {n} parallel copies of staging - the suite runs in one")
+        return None
     progress(p, f"⚡ {tid} r{rnd}: whole e2e suite in {n} parallel shards")
     ok = up(1)  # the first one alone: it may build images the others reuse
     if ok:
@@ -1530,10 +1741,10 @@ def cmd_parallel(p: Project, a) -> None:
     the measured runs."""
     cfg = parallel_cfg(p)
     if not cfg:
-        return emit({"ok": True, "enabled": False,
-                     "reason": "no e2e_parallel with workers, ports and env in .satory/project.json"})
+        return emit({"ok": True, "enabled": False, "reason": PARALLEL_WHY["why"]})
     n, why = e2e_workers(p, cfg)
-    emit({"ok": True, "enabled": True, "workers": n, "reason": why, "up": shard_cmds(cfg, 1),
+    emit({"ok": True, "enabled": True, "workers": n, "reason": why, "ports": cfg["ports"], "env": cfg["env"],
+          "derived": bool(cfg.get("auto_ports")), "shard_1": shard_vars(cfg, 1), "up": shard_cmds(cfg, 1),
           "down": shard_cmds(cfg, 1, down=True), "runs": (p.state.get("e2e_parallel") or {}).get("runs", [])})
 
 

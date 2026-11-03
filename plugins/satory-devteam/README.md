@@ -223,8 +223,18 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 ### The whole e2e suite in parallel
 
 When the e2e tests share one database on staging, they run one after another, and a large suite takes
-more than an hour. With `e2e_parallel` the whole suite runs in shards at once, each against its own copy
-of staging with its own database:
+more than an hour. So the whole suite runs in shards at once, each against its own copy of staging with
+its own database. This is on by default; `"e2e_parallel": false` (or `"workers": 1`) turns it off.
+
+Without `ports` and `env`, the CLI reads them from the staging compose files (the `-f` and `--env-file` of
+the staging `up` command): every published host port must come from a variable (its value in the env file,
+or its default, is the base), and the URL of staging must use one of them. Each copy gets those ports at
+base + 100 x its slot (8081 -> 8181, 8281 …; a slot with a busy port is skipped), `SATORY_BASE_URL` and
+`SATORY_COMPOSE_PROJECT` of its own, and the values of the env file that point at a published port (e.g.
+the public URL in the links of an email) with its ports. A published port without a variable, or a
+container with a fixed `container_name`, keeps the suite in one run; `satory parallel` says why. The
+Playwright setup of the command (`npm ci`, `playwright install`) runs once before the shards. Copies left
+behind by an interrupted run are removed first. The ports and the environment can also be set:
 
 ```json
 "e2e_parallel": {
@@ -243,7 +253,8 @@ of staging with its own database:
   start, the suite runs the usual way. A few failed tests run once more by name against staging.
 - `"workers": "auto"` chooses N: at most half of the CPUs (a shard keeps more than one core busy - the
   browser, the app, the test runner - and an overloaded machine makes timing-dependent tests fail) and
-  what the free memory allows (`memory_gb` per shard, default 1.5); `max` lowers it. The first run uses a
+  what the free memory allows (`memory_gb` per shard; by default what the running staging uses, from
+  `docker stats`, plus 0.7 GB for the browser, at least 1.5); `max` lowers it. The first run uses a
   quarter of the CPUs (at least 2). After that the fastest measured count (seconds per test) is kept, and
   two more are tried while untried. A count whose run had more than 0.2 % of the tests passing only on
   the retry lowers the ceiling below it. A number in `workers` is used as it is. `satory parallel` shows
@@ -426,6 +437,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.23** - the whole e2e suite runs in parallel copies of staging by default (`"e2e_parallel": false`
+  turns it off): without `ports` and `env` they are read from the staging compose files (the host-port
+  variables, the staging URL, the compose project, the env-file values that point at a port), each copy on
+  free ports (base + 100 x its slot); at most half of the CPUs, and per copy the memory the running staging
+  uses plus a browser; the Playwright setup runs once before the shards, and copies left by an interrupted
+  run are removed first.
 - **1.6.22** - a test command runs after QA only when its part of the code changed since it last passed in
   the task: a round that changes only the web app does not wait for the .NET tests (about 20 minutes on
   AGC). A command `cd X && …` looks at X/ and the shared files, one without `cd` at every file outside the
