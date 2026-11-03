@@ -78,4 +78,6 @@ If everything is done and the project has a deploy, suggest `/satory-devteam:rel
 
 ## Continuing
 After an interruption (closed session, error) just run `/satory-devteam:build` again. The task in progress
-continues from its branch, and the round counter is kept.
+continues from its branch, and the round counter is kept. A round interrupted after Dev's checks passed goes on
+with the review of that round, and one interrupted after the review approved goes on with QA; otherwise
+the next round starts with Dev.

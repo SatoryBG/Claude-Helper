@@ -426,6 +426,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.21** - a resumed task no longer starts over with Dev: a round interrupted after Dev's checks
+  passed goes on with its review, and one interrupted after the review approved goes on with QA (the CLI
+  keeps the point and Dev's result in the state; a rebase onto a newer main, a block or any later step
+  ends it).
 - **1.6.20** - the time of a CLI step the build waits on stays right when the steps of the UI review (beside
   QA) come between the turns of waiting on it.
 - **1.6.19** - `env` of staging: more variables for the checks and the tests (e.g. the URL of a stub), so

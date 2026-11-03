@@ -1021,7 +1021,9 @@ async function runTask(t) {
   contextLog(start)
   RESUMED = !!start.resumed
   const role = t.owner === 'devops' ? 'devops' : 'dev'
-  let round = start.rounds_used || 0
+  // a round interrupted after Dev's checks passed (or also after the review approved) goes on from there
+  const resumeAt = start.resume_at && start.resume_at.dev ? start.resume_at : null
+  let round = resumeAt ? resumeAt.round - 1 : (start.rounds_used || 0)
   const lastFailed = (start.open_findings || []).map(f => `### ${f.stage} (round ${f.round}, ${f.verdict})\n${f.note}`)
   let feedback = start.resumed
     ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.' +
@@ -1076,47 +1078,58 @@ async function runTask(t) {
 
     // ---- Dev ----------------------------------------------------------
     let known = await registerNote()
-    const dev = await stage(role, devPrompt(ctx, round, feedback) + known,
-      { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
-    if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
-    if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
-    known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
-    if ((dev.finding_disputes || []).length) {
-      try {
-        const d = await sh(`finding dispute ${t.id} --round ${round}`, { phase: 'Dev', label: `disputes ${tag}`, note: JSON.stringify(dev.finding_disputes) })
-        for (const id of (d && d.disputed) || []) {  // the check that raised it sees the dispute in its next prompt
-          const reason = (dev.finding_disputes.find(x => x.id === id) || {}).reason || ''
-          for (const list of Object.values(open)) for (const f of list) if (f.id === id) Object.assign(f, { status: 'disputed', dispute: reason })
-        }
-      } catch (e) { log(`Could not record the disputes of ${tag}: ${e.message}`) }
+    let dev, ad, devViolations = ''
+    const skip = resumeAt && round === resumeAt.round ? resumeAt.stage : null
+    if (skip) {
+      dev = resumeAt.dev
+      ad = { ok: true, violations: [], checkpoint: start.checkpoint }
+      if (skip === 'qa') reviewedAt = start.checkpoint
+      log(`↻ ${tag}: Dev's work${skip === 'qa' ? ' and the review' : ''} passed before the interruption - going on with ${skip === 'qa' ? 'QA' : 'the review'}`)
+    } else {
+      dev = await stage(role, devPrompt(ctx, round, feedback) + known,
+        { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
+      if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
+      if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
+      known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
+      if ((dev.finding_disputes || []).length) {
+        try {
+          const d = await sh(`finding dispute ${t.id} --round ${round}`, { phase: 'Dev', label: `disputes ${tag}`, note: JSON.stringify(dev.finding_disputes) })
+          for (const id of (d && d.disputed) || []) {  // the check that raised it sees the dispute in its next prompt
+            const reason = (dev.finding_disputes.find(x => x.id === id) || {}).reason || ''
+            for (const list of Object.values(open)) for (const f of list) if (f.id === id) Object.assign(f, { status: 'disputed', dispute: reason })
+          }
+        } catch (e) { log(`Could not record the disputes of ${tag}: ${e.message}`) }
+      }
+      ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
+        { phase: 'Dev', label: `checks ${tag}`, note: JSON.stringify({ journal: devNote(role, dev), dev }), long: true }), `after-dev ${tag}`)
+      contextLog(ad)
+      if (!ad.ok) {
+        lastStage = 'build/lint'
+        feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
+        continue
+      }
+      devViolations = ad.violations.length
+        ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
     }
-    const ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
-      { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
-    contextLog(ad)
-    if (!ad.ok) {
-      lastStage = 'build/lint'
-      feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
-      continue
-    }
-    const devViolations = ad.violations.length
-      ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
 
     // ---- Review -------------------------------------------------------
-    const revPrompt = reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known
-    const rev = await stage('reviewer', revPrompt,
-      { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
-    if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
-    known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
-    const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
-      rev.verified, 'Review', revPrompt)
-    const revBlocking = revRes.blocking.length > 0
-    contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
-      { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`))
-    reviewedAt = ad.checkpoint
-    if (revBlocking) {
-      lastStage = 'review'
-      feedback = findingsFeedback('Code review: changes requested', rev.summary, revRes) + devViolations
-      continue
+    if (skip !== 'qa') {
+      const revPrompt = reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known
+      const rev = await stage('reviewer', revPrompt,
+        { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
+      if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
+      known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
+      const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
+        rev.verified, 'Review', revPrompt)
+      const revBlocking = revRes.blocking.length > 0
+      contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
+        { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`))
+      reviewedAt = ad.checkpoint
+      if (revBlocking) {
+        lastStage = 'review'
+        feedback = findingsFeedback('Code review: changes requested', rev.summary, revRes) + devViolations
+        continue
+      }
     }
 
     // ---- QA -----------------------------------------------------------

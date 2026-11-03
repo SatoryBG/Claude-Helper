@@ -1955,6 +1955,8 @@ def cmd_task_start(p: Project, a) -> None:
                 p.git("checkout", "-q", p.main)
                 st = None
         if st:
+            if st.get("base") != main_head:  # rebased onto a newer main: Dev's round goes again on the new code
+                st.pop("resume_at", None)
             st["base"] = main_head
             write_task_file(p, t)
             st["checkpoint"] = checkpoint(p, tid, "resume")
@@ -1994,10 +1996,18 @@ def cmd_task_start(p: Project, a) -> None:
                                   "note": "\n".join(f"- {finding_line(f)}" + ("" if finding_blocks(f) else " (optional)") for f in mine)})
         open_findings += [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items() if v.get("verdict") in REVIEW_FAIL]
     context_error = refresh_context(p, tid)
+    resume_at = st.get("resume_at") if resumed else None
+    if resume_at and resume_at.get("round") != st["rounds"]:
+        resume_at = None
+    if not resumed:
+        st.pop("resume_at", None)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
+    if resume_at:
+        again = (f" (resumed at {'QA' if resume_at['stage'] == 'qa' else 'the review'} of round {resume_at['round']}:"
+                 f" Dev's work{' and the review' if resume_at['stage'] == 'qa' else ''} passed before the interruption)")
     progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
-          "rounds_used": st["rounds"], "resumed": resumed, "task_file": f"docs/tasks/{tid}.md",
+          "rounds_used": st["rounds"], "resumed": resumed, "resume_at": resume_at, "task_file": f"docs/tasks/{tid}.md",
           "known_tests": len(st["known_tests"]), "open_findings": open_findings, "context_error": context_error,
           "suite_failed": (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []})
 
@@ -2857,6 +2867,20 @@ def cmd_step(p: Project, a) -> None:
     ck, base = st["checkpoint"], st["base"]
     note = read_note(a)
     tests = p.test_globs
+    dev = None
+    if a.step == "after-dev" and note.lstrip().startswith("{"):  # {"journal": text, "dev": Dev's result}
+        try:
+            d = json.loads(note)
+            if isinstance(d, dict) and "journal" in d:
+                note, dev = str(d.get("journal") or ""), d.get("dev")
+        except ValueError:
+            pass
+    # where a round goes on when the build is interrupted: after Dev's checks passed, at the review; after the
+    # review approved, at QA. Any other step of the round ends it (a resume then starts the next round)
+    keep = (a.step == "after-dev" or a.step == "pre-qa" or
+            (a.step == "readonly" and a.stage == "reviewer" and a.verdict == "approve"))
+    if not keep:
+        st.pop("resume_at", None)
 
     if a.step == "after-dev":
         def allowed(path, status):
@@ -2882,6 +2906,10 @@ def cmd_step(p: Project, a) -> None:
             save_review(p, st, "build/lint", rnd, "gate-fail", "\n".join(extra + [f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]))
         else:
             (st.get("reviews") or {}).pop("build/lint", None)
+        if ok and isinstance(dev, dict):
+            st["resume_at"] = {"round": rnd, "stage": "review", "dev": dev}
+        else:
+            st.pop("resume_at", None)
         p.save_state()
         emit({"ok": ok, "violations": violations, "gates": gates, "checkpoint": st["checkpoint"],
               "context_error": refresh_context(p, tid)})
@@ -3058,6 +3086,12 @@ def cmd_step(p: Project, a) -> None:
             p.git("clean", "-fdq")
         extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
         journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
+        r = st.get("resume_at")
+        if r and a.stage == "reviewer" and a.verdict == "approve" and r.get("round") == rnd:
+            r["stage"] = "qa"
+        elif r:
+            st.pop("resume_at", None)
+        p.save_state()
         emit({"ok": True, "reverted": sorted(changed), "context_error": refresh_context(p, tid)})
 
     else:
@@ -3158,6 +3192,7 @@ def cmd_task_block(p: Project, a) -> None:
         st["checkpoint"] = checkpoint(p, tid, "blocked")
         p.git("checkout", "-q", p.main)
     t["status"], t["blocked_reason"], t["rounds"] = "blocked", reason, st["rounds"]
+    st.pop("resume_at", None)  # an unblocked task starts with Dev: the user's answer is for it
     p.save_plan(plan)
     journal_pending(p, tid, "orchestrator", st["rounds"], "blocked", reason)
     journal_flush(p)
