@@ -449,6 +449,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.2** - a note longer than 1,200 characters is not copied in one go: it is written in parts, each with its own
+  cksum and resent until it arrives exactly, into `.satory/run/notes/`, and the command reads that file after a cksum
+  of the whole. A QA summary of several kilobytes came back changed from the runner three times in a row and stopped
+  the build.
 - **1.7.1** - notes go to the CLI in readable bash single quotes with their cksum, not as base64: a long base64
   payload piped to `base64 -d` looks like hidden code to a safety check, and the runner's command never ran (the
   build stopped on a step that "ended without an exit code"). In single quotes JSON keeps its backslashes as they

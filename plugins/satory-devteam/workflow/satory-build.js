@@ -519,11 +519,43 @@ function withNote(full, note) {
     `else echo '{"ok":false,"note_corrupted":true,"error":"the note was not copied exactly"}'; fi`
 }
 
+// A long note is not copied in one go: the runner, an LLM, retypes the command, and a QA summary of several
+// kilobytes came back changed three times in a row. It is written in parts of NOTE_PART characters, each with
+// its own cksum and resent until it arrives exactly, into .satory/run/notes/<id>; the command then reads that file
+// after checking the cksum of the whole.
+const NOTE_PART = 1200
+let NOTE_SEQ = 0
+async function noteFile(note, phase, label) {
+  const dir = `${q(PROJECT)}/.satory/run/notes`
+  const file = `${dir}/${++NOTE_SEQ}-${String(label || 'note').replace(/[^\w.-]/g, '-').slice(0, 40)}`
+  const chars = Array.from(note)
+  const parts = []
+  for (let i = 0; i < chars.length; i += NOTE_PART) parts.push(chars.slice(i, i + NOTE_PART).join(''))
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    const quoted = "'" + part.replace(/'/g, "'\\''") + "'"
+    const cmd = `mkdir -p ${dir} && ${i === 0 ? `rm -f ${file} && ` : ''}SATORY_PART=${quoted}; ` +
+      `if [ "$(printf %s "$SATORY_PART" | cksum)" = "${cksum(utf8Bytes(part))}" ]; then printf %s "$SATORY_PART" >> ${file} && ` +
+      `echo '{"ok":true}'; else echo '{"ok":false,"note_corrupted":true}'; fi`
+    for (let attempt = 1; ; attempt++) {
+      const r = await spawn('runner', runPrompt(cmd), { phase, label: `satory note ${label || ''} ${i + 1}/${parts.length}`, model: MODELS.runner, schema: RUN_SCHEMA })
+      const res = r ? parseOut(r.stdout) : undefined
+      if (res && res.ok) break
+      if (attempt >= 4) throw new Error(`satory ${label || 'note'}: part ${i + 1}/${parts.length} of the note was not copied exactly`)
+    }
+  }
+  return { file, sum: cksum(utf8Bytes(note)) }
+}
+
 async function sh(cmd, { phase, label, note, long = false } = {}) {
   let full = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
-  // the note goes on the same line ($'...' with \n escapes), not as a here-document: the runner may get the
-  // command indented, and an indented end marker no longer ends a here-document
-  if (note !== undefined) full = withNote(full, String(note))
+  // the note goes on the same line, not as a here-document: the runner may get the command indented, and an
+  // indented end marker no longer ends a here-document
+  if (note !== undefined && PROJECT && Array.from(String(note)).length > NOTE_PART) {
+    const nf = await noteFile(String(note), phase, label || cmd.split(' ').slice(0, 3).join(' '))
+    full = `if [ "$(cksum < ${nf.file})" = "${nf.sum}" ]; then ${full} --note-stdin < ${nf.file}; rm -f ${nf.file}; ` +
+      `else echo '{"ok":false,"note_corrupted":true,"error":"the note file differs from the note"}'; fi`
+  } else if (note !== undefined) full = withNote(full, String(note))
   const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
   const prompt = runPrompt(id ? captured(full, id) : full)
   const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
