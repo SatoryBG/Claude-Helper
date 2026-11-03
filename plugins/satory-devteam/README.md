@@ -449,6 +449,19 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.0** - a new model of the environments (the changes of 1.6.22 - 1.6.27, now one minor version):
+  - **staging is the user's environment**: updated with main after every finished task, its data kept; no
+    agent and no test uses it; `/satory-devteam:status` always starts with its URL;
+  - **the tests run in their own copies of staging**, made from scratch for every round and every review
+    between tasks (own compose project, database and ports read from the staging compose files) and
+    removed with their data afterwards;
+  - **the whole e2e suite runs in parallel copies by default** (at most half of the CPUs, the memory
+    measured from staging), `"e2e_parallel": false` turns it off; spec files that name staging's own port or
+    compose project do not run, and the `pinned` check fails until QA changes them;
+  - **a unit test command runs only when its part of the code changed** since it last passed in the task;
+  - **a resumed task goes on from where its round stopped** (the review or QA), not with a new round of Dev.
+  The version number marks the change of model: a project built with 1.6.x keeps working (`"test_copies":
+  false` keeps the tests on staging, as before).
 - **1.6.27** - staging is the user's environment and the tests never use it: every round (and every review
   between tasks) brings up the tests' own copy of staging from scratch (`<name>-test`, its own database,
   ports read from the staging compose files) and removes it with its data afterwards; staging gets main
