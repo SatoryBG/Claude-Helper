@@ -384,14 +384,14 @@ DURATION = r"\s+\((?:\d[\d.]*\s*(?:ms|s|m|h)\s*)+\)"
 UNIT_FAILED = re.compile(r"^\s*(?:failed|FAIL|×|✗)\s+(.+?)(?:" + DURATION + r")?\s*$", re.M)
 
 
-def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str) -> dict:
+def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str, cmds: list[str] | None = None) -> dict:
     """A few failing unit tests are run once more (the whole command, it is quick): passing then counts as
     passing, and the tests go to the register as flaky, as for e2e. Many failures are a real failure."""
     names = sorted({m.strip() for m in UNIT_FAILED.findall(text)})[:20]
     if not names or len(names) > int(p.config.get("unit_retry_max", 3)):
         return res
     progress(p, f"↻ {tid} r{rnd} test: {len(names)} unit test(s) failed, running the tests once more")
-    again = run_cmds(p, p.commands("test"), p.logs / f"{tid}-r{rnd}-test-retry.log", p.env(tid, rnd))
+    again = run_cmds(p, p.commands("test") if cmds is None else cmds, p.logs / f"{tid}-r{rnd}-test-retry.log", p.env(tid, rnd))
     if not again["ok"]:
         return res
     for test in names:
@@ -399,20 +399,100 @@ def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str) -> dict:
     return {**again, "flaky": names, "retry_log": again["log"], "log": res["log"]}
 
 
+CD_DIR = re.compile(r"^\s*cd\s+([^\s;&|]+)\s*&&")
+
+
+def worktree_tree(p: Project) -> str | None:
+    """The git tree of the work tree as it is now (tracked and new files), without touching the index."""
+    idx = p.run / "tree.index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(idx)}
+    try:
+        idx.unlink(missing_ok=True)
+        subprocess.run(["git", "add", "-A"], cwd=p.root, env=env, check=True, capture_output=True)
+        return subprocess.run(["git", "write-tree"], cwd=p.root, env=env, check=True, capture_output=True,
+                              text=True).stdout.strip() or None
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    finally:
+        idx.unlink(missing_ok=True)
+
+
+def test_areas(p: Project) -> dict[str, tuple[str, ...]]:
+    """Where each test command looks: `cd X && …` - X/ and the shared files; a command without cd - every
+    file outside the other commands' folders. Shared files are those outside all the `cd` folders of the
+    project's commands and outside src/ and tests/. docs/ and .satory/ count for none."""
+    dirs = set()
+    for cmds in (p.config.get("commands") or {}).values():
+        for c in cmds if isinstance(cmds, list) else [cmds]:
+            m = CD_DIR.match(str(c))
+            if m:
+                dirs.add(m.group(1).strip("./") + "/")
+    return {c: ((m.group(1).strip("./") + "/",) if (m := CD_DIR.match(c)) else ()) for c in p.commands("test")} | {"": tuple(sorted(dirs))}
+
+
+def test_needed(cmd: str, changed: list[str], areas: dict) -> bool:
+    cd = areas.get(cmd, ())
+    others = areas[""]
+    for f in changed:
+        if f.startswith(("docs/", ".satory/")):
+            continue
+        if cd:  # its folder, or a shared file
+            if f.startswith(cd[0]) or not (f.startswith(others) or f.startswith(("src/", "tests/"))):
+                return True
+        elif not f.startswith(others):  # anything outside the folders of the cd-commands
+            return True
+    return False
+
+
 def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
-    res = run_cmds(p, p.commands(name), log, p.env(tid, rnd))
+    cmds, unchanged, tree = p.commands(name), [], None
+    st = p.state["tasks"].get(tid) if name == "test" else None
+    if st is not None and p.config.get("test_skip_unchanged", True) is not False and cmds:
+        # a test command runs again only when its part of the code changed since it last passed in this task:
+        # a round that changes only the web app does not wait for the .NET tests
+        tree = worktree_tree(p)
+        green = st.get("tests_green") or {}
+        areas = test_areas(p)
+        keep = []
+        for c in cmds:
+            was = green.get(c)
+            if tree and was:
+                r = p.git("diff", "--name-only", was, tree, check=False)
+                if r.returncode == 0 and not test_needed(c, r.stdout.split(), areas):
+                    unchanged.append(c)
+                    continue
+            keep.append(c)
+        cmds = keep
+    if unchanged and not cmds:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(f"[satory] not run - no change in its part of the code since it last passed: {c}\n"
+                               for c in unchanged), encoding="utf-8")
+        return {"ok": True, "exit": 0, "log": p.rel(log), "unchanged": unchanged}
+    res = run_cmds(p, cmds, log, p.env(tid, rnd))
+    if unchanged:
+        with open(log, "a", encoding="utf-8") as f:
+            f.writelines(f"[satory] not run - no change in its part of the code since it last passed: {c}\n" for c in unchanged)
+        res["unchanged"] = unchanged
+
+    def passed(r: dict) -> dict:
+        if r.get("ok") and tree and st is not None:
+            st.setdefault("tests_green", {}).update({c: tree for c in cmds})
+        return r
+
     if res["ok"] or res.get("skipped"):
-        return res
+        return passed(res)
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if not ((isinstance(res.get("exit"), int) and res["exit"] < 0) or CRASH.search(text)):
         if name == "test":
-            return unit_retry(p, tid, rnd, res, text)
+            return passed({**unit_retry(p, tid, rnd, res, text, cmds), **({"unchanged": unchanged} if unchanged else {})})
         return res
     progress(p, f"↻ {tid} r{rnd} {name}: the run crashed (exit {res.get('exit')}), running it once more")
-    again = run_cmds(p, p.commands(name), p.logs / f"{tid}-r{rnd}-{name}-rerun.log", p.env(tid, rnd))
+    again = run_cmds(p, cmds, p.logs / f"{tid}-r{rnd}-{name}-rerun.log", p.env(tid, rnd))
     again["crashed_first"] = res["log"]
-    return again
+    if unchanged:
+        again["unchanged"] = unchanged
+    return passed(again)
 
 
 # a plain Playwright run at the end of a command: arguments can be appended to it (quoted text, e.g. a
@@ -3024,6 +3104,7 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   f"{scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
+        extra += [f"- Not run, no change in its part of the code since it passed: {c}" for c in gates["test"].get("unchanged", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         head = (note or "").split("\n\n")[0].strip()[:800]

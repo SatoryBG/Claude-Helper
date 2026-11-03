@@ -426,6 +426,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.22** - a test command runs after QA only when its part of the code changed since it last passed in
+  the task: a round that changes only the web app does not wait for the .NET tests (about 20 minutes on
+  AGC). A command `cd X && …` looks at X/ and the shared files, one without `cd` at every file outside the
+  `cd` folders of the project's commands; docs/ and .satory/ count for none. On by default;
+  `"test_skip_unchanged": false` in `.satory/project.json` turns it off.
 - **1.6.21** - a resumed task no longer starts over with Dev: a round interrupted after Dev's checks
   passed goes on with its review, and one interrupted after the review approved goes on with QA (the CLI
   keeps the point and Dev's result in the state; a rebase onto a newer main, a block or any later step
