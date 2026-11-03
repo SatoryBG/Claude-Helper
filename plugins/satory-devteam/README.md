@@ -426,6 +426,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.20** - the time of a CLI step the build waits on stays right when the steps of the UI review (beside
+  QA) come between the turns of waiting on it.
 - **1.6.19** - `env` of staging: more variables for the checks and the tests (e.g. the URL of a stub), so
   that ports can be laid out in order (preview, staging, the parallel copies) without relying on test defaults.
 - **1.6.18** - a preview environment for the user and an ephemeral staging for the tests: `preview` is updated

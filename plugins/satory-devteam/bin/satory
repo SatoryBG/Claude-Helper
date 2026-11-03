@@ -3313,7 +3313,7 @@ def workflow_agents(p: Project, stale: float = 1800) -> list[dict]:
             if now - j.stat().st_mtime > 86400:
                 continue
             started: dict[str, dict] = {}
-            chain: tuple[str, str] = ("", "")  # a CLI step the runner waits on in turns: (its label, first agent)
+            first: dict[str, str] = {}  # a CLI step the runner waits on in turns: its label -> its first agent
             with open(j, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     m = JOURNAL_REC.match(line)  # results carry whole outputs: parse only the small "started"
@@ -3326,10 +3326,13 @@ def workflow_agents(p: Project, stale: float = 1800) -> list[dict]:
                         d = json.loads(line)
                     except ValueError:
                         continue
-                    step = step_label(str(d.get("label", "")))
-                    if step is not None:  # "satory e2e T-1 r1", then "satory wait e2e T-1 r1 (1)", "(2)"…
-                        chain = (step, chain[1] if chain[0] == step else d.get("agentId", ""))
-                        d["first"] = chain[1]
+                    label = str(d.get("label", ""))
+                    step = step_label(label)
+                    if step is not None:  # "satory e2e T-1 r1", then "satory wait e2e T-1 r1 (1)", "(2)"… - other
+                        # steps (of the UI review beside QA) may come between the turns
+                        if not label.startswith("satory wait ") or step not in first:
+                            first[step] = d.get("agentId", "")
+                        d["first"] = first[step]
                     started[m.group(2)] = d
         except OSError:
             continue
