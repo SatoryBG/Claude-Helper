@@ -245,6 +245,9 @@ class Project:
         e2e = self.commands("e2e")
         if not names or len(names) > E2E_FAILED_MAX or len(e2e) != 1 or not pw_tail(e2e[0]):
             return []
+        names = [n for n in names if not n.startswith("[pinned]")]
+        if not names:
+            return []
         files, projects, titles = set(), set(), set()
         for n in names:
             m = E2E_LOC.match(n.strip())
@@ -278,6 +281,16 @@ class Project:
             env["SATORY_BASE_URL"] = staging["url"]
             # more variables the tests need to reach staging (e.g. the URL of a stub): "env" of staging
             env.update({k: str(v) for k, v in (staging.get("env") or {}).items()})
+            t = self.state.get("test_env")
+            if t:  # the tests' own copy of staging: its URL, its compose project, its ports in "env"
+                env["SATORY_BASE_URL"] = t["url"]
+                env["SATORY_COMPOSE_PROJECT"] = t["project"]
+                for k, v in (staging.get("env") or {}).items():
+                    v = str(v)
+                    for name, b in (t.get("base") or {}).items():
+                        if name in (t.get("vars") or {}):
+                            v = re.sub(rf":{b}\b", f":{t['vars'][name]}", v)
+                    env[k] = v
         return env
 
     # git
@@ -529,7 +542,62 @@ def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
     return counts.get("failed", 0), sum(counts.values()), names
 
 
+def staging_pinned(p: Project) -> list[str]:
+    """With the tests in their own copy, the spec files that name the user's staging literally (its host
+    ports, its compose project): they could reach the user's data, so they do not run until QA makes them
+    read SATORY_BASE_URL and SATORY_COMPOSE_PROJECT."""
+    if not p.state.get("test_env"):
+        return []
+    auto, _ = compose_parallel(p, env_cfg(p, "staging"))
+    if not auto:
+        return []
+    cmds = p.commands("e2e")
+    return pinned_tests(p, {"ports": auto["ports"], "project": auto["project"]}, cmds)[0]
+
+
+def pinned_guard(p: Project, cmds: list[str]) -> tuple[list[str], list[str]]:
+    """The e2e commands without the spec files of staging_pinned: a command naming files loses those (and is
+    dropped when none is left), one naming none runs every other spec file."""
+    pinned = staging_pinned(p)
+    if not pinned:
+        return cmds, []
+    folder = next((m.group(1) for c in cmds if (m := CD_DIR.match(c))), ".")
+    rest = [f for f in pinned_tests(p, {"ports": {}, "project": ""}, [f"cd {folder} && x"])[1] if f not in pinned]
+    out = []
+    for c in cmds:
+        if not pw_tail(c):
+            out.append(c)
+            continue
+        named = any(f in re.sub(r'"[^"]*"|\'[^\']*\'', '""', c) for f in pinned + rest)
+        if named:
+            for f in pinned:
+                c = c.replace(" " + shlex.quote(f), "")
+            if any(f in re.sub(r'"[^"]*"|\'[^\']*\'', '""', c) for f in rest):
+                out.append(c)
+        elif rest:
+            out.append(pw_files(c, rest))
+    return out, pinned
+
+
+def pinned_entry(f: str) -> str:
+    return (f"[pinned] › {f}:1:1 › names the user's staging literally (its host port or compose project) - not run; "
+            f"QA: read SATORY_BASE_URL and SATORY_COMPOSE_PROJECT instead")
+
+
 def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
+    cmds, pinned = pinned_guard(p, cmds)
+    if pinned:
+        progress(p, f"⚠ {tid} r{rnd} {name}: {len(pinned)} spec file(s) name the user's staging literally - not run: "
+                    + ", ".join(pinned))
+    if not cmds:
+        return {"ok": True, "skipped": True, "pinned": pinned}
+    res = e2e_run_cmds(p, tid, rnd, cmds, name, whole)
+    if pinned:
+        res["pinned"] = pinned
+    return res
+
+
+def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
     """Run e2e commands; when a few tests fail (at most e2e_retry_max_percent of the run), run only those
     once more (p.e2e_retry_commands). Passing then counts as passing; the tests go to the register as flaky.
     A failing result lists the failed tests (failed_tests) when the summary names them all. The whole suite
@@ -1069,22 +1137,20 @@ def wait_health(url: str) -> bool:
 # not start. No agent and no test ever uses preview.
 
 def env_cfg(p: Project, name: str) -> dict:
-    e = ((p.config.get("deploy") or {}).get("environments") or {}).get(name)
-    if name == "preview" and e is None:
-        return derived_preview(p)
-    return e or {}
-
-
-PREVIEW_PORT_OFFSET = 1000  # a preview read from staging: its ports are staging's + 1000 (8081 -> 9081)
+    return ((p.config.get("deploy") or {}).get("environments") or {}).get(name) or {}
 
 
 def your_env(p: Project) -> dict:
-    """Where the user looks at the app: preview (with whether it runs yet), else staging."""
+    """Where the user looks at the app: preview when one is set, else staging (no agent and no test uses it
+    when the tests run in copies of it)."""
     for n in ("preview", "staging"):
         e = env_cfg(p, n)
         if e.get("url"):
             st = (p.state.get("deploy") or {}).get(n) or {}
-            return {"env": n, "url": e["url"], "derived": bool(e.get("derived")), "deployed": bool(st.get("at")),
+            if n == "staging" and not e.get("ports"):
+                auto, _ = compose_parallel(p, e)
+                e = {**e, "compose_ports": (auto or {}).get("ports")}
+            return {"env": n, "url": e["url"], "deployed": bool(st.get("at")),
                     "at": st.get("at"), "image": st.get("image"),
                     **({"mailpit": u} if (u := mailpit_url(e)) else {})}
     return {}
@@ -1092,39 +1158,9 @@ def your_env(p: Project) -> dict:
 
 def mailpit_url(e: dict) -> str | None:
     port = next((v for k, v in (e.get("ports") or {}).items() if "MAIL" in k.upper()), None)
+    if port is None and e.get("compose_ports"):
+        port = next((v for k, v in e["compose_ports"].items() if "MAIL" in k.upper()), None)
     return f"http://localhost:{port}" if port else None
-
-
-def derived_preview(p: Project) -> dict:
-    """The user's preview when deploy.environments has none: a copy of staging under its own compose project
-    (<name>-preview) on staging's ports + 1000, with the env-file values that point at a port moved too.
-    `"preview": false` in deploy.environments turns it off; none when staging's ports cannot be read."""
-    staging = ((p.config.get("deploy") or {}).get("environments") or {}).get("staging") or {}
-    if not staging.get("up"):
-        return {}
-    auto, _ = compose_parallel(p, staging)
-    if not auto:
-        return {}
-    proj = auto["project"]
-    name = (proj[: -len("-staging")] if proj.endswith("-staging") else proj) + "-preview"
-    # the ports are chosen once and kept: the ones recorded at its first deploy, else staging's + 1000, moved
-    # on by 10 while any of them is taken
-    saved = ((p.state.get("deploy") or {}).get("preview") or {}).get("ports") or {}
-    if saved and set(saved) == set(auto["ports"]):
-        vars_ = {k: str(v) for k, v in saved.items()}
-    else:
-        vars_ = {}
-        for extra in range(0, 500, 10):
-            vars_ = {k: str(v + PREVIEW_PORT_OFFSET + extra) for k, v in auto["ports"].items()}
-            if all(port_free(int(x)) for x in vars_.values()):
-                break
-    ports = dict(vars_)
-    vars_["project"] = name
-    up = [re.sub(r"((?:^|\s)-p\s+)(\S+)", lambda m: f"{m.group(1)}{name}", c, count=1) for c in as_list(staging["up"])]
-    env = {**{k: v for k, v in vars_.items() if k != "project"},
-           **{k: shard_fill(x, vars_, 0) for k, x in auto["compose_env"].items()}}
-    return {"url": shard_fill(auto["env"]["SATORY_BASE_URL"], vars_, 0), "health": staging.get("health", ""),
-            "up": up, "vars": env, "derived": True, "ports": {k: int(v) for k, v in ports.items()}}
 
 
 def staging_ephemeral(p: Project) -> bool:
@@ -1156,13 +1192,112 @@ def env_down(p: Project, name: str, label: str = "") -> dict:
 
 
 def staging_down_if_ephemeral(p: Project, label: str) -> None:
+    test_env_down(p, label)
     if staging_ephemeral(p):
         env_down(p, "staging", label)
 
 
+# The tests' own copy of staging. Staging is the user's environment: no agent and no test uses it. Every
+# round (and every step between tasks that looks at the running app) brings up a copy from scratch - its own
+# compose project <name>-test, its own database and ports read from the staging compose files (as for the
+# parallel e2e copies) - and removes it, with its data, when it is done. "test_copies": false in
+# .satory/project.json, or a staging whose ports cannot be read, keeps the tests on staging itself.
+
+def test_copy_cfg(p: Project) -> dict | None:
+    if p.config.get("test_copies", True) is False or staging_ephemeral(p):
+        return None
+    staging = env_cfg(p, "staging")
+    if not staging.get("up"):
+        return None
+    auto, _ = compose_parallel(p, staging)
+    if not auto:
+        return None
+    proj = auto["project"]
+    name = (proj[: -len("-staging")] if proj.endswith("-staging") else proj) + "-test"
+    return {**auto, "name": name, "staging_up": staging["up"], "health": staging.get("health", ""),
+            "port_step": PARALLEL_PORT_STEP, "auto_ports": True}
+
+
+def test_env_vars(cfg: dict, slot: int) -> dict:
+    v = {k: str(int(b) + cfg["port_step"] * slot) for k, b in cfg["ports"].items()}
+    v["project"] = cfg["name"]
+    return v
+
+
+def test_env_cmds(cfg: dict, down: bool = False) -> list[str]:
+    out = []
+    for c in as_list(cfg["staging_up"]):
+        c = re.sub(r"((?:^|\s)-p\s+)(\S+)", lambda m: f"{m.group(1)}{cfg['name']}", c, count=1)
+        if down:
+            c = re.sub(r"\s+up(\s.*)?$", " down -v --remove-orphans", c)
+        out.append(c)
+    return out
+
+
+def test_env_down(p: Project, label: str = "") -> dict:
+    t = p.state.get("test_env")
+    cfg = test_copy_cfg(p)
+    if not t or not cfg:
+        p.state.pop("test_env", None)
+        return {"ok": True, "skipped": True}
+    env = dict(p.env(), SATORY_IMAGE=t.get("image") or "", **(t.get("vars") or {}))
+    r = run_cmds(p, test_env_cmds(cfg, down=True), p.logs / f"down-test-{label or now('%Y%m%d-%H%M%S')}.log", env)
+    p.state.pop("test_env", None)
+    p.save_state()
+    return r
+
+
+def test_env_up(p: Project, image: str, label: str) -> dict | None:
+    """A fresh copy of staging for the tests, with this image: the previous copy goes first, with its data.
+    None when the tests cannot run in a copy (they use staging itself)."""
+    cfg = test_copy_cfg(p)
+    if not cfg:
+        return None
+    test_env_down(p, f"{label}-before")
+    probe = {"ports": cfg["ports"], "port_step": cfg["port_step"], "auto_ports": True}
+    if not free_slots(probe, 1):
+        return {"ok": False, "stage": "ports", "log": "", "image": image, "error": "no free ports for the tests' copy"}
+    vars_ = test_env_vars(cfg, probe["slots"][1])
+    env_vars = {k: v for k, v in vars_.items() if k != "project"}
+    env_vars.update({k: shard_fill(x, vars_, 0) for k, x in cfg["compose_env"].items()})
+    log = p.logs / f"deploy-test-{label}.log"
+    up = run_cmds(p, test_env_cmds(cfg), log, dict(p.env(), SATORY_IMAGE=image, SATORY_ENV="test", **env_vars))
+    url = shard_fill(cfg["env"]["SATORY_BASE_URL"], vars_, 0)
+    p.state["test_env"] = {"url": url, "project": cfg["name"], "vars": env_vars, "image": image, "at": now(),
+                           "label": label, "base": {k: str(b) for k, b in cfg["ports"].items()}}
+    p.save_state()
+    if not up["ok"]:
+        return {"ok": False, "stage": "up", "log": up["log"], "image": image}
+    health_url = url.rstrip("/") + cfg.get("health", "")
+    healthy = wait_health(health_url)
+    return {"ok": healthy, "stage": "health" if not healthy else "done", "url": url, "health_url": health_url,
+            "image": image, "log": up["log"], "test_copy": cfg["name"]}
+
+
+def build_head_image(p: Project, label: str) -> dict:
+    d = p.config.get("deploy") or {}
+    sha = p.git("rev-parse", "--short=12", "HEAD")
+    image = f"{d['image']}:{sha}"
+    built = run_cmds(p, as_list(d.get("build")), p.logs / f"deploy-test-{label}.build.log",
+                     dict(p.env(), SATORY_IMAGE=image, SATORY_ENV="test"))
+    return {"ok": built["ok"], "image": image, "log": built.get("log")}
+
+
 def staging_ensure(p: Project) -> dict:
-    """An ephemeral staging with the image of main, for a step between two tasks that looks at the running app
-    (a UX review, the design step, the whole suite at every width). Skipped for a staging that always runs."""
+    """The app for a step between two tasks that looks at it (a UX review, the design step, the whole suite at
+    every width): the tests' copy with the image of main, else an ephemeral staging. Skipped for a staging
+    that always runs and is not copied."""
+    if test_copy_cfg(p):
+        image = (p.state.get("deploy") or {}).get("main_image")
+        t = p.state.get("test_env") or {}
+        if image and t.get("image") == image and wait_health_quick(t["url"].rstrip("/") + env_cfg(p, "staging").get("health", "")):
+            return {"ok": True, "url": t["url"], "image": image, "reused": True}
+        if not image:
+            built = build_head_image(p, "main")
+            if not built["ok"]:
+                return {"ok": False, "stage": "build", "log": built["log"]}
+            image = built["image"]
+        return test_env_up(p, image, "main")
     if not staging_ephemeral(p) or not env_cfg(p, "staging"):
         return {"ok": True, "skipped": True}
     d = p.state.get("deploy") or {}
@@ -1233,9 +1368,11 @@ def build_main_image(p: Project, label: str) -> dict:
 def cmd_env(p: Project, a) -> None:
     """satory env ensure|down|status <staging|preview>."""
     if a.action == "ensure":
-        if a.env != "staging":
-            raise SatoryError("env ensure is for staging (preview is updated when a task finishes)")
+        if a.env not in ("staging", "test"):
+            raise SatoryError("env ensure is for the tests' copy (preview is updated when a task finishes)")
         return emit(staging_ensure(p))
+    if a.action == "down" and a.env == "test":
+        return emit(test_env_down(p, "manual"))
     if a.action == "down":
         if a.env == "preview" and not a.force:
             raise SatoryError("preview holds the user's data: env down preview needs --force")
@@ -1638,7 +1775,8 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
     res: dict = {}
     # spec files that name staging's own ports or project run against staging itself, beside the copies;
     # the copies share the rest
-    pinned, rest = pinned_tests(p, cfg, cmds) if cfg.get("auto_ports") else ([], [])
+    # (with the tests in their own copy, pinned_guard has already left those files out)
+    pinned, rest = pinned_tests(p, cfg, cmds) if cfg.get("auto_ports") and not p.state.get("test_env") else ([], [])
     if pinned and rest:
         progress(p, f"⚡ {tid} r{rnd}: {len(pinned)} spec file(s) name staging's own ports or project - they run "
                     f"against staging, the other {len(rest)} in the copies")
@@ -1713,8 +1851,7 @@ def deploy(p: Project, env_name: str, image: str | None = None, label: str = "")
     previous = p.state.setdefault("deploy", {}).get(env_name, {})
     p.state["deploy"][env_name] = {"image": image, "sha": sha, "at": now(), "healthy": healthy,
                                    "previous": previous.get("image") if previous.get("image") != image
-                                   else previous.get("previous"),
-                                   **({"ports": e["ports"], "url": e["url"]} if e.get("derived") else {})}
+                                   else previous.get("previous")}
     p.save_state()
     return {"ok": healthy, "stage": "health" if not healthy else "done", "url": e["url"],
             "health_url": health_url, "image": image, "log": up["log"]}
@@ -3309,6 +3446,11 @@ def cmd_step(p: Project, a) -> None:
               "context_error": refresh_context(p, tid)})
 
     elif a.step == "pre-qa":
+        if test_copy_cfg(p):  # the tests' own copy, from scratch every round; staging is the user's
+            built = build_head_image(p, f"{tid}-r{rnd}")
+            if not built["ok"]:
+                return emit({"ok": False, "stage": "build", "log": built["log"]})
+            return emit(test_env_up(p, built["image"], f"{tid}-r{rnd}"))
         if staging_ephemeral(p):  # a fresh database for every round
             env_down(p, "staging", f"{tid}-r{rnd}-before")
         res = deploy(p, "staging", label=f"{tid}-r{rnd}")
@@ -3380,6 +3522,12 @@ def cmd_step(p: Project, a) -> None:
         if listed:
             st["known_tests"] = sorted(known | names)
         gates = {"test": gate(p, tid, rnd, "test")}
+        pinned = staging_pinned(p)
+        if pinned:
+            plog = p.logs / f"{tid}-r{rnd}-pinned.log"
+            plog.write_text("".join(pinned_entry(f) + "\n" for f in pinned), encoding="utf-8")
+            gates["pinned"] = {"ok": False, "exit": 1, "log": p.rel(plog), "scope": "pinned",
+                               "failed_tests": [pinned_entry(f) for f in pinned]}
         # only this task's e2e tests (+ smoke) here; the whole suite runs in step full-e2e after Security.
         # When it failed in the previous round, the tests that failed there run here too (or, when they cannot
         # be selected, the whole suite). Only for a workflow that runs that step (--split-e2e): an older one
@@ -3546,13 +3694,14 @@ def cmd_task_finish(p: Project, a) -> None:
         if pushed and p.git_ok("ls-remote", "--exit-code", "--heads", "origin", branch):
             push_quiet(p, "origin", "--delete", branch)  # the copy of the work in progress is merged
     preview: dict = {"skipped": True}
-    if env_cfg(p, "preview") or staging_ephemeral(p):
+    if env_cfg(p, "preview") or staging_ephemeral(p) or test_copy_cfg(p):
         built = build_main_image(p, f"main-{commit[:12]}")
         if not built["ok"]:
             staging = {"ok": False, "stage": "build", "log": built["log"]}
         else:
             if env_cfg(p, "preview"):
                 preview = deploy_preview(p, built["image"], f"main-{commit[:12]}")
+            test_env_down(p, f"{tid}-done")
             if staging_ephemeral(p):
                 env_down(p, "staging", f"{tid}-done")
                 staging = {"ok": True, "skipped": True, "ephemeral": True, "image": built["image"]}
@@ -4097,7 +4246,7 @@ def main() -> None:
 
     s = sub.add_parser("env", help="staging and preview: ensure (staging), down, status")
     s.add_argument("action", choices=["ensure", "down", "status"])
-    s.add_argument("env", choices=["staging", "preview"])
+    s.add_argument("env", choices=["staging", "preview", "test"])
     s.add_argument("--force", action="store_true", help="down preview (it holds the user's data)")
     sub.add_parser("parallel", help="the parallel e2e setting: shards for the next whole suite, why, the measured runs")
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")

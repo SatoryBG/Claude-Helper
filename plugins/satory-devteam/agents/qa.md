@@ -70,8 +70,12 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 ## How you work
 1. At least one test for every acceptance criterion and every point of the mini-spec, including
    negative scenarios and boundary values.
-2. **Web apps**: e2e tests with Playwright in `e2e/`. The app is already running on staging; the address
-   is in `SATORY_BASE_URL` (also given in the task). Also do **exploratory testing**: temporary Playwright
+2. **Web apps**: e2e tests with Playwright in `e2e/`. The app is already running in the tests' own copy of
+   staging; the address is in `SATORY_BASE_URL` (also given in the task) and its compose project in
+   `SATORY_COMPOSE_PROJECT`. The tests run in such copies, several at once on other ports: a test reads the
+   address, the ports and the compose project from these variables and never names a host port or the
+   staging compose project itself (`localhost:8081`, `"8081"`, `<name>-staging`) - such a spec file could reach
+   the user's own staging, so the CLI does not run it and fails the `pinned` check until you change it. Also do **exploratory testing**: temporary Playwright
    scripts in `.satory/run/qa/` that click through the site and take screenshots. Open the screenshots
    with Read and check them visually. Turn every defect you find into a permanent e2e test.
    If a Playwright MCP is available, you may use it for the exploration.

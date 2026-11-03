@@ -192,14 +192,19 @@ Each command of a check (build, tests, e2e) may run for `command_timeout_minutes
 `.satory/project.json` (default 90). A command that runs longer is stopped and the check fails with
 "timeout after N s" at the end of its log: raise the limit when the e2e suite has grown past it.
 
-### Environments: staging for the tests, preview for you
+### Environments: staging for you, copies for the tests
 
-`staging` is where the agents and the tests work; the tests reset its database all the time. `preview`
-is your own copy of the app, to look at the progress and to keep your data. Without a `preview` in
-`deploy.environments` it is a copy of staging (as for the parallel e2e copies, read from the staging compose
-files): its own compose project `<name>-preview`, staging's ports + 1000 (8081 -> 9081, the Mailpit of the
-example 8025 -> 9025) and the env-file values that point at a port moved too; `"preview": false` turns it
-off. It can also be set:
+`staging` is your environment: it is updated with main after every finished task, its data stays, and no
+agent and no test uses it. Everything the agents run - QA, the UI review, the task's e2e tests, the whole
+suite, the reviews between tasks - runs in the tests' own copy of staging, made from scratch (its own
+compose project `<name>-test`, its own database, ports read from the staging compose files as for the
+parallel copies: staging's + 100 x a free slot) and removed with its data when it is done; the parallel e2e
+shards are more such copies. `satory status` gives `your_env` and the URLs. `"test_copies": false` (or a
+staging whose ports cannot be read) keeps the tests on staging itself, as before. A spec file that names
+staging's own host port or compose project could reach your data: it does not run, and the `pinned` check
+fails until QA makes it read `SATORY_BASE_URL` and `SATORY_COMPOSE_PROJECT`.
+
+A separate `preview` can still be set (e.g. when staging is ephemeral):
 
 ```json
 "environments": {
@@ -223,7 +228,7 @@ off. It can also be set:
   `{"MARKET_STUB_URL": "http://localhost:8182"}`), so that test defaults never point anywhere else.
 - Ports in order: preview on the familiar port (e.g. 8081), staging on the next (8082), the parallel copies
   after it (`e2e_parallel.ports` base 8082: 8083, 8084 …), the stubs 100 higher (8182, 8183 …). Read from
-  the compose files instead: staging on its own ports, the copies on + 100 x slot, preview on + 1000.
+  the compose files instead: staging on its own ports, the tests' copies on + 100 x a free slot.
 
 ### The whole e2e suite in parallel
 
@@ -444,6 +449,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.6.27** - staging is the user's environment and the tests never use it: every round (and every review
+  between tasks) brings up the tests' own copy of staging from scratch (`<name>-test`, its own database,
+  ports read from the staging compose files) and removes it with its data afterwards; staging gets main
+  after every finished task. The agents get the copy's URL and compose project. A spec file that names
+  staging's own host port or compose project does not run, and the `pinned` check fails until QA changes it.
+  The preview read from staging (1.6.24, 1.6.25) is gone: staging is that environment. `"test_copies":
+  false` keeps the tests on staging.
 - **1.6.26** - a note for the CLI (a check's findings, a journal entry) goes to the runner as base64 with its
   POSIX cksum instead of a bash ANSI-C string: the runner retypes the command, and a long note full of quotes and
   backslashes came back with one escape level less - invalid JSON that stopped a build. A copy that still differs

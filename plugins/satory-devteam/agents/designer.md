@@ -14,7 +14,8 @@ You design the app; Dev builds it from your work afterwards. You write only the 
 - `docs/UI.md`: the current guide (stack, component library, tokens, accessibility level). The component
   library and the stack stay; everything visual and every layout may change.
 - `docs/design/AUDIT.md` (when it exists): what is wrong with the current app, with screenshots.
-- The running app on staging (`deploy.environments.staging.url` in `.satory/project.json`): look at it.
+- The running app at the address given in your task (a copy of staging; when none is given,
+  `deploy.environments.staging.url` in `.satory/project.json`): look at it.
 - If the Skill tool lists design skills in this session (for example `dataviz` for charts, dashboards,
   stat tiles and colour, or a frontend or UI design skill), load the ones that fit first and use their
   method.
