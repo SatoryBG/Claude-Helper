@@ -480,10 +480,11 @@ async function collect(id, label, phase) {
 }
 
 
-// A note goes to the CLI as base64 with its POSIX cksum: the runner retypes the command, and a long note full
-// of quotes and backslashes (a check's findings as JSON) came back with one escape level less - invalid JSON
-// that stopped the build. base64 has nothing to unescape; a copy that still differs fails the cksum, the
-// command is not run, and the step is sent again.
+// A note goes to the CLI in bash single quotes, readable as it is (no base64: an encoded payload piped to a
+// decoder looks like hidden code to a safety check, and the command never ran), with the POSIX cksum of its
+// bytes. In single quotes JSON keeps its backslashes as they are - half of what bash ANSI-C quoting needed, where
+// the runner retyping a long note full of quotes dropped one escape level and the build stopped on invalid JSON.
+// A copy that still differs fails the cksum, nothing runs, and the step is sent again.
 function utf8Bytes(text) {
   const out = []
   for (const ch of String(text)) {
@@ -492,16 +493,6 @@ function utf8Bytes(text) {
     else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63))
     else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
     else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
-  }
-  return out
-}
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-function base64(bytes) {
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const [a, b = 0, c = 0] = bytes.slice(i, i + 3)
-    const n = (a << 16) | (b << 8) | c
-    out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (i + 1 < bytes.length ? B64[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? B64[n & 63] : '=')
   }
   return out
 }
@@ -514,17 +505,17 @@ const CRC_TABLE = (() => {
   }
   return t
 })()
-function cksum(text) {  // what `printf %s "$X" | cksum` prints for an ASCII text: "<crc> <length>"
+function cksum(bytes) {  // what `printf %s "$X" | cksum` prints: "<crc> <length in bytes>"
   let crc = 0
   const step = b => { crc = ((crc << 8) ^ CRC_TABLE[((crc >>> 24) ^ b) & 0xff]) >>> 0 }
-  for (let i = 0; i < text.length; i++) step(text.charCodeAt(i))
-  for (let n = text.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
-  return `${(~crc) >>> 0} ${text.length}`
+  for (const b of bytes) step(b)
+  for (let n = bytes.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
+  return `${(~crc) >>> 0} ${bytes.length}`
 }
 function withNote(full, note) {
-  const b = base64(utf8Bytes(note))
-  return `SATORY_NOTE='${b}'; if [ "$(printf %s "$SATORY_NOTE" | cksum)" = "${cksum(b)}" ]; then ` +
-    `${full} --note-stdin <<< "$(printf %s "$SATORY_NOTE" | base64 -d)"; ` +
+  const quoted = "'" + note.replace(/'/g, "'\\''") + "'"
+  return `SATORY_NOTE=${quoted}; if [ "$(printf %s "$SATORY_NOTE" | cksum)" = "${cksum(utf8Bytes(note))}" ]; then ` +
+    `${full} --note-stdin <<< "$SATORY_NOTE"; ` +
     `else echo '{"ok":false,"note_corrupted":true,"error":"the note was not copied exactly"}'; fi`
 }
 

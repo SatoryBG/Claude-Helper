@@ -449,6 +449,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.1** - notes go to the CLI in readable bash single quotes with their cksum, not as base64: a long base64
+  payload piped to `base64 -d` looks like hidden code to a safety check, and the runner's command never ran (the
+  build stopped on a step that "ended without an exit code"). In single quotes JSON keeps its backslashes as they
+  are; the cksum check and the resend of 1.7.0 stay.
 - **1.7.0** - a new model of the environments (the changes of 1.6.22 - 1.6.27, now one minor version):
   - **staging is the user's environment**: updated with main after every finished task, its data kept; no
     agent and no test uses it; `/satory-devteam:status` always starts with its URL;
