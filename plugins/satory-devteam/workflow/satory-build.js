@@ -515,11 +515,12 @@ function cksum(bytes) {  // what `printf %s "$X" | cksum` prints: "<crc> <length
 }
 // A note travels in plain bash single quotes with nothing inside them for the runner to "fix": it rewrote every
 // quoting idiom it saw ('\'', '$'\x27'', '$'\x0a'') and lost a quote on the way. So the note is made safe first -
-// an apostrophe becomes ’, a line break the visible ⏎ (turned back by sed before the CLI reads it), a tab four
-// spaces, other control characters go - and it goes with the POSIX cksum of that safe text.
-const NL_MARK = '⏎'
+// an apostrophe becomes ’, a line break the marker @@NL@@ (turned back by sed before the CLI reads it), a tab four
+// spaces, other control characters go - and it goes with the POSIX cksum of that safe text. The marker means
+// nothing: a ⏎ was read as a line break and typed as one.
+const NL_MARK = '@@NL@@'
 function safeNote(text) {
-  return String(text).replace(/'/g, '’').replace(new RegExp(NL_MARK, 'g'), '↵').replace(/\r\n?/g, '\n')
+  return String(text).replace(/'/g, '’').replace(/@@NL@@/g, '@@ NL@@').replace(/\r\n?/g, '\n')
     .replace(/\t/g, '    ').replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').replace(/\n/g, NL_MARK)
 }
 const UNMARK = `sed "s/${NL_MARK}/\\n/g"`

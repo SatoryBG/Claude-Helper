@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.15** - a line break in a note goes as the marker `@@NL@@`, which means nothing: the runner read ⏎ as a line
+  break and typed one.
 - **1.7.14** - the agents get an `export …` line for the tests' copy (its address, compose project and ports) and
   run it with every test or script: their own shell has none of these variables, so QA's test runs fell back to
   the user's staging and left three drafts there. The task, the reviews between tasks, QA, the UI and UX reviewers
