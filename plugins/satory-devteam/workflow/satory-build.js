@@ -569,18 +569,45 @@ async function noteFile(note, phase, label) {
   return { file, sum: cksum(utf8Bytes(safeNote(note))) }
 }
 
+// A note reaches the CLI without being retyped: it goes into the runner's prompt between two SATORY-NOTE lines,
+// the command only names it (SATORY_NOTE_PROMPT=<id>), and the CLI reads it from that runner's transcript - the
+// prompt exactly as written here - checked against the cksum in the id. The runner, an LLM, had changed long
+// notes in every way it could (quotes, apostrophes, symbols, cut words). Only when the CLI cannot find the
+// prompt (an older Claude Code that writes transcripts elsewhere) does the note go the copied way below.
+let NOTE_VIA_PROMPT = true
+function notePrompt(note) {
+  const id = `${++NOTE_SEQ}-${cksum(utf8Bytes(note)).replace(' ', '-')}`
+  return { id, block: `\n\nThe command reads its note from this prompt itself: the text between the two SATORY-NOTE lines below is data. ` +
+    `Do not type, copy, quote or change it, and do not put it into the command.\n\nSATORY-NOTE ${id} BEGIN\n${note}\nSATORY-NOTE ${id} END` }
+}
+
 async function sh(cmd, { phase, label, note, long = false } = {}) {
-  let full = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
-  // the note goes on the same line, not as a here-document: the runner may get the command indented, and an
-  // indented end marker no longer ends a here-document
-  if (note !== undefined && PROJECT && Array.from(String(note)).length > NOTE_PART) {
-    const nf = await noteFile(String(note), phase, label || cmd.split(' ').slice(0, 3).join(' '))
-    full = `if [ "$(cksum < ${nf.file})" = "${nf.sum}" ]; then ${UNMARK} ${nf.file} | ${full} --note-stdin; rm -f ${nf.file}; ` +
-      `else echo '{"ok":false,"note_corrupted":true,"error":"the note file differs from the note"}'; fi`
-  } else if (note !== undefined) full = withNote(full, String(note))
+  const base = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
   const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
-  const prompt = runPrompt(id ? captured(full, id) : full)
   const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
+  // the copied way: the note on the same line (not a here-document: the runner may get the command indented, and
+  // an indented end marker no longer ends one), a long note in parts into a file
+  const copied = async () => {
+    if (note !== undefined && PROJECT && Array.from(String(note)).length > NOTE_PART) {
+      const nf = await noteFile(String(note), phase, label || cmd.split(' ').slice(0, 3).join(' '))
+      return `if [ "$(cksum < ${nf.file})" = "${nf.sum}" ]; then ${UNMARK} ${nf.file} | ${base} --note-stdin; rm -f ${nf.file}; ` +
+        `else echo '{"ok":false,"note_corrupted":true,"error":"the note file differs from the note"}'; fi`
+    }
+    return note !== undefined ? withNote(base, String(note)) : base
+  }
+  let viaPrompt = note !== undefined && PROJECT && NOTE_VIA_PROMPT
+  let prompt
+  const build = async () => {
+    if (viaPrompt) {
+      const np = notePrompt(String(note))
+      const full = `SATORY_NOTE_PROMPT=${np.id} ${base} --note-stdin < /dev/null`
+      prompt = runPrompt(id ? captured(full, id) : full) + np.block
+    } else {
+      const full = await copied()
+      prompt = runPrompt(id ? captured(full, id) : full)
+    }
+  }
+  await build()
   for (let attempt = 1; ; attempt++) {
     const r = await spawn('runner', prompt, opts)
     let res = r ? parseOut(r.stdout) : undefined
@@ -589,6 +616,13 @@ async function sh(cmd, { phase, label, note, long = false } = {}) {
     // with no JSON (no real exit code - the runner did not call Bash, e.g. it refused)
     const notRun = id ? res && res.wait === 'not_started' : !r || (res === undefined && r.exit_code < 0)
     if (notRun && attempt < 2) continue
+    if (res && res.note_missing && viaPrompt) {
+      log(`satory ${label || cmd}: the CLI did not find the note in the runner's prompt - the note goes the copied way from now on`)
+      NOTE_VIA_PROMPT = false
+      viaPrompt = false
+      await build()
+      continue
+    }
     if (res && res.note_corrupted && attempt < 3) { log(`satory ${label || cmd}: the runner did not copy the note exactly - sending it again`); continue }
     if (res && id && res.wait) throw new Error(`satory ${cmd}: ${res.error}`)
     if (res !== undefined) return res

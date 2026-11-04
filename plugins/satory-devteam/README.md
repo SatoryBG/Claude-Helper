@@ -449,6 +449,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.16** - a note is no longer retyped by the runner: the workflow puts it into the runner's prompt between two
+  `SATORY-NOTE <id>` lines, the command only names it (`SATORY_NOTE_PROMPT=<id>`), and the CLI reads it from that
+  runner's transcript - the prompt exactly as written - checked against the cksum in the id. The runner had changed
+  long notes in every way (quotes, apostrophes, symbols, cut words) and stopped builds many times; the copied way
+  of 1.7.1-1.7.15 stays only as the fallback when the CLI cannot find the prompt.
 - **1.7.15** - a line break in a note goes as the marker `@@NL@@`, which means nothing: the runner read ⏎ as a line
   break and typed one.
 - **1.7.14** - the agents get an `export …` line for the tests' copy (its address, compose project and ports) and

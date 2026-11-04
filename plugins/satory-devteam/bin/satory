@@ -969,7 +969,82 @@ def join_note(note: str, lines: list[str]) -> str:
 
 
 def read_note(args) -> str:
+    nid = os.environ.get("SATORY_NOTE_PROMPT")
+    if nid:  # the workflow put the note into the runner's prompt; the runner does not retype it
+        text = note_from_prompt(nid)
+        if text is None:
+            emit({"ok": False, "note_missing": True, "error": f"note {nid} not found in a runner's prompt"})
+            sys.exit(1)
+        return text
     return sys.stdin.read() if getattr(args, "note_stdin", False) else ""
+
+
+_CRC_TABLE: list[int] = []
+
+
+def posix_cksum(data: bytes) -> str:
+    """What `cksum` prints for these bytes: "<crc> <length>"."""
+    if not _CRC_TABLE:
+        for i in range(256):
+            c = i << 24
+            for _ in range(8):
+                c = ((c << 1) ^ 0x04C11DB7) if c & 0x80000000 else (c << 1)
+            _CRC_TABLE.append(c & 0xFFFFFFFF)
+    crc = 0
+    def step(b: int) -> None:
+        nonlocal crc
+        crc = ((crc << 8) & 0xFFFFFFFF) ^ _CRC_TABLE[((crc >> 24) ^ b) & 0xFF]
+    for b in data:
+        step(b)
+    n = len(data)
+    while n:
+        step(n & 0xFF)
+        n >>= 8
+    return f"{(~crc) & 0xFFFFFFFF} {len(data)}"
+
+
+def note_from_prompt(nid: str) -> str | None:
+    """A note the workflow put into a runner's prompt between "SATORY-NOTE <id> BEGIN" and "... END", read from
+    that runner's transcript (the prompt as the workflow wrote it - nothing retyped), checked against the cksum in
+    its id (<seq>-<crc>-<length>)."""
+    m = re.fullmatch(r"\d+-(\d+)-(\d+)", nid)
+    if not m:
+        return None
+    want = f"{m.group(1)} {m.group(2)}"
+    begin, end = f"SATORY-NOTE {nid} BEGIN\n", f"\nSATORY-NOTE {nid} END"
+    base = Path.home() / ".claude" / "projects"
+    now_t = time.time()
+    files = []
+    for f in base.glob("*/*/subagents/workflows/*/agent-*.jsonl"):
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        if now_t - mt < 3 * 3600:
+            files.append((mt, f))
+    for _, f in sorted(files, reverse=True)[:400]:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh):
+                    if i > 5:
+                        break
+                    if nid not in line:
+                        continue
+                    try:
+                        msg = (json.loads(line).get("message") or {}).get("content")
+                    except ValueError:
+                        continue
+                    texts = [msg] if isinstance(msg, str) else [x.get("text", "") for x in msg or [] if isinstance(x, dict)]
+                    for t in texts:
+                        a = t.find(begin)
+                        b = t.find(end, a + len(begin)) if a >= 0 else -1
+                        if a >= 0 and b >= 0:
+                            note = t[a + len(begin):b]
+                            if posix_cksum(note.encode("utf-8")) == want:
+                                return note
+        except OSError:
+            continue
+    return None
 
 
 # ------------------------------------------------------------------- plan ---
