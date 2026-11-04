@@ -512,18 +512,20 @@ function cksum(bytes) {  // what `printf %s "$X" | cksum` prints: "<crc> <length
   for (let n = bytes.length; n > 0; n = Math.floor(n / 256)) step(n & 0xff)
   return `${(~crc) >>> 0} ${bytes.length}`
 }
-// bash single quotes on one line: an apostrophe and every control character (a new line above all) as
-// '$'\xHH'' - a note with real line breaks reached the runner indented, and it removed the indent as markdown
-function quote1(text) {
-  // an apostrophe too goes as '$'\x27'', not as the idiom '\'': the runner "improved" that idiom into '"'"' and
-  // lost a quote on the way, so the command no longer parsed
-  return "'" + text.replace(/['\x00-\x1f\x7f]/g,
-    c => "'$'\\x" + c.charCodeAt(0).toString(16).padStart(2, '0') + "''") + "'"
+// A note travels in plain bash single quotes with nothing inside them for the runner to "fix": it rewrote every
+// quoting idiom it saw ('\'', '$'\x27'', '$'\x0a'') and lost a quote on the way. So the note is made safe first -
+// an apostrophe becomes ’, a line break the visible ⏎ (turned back by sed before the CLI reads it), a tab four
+// spaces, other control characters go - and it goes with the POSIX cksum of that safe text.
+const NL_MARK = '⏎'
+function safeNote(text) {
+  return String(text).replace(/'/g, '’').replace(new RegExp(NL_MARK, 'g'), '↵').replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '    ').replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').replace(/\n/g, NL_MARK)
 }
+const UNMARK = `sed "s/${NL_MARK}/\\n/g"`
 function withNote(full, note) {
-  const quoted = quote1(note)
-  return `SATORY_NOTE=${quoted}; if [ "$(printf %s "$SATORY_NOTE" | cksum)" = "${cksum(utf8Bytes(note))}" ]; then ` +
-    `${full} --note-stdin <<< "$SATORY_NOTE"; ` +
+  const safe = safeNote(note)
+  return `SATORY_NOTE='${safe}'; if [ "$(printf %s "$SATORY_NOTE" | cksum)" = "${cksum(utf8Bytes(safe))}" ]; then ` +
+    `printf %s "$SATORY_NOTE" | ${UNMARK} | ${full} --note-stdin; ` +
     `else echo '{"ok":false,"note_corrupted":true,"error":"the note was not copied exactly"}'; fi`
 }
 
@@ -538,7 +540,7 @@ async function noteFile(note, phase, label) {
   const file = `${dir}/${++NOTE_SEQ}-${String(label || 'note').replace(/[^\w.-]/g, '-').slice(0, 40)}`
   // parts end at a space or a line break, never inside a word: a part cut as "(_ot" came back as "(_other)…" -
   // the runner completed what looked like truncated text
-  const chars = Array.from(note)
+  const chars = Array.from(safeNote(note))
   const parts = []
   for (let i = 0; i < chars.length;) {
     let end = Math.min(chars.length, i + NOTE_PART)
@@ -552,8 +554,7 @@ async function noteFile(note, phase, label) {
   }
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]
-    const quoted = quote1(part)
-    const cmd = `mkdir -p ${dir} && ${i === 0 ? `rm -f ${file} && ` : ''}SATORY_PART=${quoted}; ` +
+    const cmd = `mkdir -p ${dir} && ${i === 0 ? `rm -f ${file} && ` : ''}SATORY_PART='${part}'; ` +
       `if [ "$(printf %s "$SATORY_PART" | cksum)" = "${cksum(utf8Bytes(part))}" ]; then printf %s "$SATORY_PART" >> ${file} && ` +
       `echo '{"ok":true}'; else echo '{"ok":false,"note_corrupted":true}'; fi`
     for (let attempt = 1; ; attempt++) {
@@ -563,7 +564,7 @@ async function noteFile(note, phase, label) {
       if (attempt >= 4) throw new Error(`satory ${label || 'note'}: part ${i + 1}/${parts.length} of the note was not copied exactly`)
     }
   }
-  return { file, sum: cksum(utf8Bytes(note)) }
+  return { file, sum: cksum(utf8Bytes(safeNote(note))) }
 }
 
 async function sh(cmd, { phase, label, note, long = false } = {}) {
@@ -572,7 +573,7 @@ async function sh(cmd, { phase, label, note, long = false } = {}) {
   // indented end marker no longer ends a here-document
   if (note !== undefined && PROJECT && Array.from(String(note)).length > NOTE_PART) {
     const nf = await noteFile(String(note), phase, label || cmd.split(' ').slice(0, 3).join(' '))
-    full = `if [ "$(cksum < ${nf.file})" = "${nf.sum}" ]; then ${full} --note-stdin < ${nf.file}; rm -f ${nf.file}; ` +
+    full = `if [ "$(cksum < ${nf.file})" = "${nf.sum}" ]; then ${UNMARK} ${nf.file} | ${full} --note-stdin; rm -f ${nf.file}; ` +
       `else echo '{"ok":false,"note_corrupted":true,"error":"the note file differs from the note"}'; fi`
   } else if (note !== undefined) full = withNote(full, String(note))
   const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null

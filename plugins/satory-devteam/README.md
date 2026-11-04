@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.11** - a note has nothing inside its single quotes for the runner to rewrite: an apostrophe becomes ’, a line
+  break the visible ⏎ (sed turns it back before the CLI reads the note), a tab four spaces, other control characters
+  go. The runner rewrote every quoting idiom it saw (`'\\''`, `'$'\\x27''`) and broke the command each time.
 - **1.7.10** - an apostrophe in a note goes as `'$'\\x27''` like the control characters, not as the shell idiom
   `'\\''`: the runner "improved" that idiom into `'"'"'`, lost a quote on the way, and the command no longer parsed.
 - **1.7.9** - the parallel copies no longer multiply the browsers: Playwright's own workers (half of the CPUs
