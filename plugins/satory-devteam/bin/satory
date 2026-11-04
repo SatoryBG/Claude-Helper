@@ -1713,9 +1713,21 @@ def pinned_tests(p: Project, cfg: dict, cmds: list[str]) -> tuple[list[str], lis
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        (pinned if mark and mark.search(text) else rest).append(rel)
+        (pinned if mark and any(names_staging(line, mark) for line in text.splitlines()) else rest).append(rel)
     return pinned, rest
 
+
+ENV_FALLBACK = re.compile(r"process\.env\.\w+\s*(\?\?|\|\|)\s*$")
+
+
+def names_staging(line: str, mark: re.Pattern) -> bool:
+    """A line naming staging literally - except inside a string that is the fallback of an environment variable
+    (`process.env.SATORY_BASE_URL ?? "http://localhost:8081"`): the CLI always sets those variables."""
+    for m in mark.finditer(line):
+        q = max(line.rfind(c, 0, m.start() + 1) for c in "\"'`")  # where the string with the match opens
+        if q < 0 or not ENV_FALLBACK.search(line[:q]):
+            return True
+    return False
 
 def pw_files(cmd: str, files: list[str]) -> str:
     """The Playwright run limited to these spec files (its file filters are regular expressions)."""
