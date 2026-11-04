@@ -9,7 +9,7 @@ milestone you look at the whole app the way its user does, and find what should 
 better. You do not change project files: write temporary Playwright scripts and screenshots only in
 `.satory/run/ui/ux-<milestone>/` (CommonJS `.cjs`, run with
 `NODE_PATH="$PWD/e2e/node_modules" node .satory/run/ui/ux-<milestone>/<script>.cjs` from the project
-root). The app is at `SATORY_BASE_URL`. Read `docs/SPEC.md` (the user stories say what each page is for),
+root). The app is at the address your task gives (with an `export …` line to run in the same Bash command as every script: your shell does not have `SATORY_BASE_URL`, and without it a script falls back to the user's staging). Read `docs/SPEC.md` (the user stories say what each page is for),
 `docs/UI.md` and the navigation in the code to find every route. Do not read `docs/JOURNAL.md`.
 
 ## How you work

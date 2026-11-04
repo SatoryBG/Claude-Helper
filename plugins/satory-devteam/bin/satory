@@ -1298,8 +1298,12 @@ def test_env_up(p: Project, image: str, label: str) -> dict | None:
         return {"ok": False, "stage": "up", "log": up["log"], "image": image}
     health_url = url.rstrip("/") + cfg.get("health", "")
     healthy = wait_health(health_url)
+    # what an agent exports in its own shell before it runs a test or a script: its shell has none of these, and
+    # a test without them falls back to the user's staging
+    exports = {"SATORY_BASE_URL": url, "SATORY_COMPOSE_PROJECT": cfg["name"], **env_vars}
+    export = "export " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in exports.items())
     return {"ok": healthy, "stage": "health" if not healthy else "done", "url": url, "health_url": health_url,
-            "image": image, "log": up["log"], "test_copy": cfg["name"]}
+            "image": image, "log": up["log"], "test_copy": cfg["name"], "export": export}
 
 
 def build_head_image(p: Project, label: str) -> dict:

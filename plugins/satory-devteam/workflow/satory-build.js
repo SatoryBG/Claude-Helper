@@ -425,16 +425,17 @@ async function stage(role, prompt, opts) {
 
 // A step between two tasks that looks at the running app gets it with the image of main first: the tests' own
 // copy of staging (staging itself is the user's), or an ephemeral staging. APP_URL is where it runs.
-let APP_URL = ''
+let APP_URL = '', APP_EXPORT = ''
 async function stagingUp(phase) {
   try {
     const r = must(await sh('env ensure test', { phase, label: 'app up', long: true }), 'env ensure test')
     if (!r.ok) log(`the app does not start (${r.stage || ''} ${r.log || ''}) - the step goes on without it`)
     APP_URL = r.ok && r.url ? r.url : ''
+    APP_EXPORT = r.ok && r.export ? r.export : ''
   } catch (e) { log(`the app does not start: ${e.message}`) }
 }
 const appWhere = (root = '') => APP_URL
-  ? `${APP_URL} (a copy of staging for this step; ${"Never open or change the user's staging (deploy.environments.staging.url) or a preview: they hold the user's own data."})`
+  ? `${APP_URL} (a copy of staging for this step; ${APP_EXPORT ? 'run `' + APP_EXPORT + '` in the same Bash command as every test or script you run - without it a test falls back to the user\'s staging; ' : ''}${"Never open or change the user's staging (deploy.environments.staging.url) or a preview: they hold the user's own data."})`
   : `deploy.environments.staging.url in ${root}.satory/project.json`
 
 function runPrompt(full) {
@@ -716,7 +717,7 @@ ${bullets(dev.changes)}${prev}${disputes}`
 function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa, suiteFailed) {
   const env = staging.skipped
     ? 'The project has no staging environment (not a web app or no deploy) - no e2e and no browser exploration.'
-    : `The app is running at ${staging.url} (the same is in SATORY_BASE_URL)${staging.test_copy ? ' - the tests\' own copy of staging (compose project ' + staging.test_copy + ', also in SATORY_COMPOSE_PROJECT), from scratch for this round' : ''}. Never open or change the user's staging (deploy.environments.staging.url) or a preview (deploy.environments.preview): they hold the user's own data.`
+    : `The app is running at ${staging.url}${staging.test_copy ? ' - the tests\' own copy of staging (compose project ' + staging.test_copy + '), from scratch for this round' : ''}. ${staging.export ? 'Your shell does not have its address: run `' + staging.export + '` in the same Bash command as every test, Playwright script or curl you run (each Bash call starts a fresh shell) - without it a test falls back to the user\'s staging. ' : ''}Never open or change the user's staging (deploy.environments.staging.url) or a preview (deploy.environments.preview): they hold the user's own data.`
   const disputes = dev.disputes.length
     ? `\n## Dev disputes these tests (judge them by the SPEC)\n${bullets(dev.disputes.map(d => `${d.test}: ${d.reason}`))}` : ''
   const suite = (suiteFailed || []).length
@@ -737,7 +738,7 @@ function uiPrompt(ctx, round, base, staging, dev, openUi, uiReviewedAt) {
   const prev = openBlock(openUi, round, uiReviewedAt)
   return `${ctx}
 Round: ${round}.
-The app is running at ${staging.url} (the same is in SATORY_BASE_URL)${staging.test_copy ? ' - the tests\' own copy of staging (compose project ' + staging.test_copy + ', also in SATORY_COMPOSE_PROJECT), from scratch for this round' : ''}. Never open or change the user's staging (deploy.environments.staging.url) or a preview (deploy.environments.preview): they hold the user's own data.
+The app is running at ${staging.url}${staging.test_copy ? ' - the tests\' own copy of staging (compose project ' + staging.test_copy + '), from scratch for this round' : ''}. ${staging.export ? 'Your shell does not have its address: run `' + staging.export + '` in the same Bash command as every test, Playwright script or curl you run (each Bash call starts a fresh shell) - without it a test falls back to the user\'s staging. ' : ''}Never open or change the user's staging (deploy.environments.staging.url) or a preview (deploy.environments.preview): they hold the user's own data.
 
 Scope of the changes: \`git diff ${base}..HEAD\`${uiReviewedAt ? `\nChanges since your previous UI review: \`git diff ${uiReviewedAt}..HEAD\`` : ''}
 Dev reports: ${dev.summary}${prev}`

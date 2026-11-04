@@ -449,6 +449,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.14** - the agents get an `export …` line for the tests' copy (its address, compose project and ports) and
+  run it with every test or script: their own shell has none of these variables, so QA's test runs fell back to
+  the user's staging and left three drafts there. The task, the reviews between tasks, QA, the UI and UX reviewers
+  are told so.
 - **1.7.13** - the host ports of the tests' copy go to the e2e runs only, not to every check: a unit test read
   `HOST_PORT` and the public URL of the copy as its own configuration and failed (6 tests of AGC).
 - **1.7.12** - a spec file is not taken as naming the user's staging for a fallback inside an environment variable

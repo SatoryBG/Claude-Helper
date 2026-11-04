@@ -71,7 +71,9 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 1. At least one test for every acceptance criterion and every point of the mini-spec, including
    negative scenarios and boundary values.
 2. **Web apps**: e2e tests with Playwright in `e2e/`. The app is already running in the tests' own copy of
-   staging; the address is in `SATORY_BASE_URL` (also given in the task) and its compose project in
+   staging; your task gives an `export …` line with its address, compose project and ports: run it in the same
+   Bash command as every test, Playwright script or curl (your shell has none of them, and a test without them
+   falls back to the user's staging). The address is `SATORY_BASE_URL`, its compose project
    `SATORY_COMPOSE_PROJECT`; its host ports are in the same variables the compose file takes them from (e.g.
    `HOST_PORT`, read from `deploy/compose.yml`). The tests run in such copies, several at once on other ports: a
    test reads the address, the ports and the compose project from these variables and never names a host port or the

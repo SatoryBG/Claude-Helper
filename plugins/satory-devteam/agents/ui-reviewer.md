@@ -31,7 +31,7 @@ digest lists none.
    changes nothing the user can see, return `pass` with a summary that says so.
 2. Write temporary Playwright scripts in `.satory/run/ui/` (CommonJS `.cjs`; run them with
    `NODE_PATH="$PWD/e2e/node_modules" node .satory/run/ui/<script>.cjs` from the project root, so they use
-   the project's Playwright). The app is at `SATORY_BASE_URL`. For every touched page and state:
+   the project's Playwright). The app is at the address your task gives (with an `export …` line to run in the same Bash command as every script: your shell does not have `SATORY_BASE_URL`, and without it a script falls back to the user's staging). For every touched page and state:
    - take a full-page screenshot at every viewport from `docs/UI.md` (default: 375×812, 768×1024, 1280×800);
    - run `@axe-core/playwright` (`new AxeBuilder({ page }).analyze()`) and keep the violations;
    - record console errors and failed requests;
