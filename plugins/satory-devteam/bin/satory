@@ -4268,7 +4268,9 @@ def cmd_statusline(a) -> None:
         plan = p.plan()
         tasks = plan["tasks"]
         parts = [f"satory {sum(t.get('status') == 'done' for t in tasks)}/{len(tasks)}"]
-        running = list(p.state.get("tasks", {}))
+        # a blocked or finished task keeps its state (its branch, its rounds) but does not run
+        status = {t["id"]: t.get("status") for t in tasks}
+        running = [tid for tid in p.state.get("tasks", {}) if status.get(tid) not in ("blocked", "done")]
         agents = workflow_agents(p)
         for tid in running:
             # the round its agents work on: the counter grows only when Dev's round is recorded

@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.22** - the status line no longer shows a blocked task as running (`▶ T-018 r0` while it waited to be
+  unblocked): a blocked or finished task keeps its state but is left out.
 - **1.7.21** - the refresh of the status line is 5 minutes by default and set with `/satory-devteam:setup
   refresh=<minutes>`; `refresh=0` turns the timer off.
 - **1.7.20** - the status line set up by `/satory-devteam:setup` refreshes every 5 minutes (`refreshInterval`: 300)
