@@ -449,6 +449,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.18** - what the environments mount from the project (the bind mounts of the staging compose files) is
+  shared by the user's staging and every copy, so an e2e run may not change it: the CLI compares those files before
+  and after each e2e run, and a change fails the run with `[shared]` entries naming the files, for QA (a test works
+  on its own temporary copy; the setup generates the shared files once, the same for all). In AGC a test
+  regenerated the test PKI in place and the other copies rejected every signature. QA and the architect are told so.
 - **1.7.17** - a note in the runner's prompt is found also when the transcript stores the prompt with every line
   after the first indented by two spaces: the indent of the BEGIN line comes off each line of the note, and the
   cksum decides. A multi-line note was not found and went the copied way.

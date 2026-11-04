@@ -245,7 +245,7 @@ class Project:
         e2e = self.commands("e2e")
         if not names or len(names) > E2E_FAILED_MAX or len(e2e) != 1 or not pw_tail(e2e[0]):
             return []
-        names = [n for n in names if not n.startswith("[pinned]")]
+        names = [n for n in names if not n.startswith(("[pinned]", "[shared]"))]
         if not names:
             return []
         files, projects, titles = set(), set(), set()
@@ -588,7 +588,73 @@ def pinned_entry(f: str) -> str:
             f"QA: read SATORY_BASE_URL and SATORY_COMPOSE_PROJECT instead")
 
 
+MOUNT_SHORT = re.compile(r"""^\s*-\s*["']?(\.{1,2}/[^:"'\s]+):""")
+MOUNT_LONG = re.compile(r"""^\s*source:\s*["']?(\.{1,2}/[^"'\s]+)""")
+
+
+def shared_paths(p: Project) -> list[Path]:
+    """What the environments mount from the project (bind mounts of the staging compose files with a path
+    relative to the file): staging and every copy of it read the same files there."""
+    staging = env_cfg(p, "staging")
+    files = []
+    for c in as_list(staging.get("up")):
+        files += re.findall(r"(?:^|\s)(?:-f|--file)[=\s]+(\S+)", c)
+    files = files or [f for f in ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+                      if (p.root / f).exists()][:1]
+    out: list[Path] = []
+    for f in files:
+        cf = (p.root / f.strip("'\"")).resolve()
+        try:
+            lines = cf.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = MOUNT_SHORT.match(line) or MOUNT_LONG.match(line)
+            if m:
+                path = (cf.parent / m.group(1)).resolve()
+                if path.exists() and p.root.resolve() in path.parents and path not in out:
+                    out.append(path)
+    return out
+
+
+def shared_state(p: Project, paths: list[Path]) -> dict[str, str]:
+    """The content of the shared files: a digest for files up to 2 MB, size and time for larger ones."""
+    state: dict[str, str] = {}
+    for base in paths:
+        for f in ([base] if base.is_file() else sorted(x for x in base.rglob("*") if x.is_file()))[:20000]:
+            try:
+                st = f.stat()
+                state[str(f.relative_to(p.root))] = (hashlib.sha1(f.read_bytes()).hexdigest() if st.st_size <= 2 << 20
+                                                     else f"{st.st_size}:{st.st_mtime_ns}")
+            except OSError:
+                continue
+    return state
+
+
+def shared_entry(path: str) -> str:
+    return (f"[shared] › {path}:1:1 › changed by this e2e run - the environments mount it, so staging and every copy "
+            f"share it: a test works on its own temporary copy instead, and the setup keeps the shared one the same "
+            f"for all (QA)")
+
+
 def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
+    # what the environments mount from the project is shared by staging and every copy: a test that changes it
+    # changes it under all of them (a regenerated trust list made the other copies reject every signature)
+    mounts = shared_paths(p)
+    before = shared_state(p, mounts) if mounts else {}
+    res = e2e_run_guarded(p, tid, rnd, cmds, name, whole)
+    if mounts:
+        after = shared_state(p, mounts)
+        changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        if changed:
+            progress(p, f"⚠ {tid} r{rnd} {name}: the e2e run changed {len(changed)} file(s) that staging and every copy "
+                        f"mount: {', '.join(changed[:5])}{' …' if len(changed) > 5 else ''}")
+            res = {**res, "ok": False, "shared_changed": changed[:30],
+                   "failed_tests": list(res.get("failed_tests") or []) + [shared_entry(c) for c in changed[:30]]}
+    return res
+
+
+def e2e_run_guarded(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
     cmds, pinned = pinned_guard(p, cmds)
     if pinned:
         progress(p, f"⚠ {tid} r{rnd} {name}: {len(pinned)} spec file(s) name the user's staging literally - not run: "

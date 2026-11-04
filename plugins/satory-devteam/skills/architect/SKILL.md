@@ -47,7 +47,10 @@ Fill in `docs/ARCHITECTURE.md` from the template:
   (`ss -ltn`), pick others. The compose project names are `<name>-staging` and `<name>-prod`. The image
   is built once and the same image moves from staging to prod. The compose files take every host port
   from a variable of the env file (`HOST_PORT`, and one per stub), so that the whole e2e suite can run in
-  parallel copies of staging (`e2e_parallel`, see the plugin README).
+  parallel copies of staging (`e2e_parallel`, see the plugin README). What the containers mount from the project
+  (bind mounts: generated test certificates, a trust list, seed files) is shared by staging and every copy: it is
+  generated once by the staging `up` command, the same for all, and no test changes it in place (a test that
+  needs to change it works on a temporary copy).
 - **Tests**: unit and integration with the stack's framework. For web: e2e with Playwright (TypeScript) in
   `e2e/`, with `baseURL` from `SATORY_BASE_URL`, plus `@axe-core/playwright` for projects with a UI. The
   test naming convention is stable and unique.

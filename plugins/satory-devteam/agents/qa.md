@@ -78,7 +78,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    `HOST_PORT`, read from `deploy/compose.yml`). The tests run in such copies, several at once on other ports: a
    test reads the address, the ports and the compose project from these variables and never names a host port or the
    staging compose project itself (`localhost:8081`, `"8081"`, `<name>-staging`) - such a spec file could reach
-   the user's own staging, so the CLI does not run it and fails the `pinned` check until you change it. Also do **exploratory testing**: temporary Playwright
+   the user's own staging, so the CLI does not run it and fails the `pinned` check until you change it. Files the environments mount from the project (the bind mounts of the staging compose files, e.g. generated
+   test certificates or a trust list) are shared by the user's staging and every copy: a test never changes them -
+   one that must (e.g. a check that a generator replaces its files) runs it on its own temporary copy of the
+   folder. An e2e run that changes them fails with `[shared]` entries naming the files. Also do **exploratory testing**: temporary Playwright
    scripts in `.satory/run/qa/` that click through the site and take screenshots. Open the screenshots
    with Read and check them visually. Turn every defect you find into a permanent e2e test.
    If a Playwright MCP is available, you may use it for the exploration.
