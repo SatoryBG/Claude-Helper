@@ -50,10 +50,12 @@ the task and round in progress, the last event, open questions, queued changes) 
 Read `~/.claude/settings.json`. If it has no `statusLine`, offer to add it (AskUserQuestion); if it has
 one, show it and offer to keep it or replace it. On yes, set (keeping the rest of the file):
 ```json
-"statusLine": {"type": "command", "command": "python3 -c 'import json,os,sys,runpy;f=os.path.expanduser(\"~/.claude/plugins/installed_plugins.json\");p=[e[\"installPath\"] for k,v in json.load(open(f))[\"plugins\"].items() if k.startswith(\"satory-devteam@\") for e in v];sys.argv=[\"satory\",\"statusline\"];p and runpy.run_path(p[0]+\"/bin/satory\",run_name=\"__main__\")' 2>/dev/null"}
+"statusLine": {"type": "command", "refreshInterval": 300, "command": "python3 -c 'import json,os,sys,runpy;f=os.path.expanduser(\"~/.claude/plugins/installed_plugins.json\");p=[e[\"installPath\"] for k,v in json.load(open(f))[\"plugins\"].items() if k.startswith(\"satory-devteam@\") for e in v];sys.argv=[\"satory\",\"statusline\"];p and runpy.run_path(p[0]+\"/bin/satory\",run_name=\"__main__\")' 2>/dev/null"}
 ```
 It runs the installed version (from `~/.claude/plugins/installed_plugins.json`), so the line survives
-plugin updates. It shows from the next prompt on.
+plugin updates. It shows from the next prompt on. `refreshInterval` (seconds) re-runs it every 5 minutes also
+while the session is idle - a build runs in the background and sends no messages for long stretches; when the
+user keeps their own `statusLine`, add `"refreshInterval": 300` to it if it has none.
 
 ## 6. Finish
 Run `$SATORY doctor` again and show the result. If everything is fine, the next step is

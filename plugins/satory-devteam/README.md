@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.20** - the status line set up by `/satory-devteam:setup` refreshes every 5 minutes (`refreshInterval`: 300)
+  also while the session is idle: a build in the background sends no messages for long stretches, and the line
+  stayed on an old step.
 - **1.7.19** - a round also resumes at the whole e2e suite: once QA, the UI review and Security passed, an
   interrupted build goes on with a fresh copy of staging and the whole suite, not with QA again. When the last
   whole suite failed, its failed tests run first, one after another; if they pass, the rest passed before on the
