@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.21** - the refresh of the status line is 5 minutes by default and set with `/satory-devteam:setup
+  refresh=<minutes>`; `refresh=0` turns the timer off.
 - **1.7.20** - the status line set up by `/satory-devteam:setup` refreshes every 5 minutes (`refreshInterval`: 300)
   also while the session is idle: a build in the background sends no messages for long stretches, and the line
   stayed on an old step.

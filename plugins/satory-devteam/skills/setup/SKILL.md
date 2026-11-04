@@ -1,7 +1,7 @@
 ---
 name: setup
 description: Satory setup - prepares the machine for satory-devteam: installs the required tools (Docker, Node, Playwright, .NET SDK, gh, scanners), sets up the git identity and the GitHub login with the required scopes. Run once on every new machine; safe to run again.
-argument-hint: "[--no-dotnet]"
+argument-hint: "[--no-dotnet] [refresh=<minutes>]"
 disable-model-invocation: true
 ---
 
@@ -53,9 +53,13 @@ one, show it and offer to keep it or replace it. On yes, set (keeping the rest o
 "statusLine": {"type": "command", "refreshInterval": 300, "command": "python3 -c 'import json,os,sys,runpy;f=os.path.expanduser(\"~/.claude/plugins/installed_plugins.json\");p=[e[\"installPath\"] for k,v in json.load(open(f))[\"plugins\"].items() if k.startswith(\"satory-devteam@\") for e in v];sys.argv=[\"satory\",\"statusline\"];p and runpy.run_path(p[0]+\"/bin/satory\",run_name=\"__main__\")' 2>/dev/null"}
 ```
 It runs the installed version (from `~/.claude/plugins/installed_plugins.json`), so the line survives
-plugin updates. It shows from the next prompt on. `refreshInterval` (seconds) re-runs it every 5 minutes also
-while the session is idle - a build runs in the background and sends no messages for long stretches; when the
-user keeps their own `statusLine`, add `"refreshInterval": 300` to it if it has none.
+plugin updates. It shows from the next prompt on.
+
+The line is refreshed every 5 minutes also while the session is idle (`refreshInterval` in seconds: a build runs
+in the background and sends no messages for long stretches). `refresh=<minutes>` in the arguments sets another
+period (`refresh=2` -> `"refreshInterval": 120`), and `refresh=0` turns the timer off (no `refreshInterval`: the
+line then changes only with a new message). Apply it also when the user keeps their own `statusLine`: set or
+remove only `refreshInterval` there, and when nothing else needs doing, only that.
 
 ## 6. Finish
 Run `$SATORY doctor` again and show the result. If everything is fine, the next step is
