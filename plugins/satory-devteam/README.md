@@ -449,6 +449,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.13** - the host ports of the tests' copy go to the e2e runs only, not to every check: a unit test read
+  `HOST_PORT` and the public URL of the copy as its own configuration and failed (6 tests of AGC).
 - **1.7.12** - a spec file is not taken as naming the user's staging for a fallback inside an environment variable
   (`process.env.SATORY_BASE_URL ?? "http://localhost:8081"`): the CLI always sets those variables, so the string
   is never used. A new test of QA was kept from running for such a fallback.

@@ -272,7 +272,7 @@ class Project:
                 cmds = [c + ' --grep "{task}|@smoke"' for c in e2e]
         return [c.replace("{task}", tid) for c in cmds]
 
-    def env(self, tid: str = "", rnd: int = 0) -> dict:
+    def env(self, tid: str = "", rnd: int = 0, e2e: bool = False) -> dict:
         env = dict(os.environ)
         env.update({"SATORY_PROJECT_ROOT": str(self.root), "SATORY_TASK": tid,
                     "SATORY_ROUND": str(rnd)})
@@ -285,8 +285,9 @@ class Project:
             if t:  # the tests' own copy of staging: its URL, its compose project, its ports in "env"
                 env["SATORY_BASE_URL"] = t["url"]
                 env["SATORY_COMPOSE_PROJECT"] = t["project"]
-                if tid:  # a check or a test (not a deploy: these would move staging itself): the copy's host
-                    # ports in the variables of the compose file (e.g. AGC_HTTP_PORT), and what points at them
+                if e2e:  # the e2e tests only (a deploy would move staging itself, a unit test would read them as
+                    # the configuration): the copy's host ports in the variables of the compose file (e.g.
+                    # AGC_HTTP_PORT), and what points at them
                     env.update({k: str(v) for k, v in (t.get("vars") or {}).items()})
                 for k, v in (staging.get("env") or {}).items():
                     v = str(v)
@@ -615,7 +616,7 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
         res["workers_reason"] = why
     else:
         t0 = time.time()
-        res = run_cmds(p, cmds, log, p.env(tid, rnd))
+        res = run_cmds(p, cmds, log, p.env(tid, rnd, e2e=True))
         if cfg:  # a whole suite in one run: measured as 1, so the copies are kept only when they are faster
             f1, total1, _ = e2e_failures(log)
             res.update(seconds=round(time.time() - t0), tests=total1, failed_count=f1)
@@ -648,7 +649,7 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     if contention:
         progress(p, f"↻ {tid} r{rnd} {name}: {failed} of {total} failed in {n} parallel copies - running them "
                     f"again one after another (an overloaded machine makes tests time out)")
-    again = run_cmds(p, retry, rlog, p.env(tid, rnd))
+    again = run_cmds(p, retry, rlog, p.env(tid, rnd, e2e=True))
     res["retry_log"] = again["log"]
     if again["ok"]:
         res.update(ok=True, exit=0, flaky=names)
