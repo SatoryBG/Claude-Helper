@@ -449,6 +449,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.17** - a note in the runner's prompt is found also when the transcript stores the prompt with every line
+  after the first indented by two spaces: the indent of the BEGIN line comes off each line of the note, and the
+  cksum decides. A multi-line note was not found and went the copied way.
 - **1.7.16** - a note is no longer retyped by the runner: the workflow puts it into the runner's prompt between two
   `SATORY-NOTE <id>` lines, the command only names it (`SATORY_NOTE_PROMPT=<id>`), and the CLI reads it from that
   runner's transcript - the prompt exactly as written - checked against the cksum in the id. The runner had changed

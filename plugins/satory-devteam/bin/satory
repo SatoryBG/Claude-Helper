@@ -1036,10 +1036,19 @@ def note_from_prompt(nid: str) -> str | None:
                         continue
                     texts = [msg] if isinstance(msg, str) else [x.get("text", "") for x in msg or [] if isinstance(x, dict)]
                     for t in texts:
-                        a = t.find(begin)
-                        b = t.find(end, a + len(begin)) if a >= 0 else -1
-                        if a >= 0 and b >= 0:
-                            note = t[a + len(begin):b]
+                        # the prompt may be stored with every line after the first indented (two spaces): the
+                        # indent of the BEGIN line is taken off each line of the note, and the cksum decides
+                        mb = re.search(rf"(?m)^([ \t]*){re.escape(begin)}", t)
+                        if not mb:
+                            continue
+                        indent = mb.group(1)
+                        b = t.find("\n" + indent + end.lstrip("\n"), mb.end())
+                        if b < 0:
+                            continue
+                        raw = t[mb.end():b]
+                        lines = raw.split("\n")
+                        for note in (raw, "\n".join(x[len(indent):] if x.startswith(indent) else x.lstrip(" \t") if not x.strip() else x
+                                                    for x in lines)):
                             if posix_cksum(note.encode("utf-8")) == want:
                                 return note
         except OSError:
