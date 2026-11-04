@@ -183,8 +183,10 @@ An e2e check that fails runs only the failed tests once more: for Playwright by 
 command with `--last-failed`), otherwise with `commands.e2e_retry` in `.satory/project.json`;
 `"e2e_retry": false` there turns it off. The failed tests are read from Playwright's summary, so the
 default needs named projects in its config (`[project] › file › title`). If they pass, the check passes and the task goes on; each such test goes to the
-register of questions as a `minor` `test` item ("Flaky e2e test: ..."), and a test flaky 3 times becomes
-`major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
+register of questions as a `minor` `test` item ("Flaky e2e test: ..."). A test flaky twice is planned
+at once - the item is answered "Plan it" automatically and the planner makes a task that stabilises it
+(QA makes it wait for the state it checks, Dev fixes a race in the app behind it); the user's "Not needed"
+stands. A test flaky 3 times becomes `major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
@@ -347,8 +349,11 @@ task.
 
 A round does not run the whole test suite more than it has to. Dev runs `build`, `lint` and `test`
 before handing over. QA runs only the unit and e2e tests it added or changed and the ones of the code the
-task touches. The check after QA runs the whole unit suite (`test`) and only this task's e2e tests plus
-the smoke tests. The whole e2e suite runs once, after Review, QA, UI and Security have passed and before
+task touches. The check after QA runs the whole unit suite (`test`), this task's e2e tests plus
+the smoke tests, and the spec files of earlier features the task likely affects (for one plain Playwright
+command): the specs that open the page of a changed feature (a directory under `features/`, `pages/`,
+`Features/` …, also through a shared file its files import) or name a changed file. When 60 % of the specs
+or more are affected, the whole suite runs there instead and not again after Security. The whole e2e suite runs once, after Review, QA, UI and Security have passed and before
 Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished without
 a green whole suite. If it fails there, the task goes back to Dev and the next round runs the whole suite
 already in QA's check, so UI and Security do not review a build with a known regression. For Playwright
@@ -448,6 +453,14 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.7.23** - a regression in an earlier feature comes back with QA's findings, not a round later: the check
+  after QA also runs the e2e specs the task likely affects (the pages of the changed features, the files they
+  name; in parallel copies when there are many), or the whole suite when most of it is affected. QA runs the
+  new `satory qa-check <task>` before it returns - it changes nothing and lists what the check would restore
+  (an earlier test changed without its line in "QA: adapted tests", a test renamed or gone) - so it puts that
+  right instead of doing the round again (14 repeated QA runs in one project). A test flaky twice is planned
+  automatically: the planner makes a task that stabilises it.
 
 - **1.7.22** - the status line no longer shows a blocked task as running (`▶ T-018 r0` while it waited to be
   unblocked): a blocked or finished task keeps its state but is left out.

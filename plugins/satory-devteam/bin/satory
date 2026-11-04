@@ -261,6 +261,16 @@ class Project:
                 + " --grep " + shlex.quote("|".join(sorted(titles)))
                 + "".join(f" --project={shlex.quote(x)}" for x in sorted(projects))]
 
+    def e2e_affected_commands(self, files: list[str], tid: str) -> list[str]:
+        """The whole-suite e2e command limited to the given spec files (relative to the e2e directory), without
+        this task's own tests and the smoke tests (the task's run has them). Empty for no files or when the
+        suite is not one plain Playwright command."""
+        e2e = self.e2e_suite_commands()
+        if not files or len(e2e) != 1 or not pw_tail(e2e[0]):
+            return []
+        return [e2e[0] + " " + " ".join(shlex.quote(x) for x in sorted(files))
+                + " --grep-invert " + shlex.quote(f"{tid}|@smoke")]
+
     def e2e_task_commands(self, tid: str) -> list[str]:
         """The e2e commands for one task's own tests plus the smoke tests ({task} becomes the task id):
         commands.e2e_task or - for Playwright - the e2e commands with --grep "{task}|@smoke" appended.
@@ -534,6 +544,76 @@ E2E_FAILED = re.compile(r"^\s*\d+ failed\s*$(.*?)(?=^\s*\d+ (?:passed|flaky|skip
                         re.M | re.S)
 
 
+# the e2e specs of earlier features that a task's changes likely touch: they run in the check after QA, so a
+# regression comes back with QA's findings instead of a round later from the whole suite
+E2E_SPEC = re.compile(r"\.(spec|test)\.[cm]?[jt]sx?$")
+FEATURE_DIRS = {"features", "feature", "pages", "routes", "views", "screens", "modules", "endpoints"}
+STEM_SKIP = {"index", "main", "app", "utils", "util", "types", "type", "helpers", "helper", "hooks", "constants",
+             "styles", "globals", "config", "program", "startup", "schema", "schemas", "format", "parse", "test"}
+E2E_AFFECTED_WHOLE = 60  # % of the spec files: so many affected - the whole suite runs after QA instead
+E2E_AFFECTED_FILES = 3  # spec files per shard at least, when the affected specs run in parallel copies
+
+
+def kebab(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name).lower()
+
+
+def e2e_affected_specs(p: Project, ref: str, head: str = "HEAD") -> tuple[str, list[str], int]:
+    """(the e2e directory, the spec files the changes since `ref` likely affect, all spec files) - only for one
+    plain Playwright e2e command. A spec is affected when it opens the route of a changed feature (a directory
+    under features/, pages/, Features/ ... : `/instruments`, or the name in the spec's file name) or names a
+    changed file (a component, an endpoint); a changed shared file counts for the features that import it."""
+    e2e = p.commands("e2e")
+    if len(e2e) != 1 or not pw_tail(e2e[0]):
+        return "", [], 0
+    m = re.match(r"\s*cd\s+(\S+)\s*&&", e2e[0])
+    d = (p.root / m.group(1)) if m else p.root
+    if not d.is_dir():
+        return "", [], 0
+    changed = [x for x in p.git("diff", "--name-only", ref, head).splitlines()
+               if x and not matches(x, p.test_globs) and not matches(x, PROTECTED)
+               and not x.startswith("docs/") and not x.endswith(".md")]
+    routes: set[str] = set()
+    words: set[str] = set()
+
+    def feature(path: str) -> str:
+        parts = path.split("/")
+        for i, part in enumerate(parts[:-2]):
+            if part.lower() in FEATURE_DIRS:
+                return parts[i + 1]
+        return ""
+    for path in changed:
+        stem = re.sub(r"\..*$", "", path.rsplit("/", 1)[-1])
+        f = feature(path)
+        if f:
+            routes.update({f.lower(), kebab(f)})
+        elif len(stem) >= 4 and stem.lower() not in STEM_SKIP and re.search(r"\.[cm]?[jt]sx?$", path):
+            # a shared file: the features whose files import it
+            r = p.git("grep", "-l", "-E", f"from ['\"][^'\"]*/{re.escape(stem)}['\"]", head, "--", check=False)
+            for user in (r.stdout if r.returncode == 0 else "").splitlines():
+                g = feature(user.split(":", 1)[-1])
+                if g:
+                    routes.update({g.lower(), kebab(g)})
+        if len(stem) >= 4 and stem.lower() not in STEM_SKIP:
+            words.add(stem)
+    specs = sorted(x for x in d.rglob("*") if E2E_SPEC.search(x.name) and "node_modules" not in x.parts)
+    if not routes and not words:
+        return str(d), [], len(specs)
+    # a page the spec opens ('/instruments', `/platforms/${id}`), not an API call that only seeds data ('/api/...')
+    route_re = re.compile(r"['\"`]/(?:" + "|".join(map(re.escape, sorted(routes))) + r")\b", re.I) if routes else None
+    word_re = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(words))) + r")\b") if words else None
+    hit = []
+    for f in specs:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if (any(r in f.name.lower() for r in routes) or (route_re and route_re.search(text))
+                or (word_re and word_re.search(text))):
+            hit.append(str(f.relative_to(d)))
+    return str(d), hit, len(specs)
+
+
 def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
     """(failed, total, failed test names) from the summary of a Playwright run (line/list reporter)."""
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
@@ -637,12 +717,13 @@ def shared_entry(path: str) -> str:
             f"for all (QA)")
 
 
-def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
+def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False,
+            shards_max: int = 0) -> dict:
     # what the environments mount from the project is shared by staging and every copy: a test that changes it
     # changes it under all of them (a regenerated trust list made the other copies reject every signature)
     mounts = shared_paths(p)
     before = shared_state(p, mounts) if mounts else {}
-    res = e2e_run_guarded(p, tid, rnd, cmds, name, whole)
+    res = e2e_run_guarded(p, tid, rnd, cmds, name, whole, shards_max)
     if mounts:
         after = shared_state(p, mounts)
         changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
@@ -654,28 +735,33 @@ def e2e_run(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: b
     return res
 
 
-def e2e_run_guarded(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
+def e2e_run_guarded(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False,
+                    shards_max: int = 0) -> dict:
     cmds, pinned = pinned_guard(p, cmds)
     if pinned:
         progress(p, f"⚠ {tid} r{rnd} {name}: {len(pinned)} spec file(s) name the user's staging literally - not run: "
                     + ", ".join(pinned))
     if not cmds:
         return {"ok": True, "skipped": True, "pinned": pinned}
-    res = e2e_run_cmds(p, tid, rnd, cmds, name, whole)
+    res = e2e_run_cmds(p, tid, rnd, cmds, name, whole, shards_max)
     if pinned:
         res["pinned"] = pinned
     return res
 
 
-def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False) -> dict:
+def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, whole: bool = False,
+                 shards_max: int = 0) -> dict:
     """Run e2e commands; when a few tests fail (at most e2e_retry_max_percent of the run), run only those
     once more (p.e2e_retry_commands). Passing then counts as passing; the tests go to the register as flaky.
     A failing result lists the failed tests (failed_tests) when the summary names them all. The whole suite
     (whole=True) runs in parallel shards when e2e_parallel is set; their failed tests are run again by name,
-    against staging."""
+    against staging. A part of the suite in shards (shards_max: at most that many) is not measured: the
+    measurements choose the shards of the whole suite."""
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
     cfg = parallel_cfg(p) if whole else None
     n, why = e2e_workers(p, cfg) if cfg else (1, "")
+    if shards_max:
+        n = min(n, shards_max)
     res = e2e_sharded(p, tid, rnd, cmds, log, cfg, n) if cfg and n > 1 else None
     sharded = res is not None
     if sharded:
@@ -689,6 +775,8 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
             n = 1
 
     def record(flaky: int) -> None:
+        if shards_max:
+            return
         if sharded or (cfg and res.get("tests")):
             e2e_parallel_record(p, n, res["seconds"], res["tests"], flaky, max(0, res["failed_count"] - flaky))
 
@@ -726,7 +814,8 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
         return res
     if contention:
         still = e2e_failures(rlog)[2]
-        e2e_parallel_record(p, n, res["seconds"], res["tests"], max(0, len(names) - len(still)), len(still))
+        if not shards_max:
+            e2e_parallel_record(p, n, res["seconds"], res["tests"], max(0, len(names) - len(still)), len(still))
         if still:
             res["failed_tests"] = still
             res["failed_count"] = len(still)
@@ -848,6 +937,7 @@ def question_append(reg: dict, item: dict, source: str, task: str | None, milest
 
 
 FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing problem: major, reopened
+FLAKY_PLAN = 2  # a test flaky this many times is planned at once: a task makes it stable, no answer needed
 
 
 def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e2e") -> None:
@@ -876,6 +966,15 @@ def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e
         if q["status"] == "deferred":  # it happened again: back to the user
             q["status"] = "open"
             progress(p, f"❓ {q['id']} is open again: the test was flaky once more ({source})")
+        # flaky again: the planner makes a task of it between two tasks (the user's "Not needed" stands)
+        if len(q["occurrences"]) >= FLAKY_PLAN and q["status"] in ("open", "deferred", "resolved"):
+            q["status"], q["answered"] = "answered", now("%Y-%m-%d")
+            q["answer"] = (f"Plan it (automatically: flaky {len(q['occurrences'])} times). QA finds why the test "
+                           "fails now and then and makes it wait for the state it checks (\"QA: adapted tests\" "
+                           "with the source `flaky: <the cause>`, then --repeat-each=5); when the cause is a race "
+                           "in the app, Dev fixes the app.")
+            progress(p, f"🗂 {q['id']}: flaky {len(q['occurrences'])} times ({source}) - planned automatically, "
+                        "a task makes it stable")
         if len(q["occurrences"]) >= FLAKY_ESCALATE and q["severity"] == "minor":
             q["severity"] = "major"
             q["detail"] += f" Flaky {len(q['occurrences'])} times so far: likely a real timing problem."
@@ -2187,6 +2286,28 @@ def cmd_parallel(p: Project, a) -> None:
     emit({"ok": True, "enabled": True, "workers": n, "reason": why, "ports": cfg["ports"], "env": cfg["env"],
           "derived": bool(cfg.get("auto_ports")), "shard_1": shard_vars(cfg, 1), "up": shard_cmds(cfg, 1),
           "down": shard_cmds(cfg, 1, down=True), "runs": (p.state.get("e2e_parallel") or {}).get("runs", [])})
+
+
+def cmd_qa_check(p: Project, a) -> None:
+    """What the check after QA would restore, without changing anything: QA runs it before it returns and puts
+    right what it lists (an earlier test file changed without a line in "QA: adapted tests", a test renamed or
+    gone, a file outside the tests), instead of having its work restored and doing the round again."""
+    tid = a.task
+    st = p.task_state(tid)
+    if not st.get("checkpoint") or not st.get("base"):
+        raise SatoryError(f"{tid} has no round in progress")
+    task_file = f"docs/tasks/{tid}.md"
+    outside = [f"{path}: QA may change only tests and its own section of the task file - it would be reverted"
+               for path in sorted(changed_files(p, st["checkpoint"]))
+               if path != task_file and not (matches(path, p.test_globs) and not matches(path, PROTECTED))]
+    rules, adapted_used, listed, names, missing = qa_rules(p, tid, st.get("rounds", 0), st, task_file, apply=False)
+    problems = outside + rules
+    emit({"ok": not problems, "problems": problems, "adapted": adapted_used,
+          "tests": {"listed": listed, "count": len(names), "missing": missing[:50]},
+          "hint": "" if not problems else
+          "Put each problem right before you return: restore a removed or renamed test exactly as it was, and "
+          "for an earlier test this task's requirements contradict add its line to \"QA: adapted tests\" "
+          "(see your rules). Then run this check again."})
 
 
 def cmd_stall(p: Project, a) -> None:
@@ -3603,6 +3724,65 @@ def guard(p: Project, ref: str, allowed) -> list[str]:
     return violations
 
 
+def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bool) -> tuple:
+    """The append-only rule for tests after QA: (rules broken, adapted files used, listed, test names).
+    With apply the offending files go back to the pre-QA state (the check after QA); without it nothing
+    changes (`satory qa-check`, which QA runs before it returns, so it can put right what would be restored)."""
+    ck, base, tests = st["checkpoint"], st["base"], p.test_globs
+    put_back = (lambda path, status: restore(p, ck, path, status)) if apply else (lambda path, status: None)
+    # hard: append-only rule for tests - offending files go back to the pre-QA state and QA must redo.
+    # Exception: a test file from an earlier task that QA lists, with a reason, in the
+    # "QA: adapted tests" section of the task file (a change the task's requirements force).
+    adapted = adapted_tests(p.root / task_file)
+    adapted_used = []
+    rules = []
+    for path, status in sorted(changed_files(p, ck).items()):
+        if not matches(path, tests) or not p.git_ok("cat-file", "-e", f"{ck}:{path}"):
+            continue
+        in_base = p.git_ok("cat-file", "-e", f"{base}:{path}")
+        if status == "D":
+            rules.append(f"{path}: deleted test file - restored")
+        elif in_base:
+            numstat = p.git("diff", "--numstat", base, "--", path).split()
+            if not numstat or numstat[1] in ("0", "-"):
+                continue
+            if path in adapted:
+                added = int(numstat[0]) if numstat[0].isdigit() else 0
+                if added >= int(numstat[1]):  # an adaptation replaces lines, it never removes tests
+                    adapted_used.append(f"{path} - {adapted[path]}")
+                    continue
+                rules.append(f"{path}: listed in \"QA: adapted tests\", but it lost lines ({numstat[1]} deleted, "
+                             f"{added} added) - an adaptation may only change expectations, never remove "
+                             "tests or assertions; the file was restored to its pre-QA state")
+                put_back(path, status)
+                continue
+            rules.append(f"{path}: changed/deleted lines in a test file from an earlier task "
+                         "(only additions are allowed, unless the file is listed with a reason in "
+                         "\"QA: adapted tests\" of the task file) - the file was restored to its pre-QA state")
+        else:
+            continue  # QA's own test file from this task: corrections allowed, names are checked below
+        put_back(path, status)
+    listed, names = test_names(p, tid, rnd)
+    known = set(st.get("known_tests", []))
+    missing = sorted(known - names) if listed else []
+    # a case of a parameterised test carries its data in its name: an adaptation listed in "QA: adapted
+    # tests" that changes the data renames the case. It is allowed while the test method still has cases.
+    methods = {x.split("(", 1)[0] for x in names}
+    if adapted_used and missing:
+        renamed = [x for x in missing if "(" in x and x.split("(", 1)[0] in methods]
+        if renamed:
+            adapted_used.append(f"{len(renamed)} case(s) of parameterised tests with changed data: "
+                                + "; ".join(renamed[:5]) + (" …" if len(renamed) > 5 else ""))
+            missing = [x for x in missing if x not in renamed]
+    if missing:
+        rules.append(f"{len(missing)} existing tests are missing (deleted or renamed): "
+                     f"{', '.join(missing[:20])}")
+    if not apply:
+        rules = [r.replace(" - the file was restored to its pre-QA state", " - it would be restored to its pre-QA state")
+                 .replace(" - restored", " - it would be restored") for r in rules]
+    return rules, adapted_used, listed, names, missing
+
+
 def cmd_step(p: Project, a) -> None:
     tid, rnd = a.task, a.round
     st = p.task_state(tid)
@@ -3679,53 +3859,7 @@ def cmd_step(p: Project, a) -> None:
             return "QA may change only tests and its own section of the task file"
         # soft: files QA must not touch at all - reverted, QA's tests are kept
         violations = guard(p, ck, allowed)
-        # hard: append-only rule for tests - offending files go back to the pre-QA state and QA must redo.
-        # Exception: a test file from an earlier task that QA lists, with a reason, in the
-        # "QA: adapted tests" section of the task file (a change the task's requirements force).
-        adapted = adapted_tests(p.root / task_file)
-        adapted_used = []
-        rules = []
-        for path, status in sorted(changed_files(p, ck).items()):
-            if not matches(path, tests) or not p.git_ok("cat-file", "-e", f"{ck}:{path}"):
-                continue
-            in_base = p.git_ok("cat-file", "-e", f"{base}:{path}")
-            if status == "D":
-                rules.append(f"{path}: deleted test file - restored")
-            elif in_base:
-                numstat = p.git("diff", "--numstat", base, "--", path).split()
-                if not numstat or numstat[1] in ("0", "-"):
-                    continue
-                if path in adapted:
-                    added = int(numstat[0]) if numstat[0].isdigit() else 0
-                    if added >= int(numstat[1]):  # an adaptation replaces lines, it never removes tests
-                        adapted_used.append(f"{path} - {adapted[path]}")
-                        continue
-                    rules.append(f"{path}: listed in \"QA: adapted tests\", but it lost lines ({numstat[1]} deleted, "
-                                 f"{added} added) - an adaptation may only change expectations, never remove "
-                                 "tests or assertions; the file was restored to its pre-QA state")
-                    restore(p, ck, path, status)
-                    continue
-                rules.append(f"{path}: changed/deleted lines in a test file from an earlier task "
-                             "(only additions are allowed, unless the file is listed with a reason in "
-                             "\"QA: adapted tests\" of the task file) - the file was restored to its pre-QA state")
-            else:
-                continue  # QA's own test file from this task: corrections allowed, names are checked below
-            restore(p, ck, path, status)
-        listed, names = test_names(p, tid, rnd)
-        known = set(st.get("known_tests", []))
-        missing = sorted(known - names) if listed else []
-        # a case of a parameterised test carries its data in its name: an adaptation listed in "QA: adapted
-        # tests" that changes the data renames the case. It is allowed while the test method still has cases.
-        methods = {x.split("(", 1)[0] for x in names}
-        if adapted_used and missing:
-            renamed = [x for x in missing if "(" in x and x.split("(", 1)[0] in methods]
-            if renamed:
-                adapted_used.append(f"{len(renamed)} case(s) of parameterised tests with changed data: "
-                                    + "; ".join(renamed[:5]) + (" …" if len(renamed) > 5 else ""))
-                missing = [x for x in missing if x not in renamed]
-        if missing:
-            rules.append(f"{len(missing)} existing tests are missing (deleted or renamed): "
-                         f"{', '.join(missing[:20])}")
+        rules, adapted_used, listed, names, missing = qa_rules(p, tid, rnd, st, task_file, apply=True)
         if rules:
             journal_pending(p, tid, "qa", rnd, "fail",
                             join_note(note, [f"- Violation: {v}" for v in violations + rules]
@@ -3734,7 +3868,7 @@ def cmd_step(p: Project, a) -> None:
                   "tests": {"listed": listed, "count": len(names), "missing": missing[:50]}})
             return
         if listed:
-            st["known_tests"] = sorted(known | names)
+            st["known_tests"] = sorted(set(st.get("known_tests", [])) | names)
         gates = {"test": gate(p, tid, rnd, "test")}
         pinned = staging_pinned(p)
         if pinned:
@@ -3746,11 +3880,23 @@ def cmd_step(p: Project, a) -> None:
         # When it failed in the previous round, the tests that failed there run here too (or, when they cannot
         # be selected, the whole suite). Only for a workflow that runs that step (--split-e2e): an older one
         # would otherwise finish without the whole suite.
+        # The e2e specs of earlier features the task likely affects run here too, so a regression comes back with
+        # QA's findings; when most of the suite is affected (a shared component), the whole suite runs here.
         first = p.e2e_task_commands(tid)
         failed_before = (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []
         again = p.e2e_failed_commands(failed_before)
-        if first and a.split_e2e and (not st.get("full_e2e_failed") or again):
+        _, affected, all_specs = e2e_affected_specs(p, base) if first and a.split_e2e else ("", [], 0)
+        affected_cmds = p.e2e_affected_commands(affected, tid)
+        broad = bool(affected_cmds) and len(affected) * 100 >= E2E_AFFECTED_WHOLE * all_specs
+        if broad:
+            progress(p, f"⚡ {tid} r{rnd}: {len(affected)} of {all_specs} e2e spec files are likely affected - "
+                        "the whole suite runs after QA")
+        if first and a.split_e2e and not broad and (not st.get("full_e2e_failed") or again):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
+            if affected_cmds:
+                gates["e2e_affected"] = {**e2e_run(p, tid, rnd, affected_cmds, "e2e-affected", whole=True,
+                                                   shards_max=max(1, len(affected) // E2E_AFFECTED_FILES)),
+                                         "scope": "affected", "count": len(affected)}
             if again:
                 g = {**e2e_run(p, tid, rnd, again, "e2e-failed"), "scope": "failed", "count": len(failed_before)}
                 if not g["ok"] and not g.get("failed_tests"):
@@ -3776,6 +3922,7 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         scope_note = {"task": " (only this task and smoke tests; the whole suite runs after Security)",
+                      "affected": " (the e2e specs of earlier features this task likely affects)",
                       "failed": " (the tests that failed in the whole suite before)"}
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   f"{scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
@@ -4507,6 +4654,9 @@ def main() -> None:
     s.add_argument("env", choices=["staging", "preview", "test"])
     s.add_argument("--force", action="store_true", help="down preview (it holds the user's data)")
     sub.add_parser("parallel", help="the parallel e2e setting: shards for the next whole suite, why, the measured runs")
+    s = sub.add_parser("qa-check", help="what the check after QA would restore (QA runs it before it returns)")
+    s.add_argument("task")
+
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
@@ -4526,7 +4676,7 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":

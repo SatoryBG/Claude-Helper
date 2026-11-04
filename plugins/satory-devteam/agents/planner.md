@@ -37,6 +37,12 @@ of the affected finished tasks and the code they touch. Do not read `docs/JOURNA
   (e.g. a dashboard task that shows the corrected numbers) - `{"task": "T-013", "add": ["<ref>"]}`.
   Never tasks that are done or in progress.
 - `owner`: `dev` (or `devops` for infrastructure only); `ui`: true when the task changes the UI.
+- **A flaky test planned automatically** (title "Flaky … test", answer "Plan it (automatically …)"): a
+  subtask that makes it stable. Its `description` names the test and its file, says that QA finds why
+  it fails now and then and makes it wait for the state it checks (listed in "QA: adapted tests" with
+  the source `flaky: <the cause>`, run with `--repeat-each=5`), and that Dev looks for a race in the app
+  behind it (a value read before the request that changes it finished, a focus moved before the dialog
+  closed) and fixes it when there is one. `acceptance`: the criterion the test checks.
 
 Return also a `summary` of 2-4 sentences in the documentation language.
 

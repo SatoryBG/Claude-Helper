@@ -641,7 +641,8 @@ function gateLines(gates) {
     .filter(([, g]) => !g.ok)
     .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}` +
       (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : '') +
-      (g.scope === 'failed' ? ' (the tests that failed in the whole e2e suite before)' : ''))
+      (g.scope === 'failed' ? ' (the tests that failed in the whole e2e suite before)' : '') +
+      (g.scope === 'affected' ? ' (the e2e specs of earlier features this task likely affects)' : ''))
 }
 
 // a failing e2e test of an earlier feature: fixed in the code, or disputed when the task changes it on purpose
@@ -666,7 +667,7 @@ function contextLog(res) {
 }
 
 function flakyLog(gates, tag) {
-  const flaky = ['e2e', 'e2e_failed'].flatMap(k => (gates && gates[k] && gates[k].flaky) || [])
+  const flaky = ['e2e', 'e2e_failed', 'e2e_affected'].flatMap(k => (gates && gates[k] && gates[k].flaky) || [])
   if (flaky.length) log(`⚠ ${tag}: ${flaky.length} e2e test(s) passed only on the retry - recorded as flaky for the user`)
 }
 
@@ -765,7 +766,8 @@ Round: ${round}.
 ${env}
 
 Scope of the changes: \`git diff ${base}..HEAD\`
-Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the orchestrator runs it after you.
+Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the check after you runs this task's e2e tests, the e2e specs of earlier features the changes likely affect, and later the whole suite.
+Before you return, run \`${BIN} --project ${q(PROJECT)} qa-check ${(String(ctx).match(/^Task: (T-[\w-]+)/m) || [])[1] || '<task>'}\` (it changes nothing and lists what the check after you would restore: an earlier test file changed without its line in "QA: adapted tests", a test renamed or gone, a file outside the tests). Put right every problem it lists and run it again until it reports \`"ok": true\` - otherwise your changes to those files are restored and you do this round's work again.
 Dev reports: ${dev.summary}${disputes}${suite}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
