@@ -79,5 +79,6 @@ If everything is done and the project has a deploy, suggest `/satory-devteam:rel
 ## Continuing
 After an interruption (closed session, error) just run `/satory-devteam:build` again. The task in progress
 continues from its branch, and the round counter is kept. A round interrupted after Dev's checks passed goes on
-with the review of that round, and one interrupted after the review approved goes on with QA; otherwise
-the next round starts with Dev.
+with the review of that round, one interrupted after the review approved goes on with QA, and one interrupted
+after Security passed goes on with the whole e2e suite (its last failed tests first); otherwise the next round
+starts with Dev.

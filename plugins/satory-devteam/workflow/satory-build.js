@@ -1211,8 +1211,8 @@ async function runTask(t) {
     if (skip) {
       dev = resumeAt.dev
       ad = { ok: true, violations: [], checkpoint: start.checkpoint }
-      if (skip === 'qa') reviewedAt = start.checkpoint
-      log(`↻ ${tag}: Dev's work${skip === 'qa' ? ' and the review' : ''} passed before the interruption - going on with ${skip === 'qa' ? 'QA' : 'the review'}`)
+      if (skip !== 'review') reviewedAt = start.checkpoint
+      log(`↻ ${tag}: Dev's work${skip === 'review' ? '' : skip === 'qa' ? ' and the review' : ', the review, QA, the UI review and Security'} passed before the interruption - going on with ${skip === 'review' ? 'the review' : skip === 'qa' ? 'QA' : 'the whole e2e suite'}`)
     } else {
       dev = await stage(role, devPrompt(ctx, round, feedback) + known,
         { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
@@ -1241,7 +1241,7 @@ async function runTask(t) {
     }
 
     // ---- Review -------------------------------------------------------
-    if (skip !== 'qa') {
+    if (skip !== 'qa' && skip !== 'e2e') {
       const revPrompt = reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known
       const rev = await stage('reviewer', revPrompt,
         { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
@@ -1260,84 +1260,95 @@ async function runTask(t) {
       }
     }
 
-    // ---- QA -----------------------------------------------------------
-    const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}`, long: true }), `staging ${tag}`)
-    if (!staging.ok) {
-      lastStage = 'staging'
-      feedback = `### The app does not start on staging\nStage: ${staging.stage}. Log: ${staging.log}` +
-        (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
-      continue
-    }
-    // The UI reviewer only reads the app on staging, so it reviews while QA tests: the findings of both come
-    // back in the same round. Its CLI steps run after QA's, because the steps share the state file.
-    const uiText = needsUi(t, staging) ? uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt) : null
-    const uiRun = uiText ? stage('ui-reviewer', uiText, { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
-      .catch(e => ({ uiError: e })) : null
-    const settleUi = async () => { if (uiRun) await uiRun }
-    let qa = null, aq = null, retryNote = '', qaText = ''
-    for (let attempt = 1; ; attempt++) {
-      qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed) + known
-      qa = await stage('qa', qaText,
-        { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
-      if (!qa) { await settleUi(); return block(t, round, `QA returned no result in round ${round}.`) }
-      known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
-      aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
-        { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
-      if (!aq.qa_violation) { contextLog(aq); flakyLog(aq.gates, tag); break }
-      if (attempt >= QA_ATTEMPTS) {
-        await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA', '', false).catch(() => null)
-        await settleUi()
-        return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
+    // ---- QA, UI, Security (a round resumed at the whole suite passed them before the interruption: its
+    // copy of staging comes up again and the whole suite goes on) --------------------------------------
+    if (skip === 'e2e') {
+      const again = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'Full tests', label: `staging ${tag}`, long: true }), `staging ${tag}`)
+      if (!again.ok) {
+        lastStage = 'staging'
+        feedback = `### The app does not start on staging\nStage: ${again.stage}. Log: ${again.log}`
+        continue
       }
-      retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
-        `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
-        `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
-    }
-    const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
-      qa.verified, 'QA', qaText)
-    suiteFailed = suiteFailures(aq.gates)
-    const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
-
-    // ---- UI (its review ran beside QA's) --------------------------------
-    let uiFeedback = ''
-    if (uiRun) {
-      const ui = await uiRun
-      if (ui && ui.uiError) throw ui.uiError
-      if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
-      const uiRes = await record('ui', ui.findings.map(f => ({ severity: f.severity, title: f.title, where: at(f),
-        detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI', uiText)
-      contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiRes.blocking.length ? 'fail' : 'pass'}`,
-        { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`))
-      uiReviewedAt = aq.checkpoint
-      if ((ui.ux_verified || []).length) {
-        try {
-          const v = await sh(`ux verify --task ${t.id} --source ${q(`ui ${tag}`)}`, { phase: 'UI', label: `ux register ${tag}`, note: JSON.stringify(ui.ux_verified) })
-          if (v && (v.resolved || []).length) log(`🎨 ${tag}: UX problem(s) solved: ${v.resolved.join(', ')}`)
-        } catch (e) { log(`Could not update the UX register: ${e.message}`) }
+    } else {
+      // ---- QA -----------------------------------------------------------
+      const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}`, long: true }), `staging ${tag}`)
+      if (!staging.ok) {
+        lastStage = 'staging'
+        feedback = `### The app does not start on staging\nStage: ${staging.stage}. Log: ${staging.log}` +
+          (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
+        continue
       }
-      if (uiRes.blocking.length) uiFeedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
-    }
-    if (qaFailed || uiFeedback) {
-      lastStage = qaFailed ? (uiFeedback ? 'qa and ui' : 'qa') : 'ui'
-      feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback].filter(Boolean).join('\n\n')
-      continue
-    }
+      // The UI reviewer only reads the app on staging, so it reviews while QA tests: the findings of both come
+      // back in the same round. Its CLI steps run after QA's, because the steps share the state file.
+      const uiText = needsUi(t, staging) ? uiPrompt(ctx, round, start.base, staging, dev, open.ui, uiReviewedAt) : null
+      const uiRun = uiText ? stage('ui-reviewer', uiText, { phase: 'UI', label: `ui ${tag}`, model: MODELS['ui-reviewer'], schema: UI_SCHEMA })
+        .catch(e => ({ uiError: e })) : null
+      const settleUi = async () => { if (uiRun) await uiRun }
+      let qa = null, aq = null, retryNote = '', qaText = ''
+      for (let attempt = 1; ; attempt++) {
+        qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed) + known
+        qa = await stage('qa', qaText,
+          { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
+        if (!qa) { await settleUi(); return block(t, round, `QA returned no result in round ${round}.`) }
+        known = withAdded(known, await addQuestions(qa.spec_gaps, 'question', `qa ${tag}`, { task: t.id, milestone: t.milestone, phase: 'QA' }))
+        aq = must(await sh(`step after-qa ${t.id} --round ${round} --verdict ${qa.verdict} --split-e2e`,
+          { phase: 'QA', label: `checks qa ${tag}`, note: qaNote(qa), long: true }), `after-qa ${tag}`)
+        if (!aq.qa_violation) { contextLog(aq); flakyLog(aq.gates, tag); break }
+        if (attempt >= QA_ATTEMPTS) {
+          await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description, fix: '' })), qa.verified, 'QA', '', false).catch(() => null)
+          await settleUi()
+          return block(t, round, `QA broke the "add only" rule ${QA_ATTEMPTS} times:\n${bullets(aq.violations)}`)
+        }
+        retryNote = `Your previous attempt broke the "tests are only added" rule and the affected files were restored:\n` +
+          `${bullets(aq.violations)}\nRestore the missing tests exactly as they were and add the new ones without touching the existing ones. ` +
+          `Only if this task's requirements contradict a test from an earlier task may you adapt it - list the file with the reason in the "QA: adapted tests" section of the task file (see your rules).`
+      }
+      const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
+        qa.verified, 'QA', qaText)
+      suiteFailed = suiteFailures(aq.gates)
+      const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
 
-    // ---- Security -----------------------------------------------------
-    const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
-    const secText = secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt)
-    const sec = await stage('security', secText,
-      { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
-    if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
-    secReviewedAt = aq.checkpoint
-    const secRes = await record('security', sec.findings.map(f => ({ severity: f.severity, title: f.title, where: `${f.category} ${where(f)}`,
-      detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security', secText)
-    contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secRes.blocking.length ? 'fail' : 'pass'}`,
-      { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`))
-    if (secRes.blocking.length) {
-      lastStage = 'security'
-      feedback = findingsFeedback('Security: vulnerabilities found', sec.summary, secRes)
-      continue
+      // ---- UI (its review ran beside QA's) --------------------------------
+      let uiFeedback = ''
+      if (uiRun) {
+        const ui = await uiRun
+        if (ui && ui.uiError) throw ui.uiError
+        if (!ui) return block(t, round, `The UI reviewer returned no result in round ${round}.`)
+        const uiRes = await record('ui', ui.findings.map(f => ({ severity: f.severity, title: f.title, where: at(f),
+          detail: f.issue + (f.screenshot ? ` (screenshot: ${f.screenshot})` : ''), fix: f.fix })), ui.verified, 'UI', uiText)
+        contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage ui --verdict ${uiRes.blocking.length ? 'fail' : 'pass'}`,
+          { phase: 'UI', label: `journal ui ${tag}`, note: uiNote(ui) }), `ui ${tag}`))
+        uiReviewedAt = aq.checkpoint
+        if ((ui.ux_verified || []).length) {
+          try {
+            const v = await sh(`ux verify --task ${t.id} --source ${q(`ui ${tag}`)}`, { phase: 'UI', label: `ux register ${tag}`, note: JSON.stringify(ui.ux_verified) })
+            if (v && (v.resolved || []).length) log(`🎨 ${tag}: UX problem(s) solved: ${v.resolved.join(', ')}`)
+          } catch (e) { log(`Could not update the UX register: ${e.message}`) }
+        }
+        if (uiRes.blocking.length) uiFeedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
+      }
+      if (qaFailed || uiFeedback) {
+        lastStage = qaFailed ? (uiFeedback ? 'qa and ui' : 'qa') : 'ui'
+        feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback].filter(Boolean).join('\n\n')
+        continue
+      }
+
+      // ---- Security -----------------------------------------------------
+      const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
+      const secText = secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt)
+      const sec = await stage('security', secText,
+        { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
+      if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
+      secReviewedAt = aq.checkpoint
+      const secRes = await record('security', sec.findings.map(f => ({ severity: f.severity, title: f.title, where: `${f.category} ${where(f)}`,
+        detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security', secText)
+      contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secRes.blocking.length ? 'fail' : 'pass'}`,
+        { phase: 'Security', label: `journal security ${tag}`, note: secNote(sec) }), `security ${tag}`))
+      if (secRes.blocking.length) {
+        lastStage = 'security'
+        feedback = findingsFeedback('Security: vulnerabilities found', sec.summary, secRes)
+        continue
+      }
     }
 
     // ---- Full e2e (when QA ran only this task's e2e tests and the smoke tests) ----

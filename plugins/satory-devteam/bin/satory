@@ -2677,6 +2677,7 @@ def cmd_task_start(p: Project, a) -> None:
                 raise SatoryError("working tree is dirty; commit or stash before starting a task")
             p.git("checkout", "-q", branch)
         elif p.dirty():
+            st.pop("resume_at", None)  # a round was changing files: it starts again with Dev
             st["checkpoint"] = checkpoint(p, tid, "resume (uncommitted work)")
         main_head = p.git("rev-parse", p.main)
         if p.git("merge-base", p.main, branch) != main_head:
@@ -2731,12 +2732,21 @@ def cmd_task_start(p: Project, a) -> None:
     resume_at = st.get("resume_at") if resumed else None
     if resume_at and resume_at.get("round") != st["rounds"]:
         resume_at = None
+    if resume_at and resume_at.get("stage") == "e2e":
+        st["full_e2e_due"] = resume_at["round"]
+        # the tests that failed in the last whole suite run first, one after another: when they pass, the rest
+        # passed before on the same code (they failed for a reason outside the task - a busy machine, a broken copy)
+        if st.get("full_e2e_failed") and st.get("full_e2e_failed_tests"):
+            st["e2e_rerun_first"] = True
+        p.save_state()
     if not resumed:
         st.pop("resume_at", None)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
     if resume_at:
-        again = (f" (resumed at {'QA' if resume_at['stage'] == 'qa' else 'the review'} of round {resume_at['round']}:"
-                 f" Dev's work{' and the review' if resume_at['stage'] == 'qa' else ''} passed before the interruption)")
+        where_ = {"review": "the review", "qa": "QA", "e2e": "the whole e2e suite"}[resume_at["stage"]]
+        passed = {"review": "Dev's work", "qa": "Dev's work and the review",
+                  "e2e": "Dev's work, the review, QA, the UI review and Security"}[resume_at["stage"]]
+        again = f" (resumed at {where_} of round {resume_at['round']}: {passed} passed before the interruption)"
     progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
           "rounds_used": st["rounds"], "resumed": resumed, "resume_at": resume_at, "task_file": f"docs/tasks/{tid}.md",
@@ -3608,9 +3618,10 @@ def cmd_step(p: Project, a) -> None:
         except ValueError:
             pass
     # where a round goes on when the build is interrupted: after Dev's checks passed, at the review; after the
-    # review approved, at QA. Any other step of the round ends it (a resume then starts the next round)
-    keep = (a.step == "after-dev" or a.step == "pre-qa" or
-            (a.step == "readonly" and a.stage == "reviewer" and a.verdict == "approve"))
+    # review approved, at QA; after QA, the UI review and Security passed, at the whole e2e suite. A check that
+    # sends the round back to Dev ends it (a resume then starts the next round)
+    keep = (a.step in ("after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check") or
+            (a.step == "readonly" and (a.verdict or "ok") in ("approve", "pass", "ok")))
     if not keep:
         st.pop("resume_at", None)
 
@@ -3771,6 +3782,8 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         extra += [f"- Not run, no change in its part of the code since it passed: {c}" for c in gates["test"].get("unchanged", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
+        if verdict == "fail":
+            st.pop("resume_at", None)
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         head = (note or "").split("\n\n")[0].strip()[:800]
         save_review(p, st, "qa checks", rnd, verdict,
@@ -3802,7 +3815,15 @@ def cmd_step(p: Project, a) -> None:
         if st.get("full_e2e_due") is None:
             return emit({"ok": True, "skipped": True, "gates": {},
                          "reason": "the whole e2e suite already ran in QA's check of this round"})
-        g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
+        first = p.e2e_failed_commands(st.get("full_e2e_failed_tests") or []) if st.pop("e2e_rerun_first", False) else []
+        if first:  # resumed after a whole suite whose failures may not be the task's: those run again first
+            progress(p, f"↻ {tid} r{rnd}: the {len(st['full_e2e_failed_tests'])} test(s) that failed in the last whole suite "
+                        f"run again first, one after another")
+            g = e2e_run(p, tid, rnd, first, "e2e-failed-again")
+            if g.get("ok"):
+                g = {**g, "rerun_of_failed": True}
+        else:
+            g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
         st.pop("full_e2e_due", None)
         st["full_e2e_failed"] = not g["ok"]
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
@@ -3833,9 +3854,11 @@ def cmd_step(p: Project, a) -> None:
         extra = [f"- Violation: {a.stage} changed {path} - reverted" for path in sorted(changed)]
         journal_pending(p, tid, a.stage, rnd, a.verdict or "ok", join_note(note, extra))
         r = st.get("resume_at")
-        if r and a.stage == "reviewer" and a.verdict == "approve" and r.get("round") == rnd:
+        if r and r.get("round") == rnd and a.stage == "reviewer" and a.verdict == "approve":
             r["stage"] = "qa"
-        elif r:
+        elif r and r.get("round") == rnd and a.stage == "security" and a.verdict == "pass":
+            r["stage"] = "e2e"
+        elif r and (r.get("round") != rnd or (a.verdict or "ok") not in ("approve", "pass", "ok")):
             st.pop("resume_at", None)
         p.save_state()
         emit({"ok": True, "reverted": sorted(changed), "context_error": refresh_context(p, tid)})

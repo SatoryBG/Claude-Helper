@@ -449,6 +449,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.19** - a round also resumes at the whole e2e suite: once QA, the UI review and Security passed, an
+  interrupted build goes on with a fresh copy of staging and the whole suite, not with QA again. When the last
+  whole suite failed, its failed tests run first, one after another; if they pass, the rest passed before on the
+  same code and the suite counts as passed (failures from outside the task - a busy machine, a broken copy - no
+  longer cost a round of Dev). A check that sends the round back, or work left uncommitted, ends the point.
 - **1.7.18** - what the environments mount from the project (the bind mounts of the staging compose files) is
   shared by the user's staging and every copy, so an e2e run may not change it: the CLI compares those files before
   and after each e2e run, and a change fails the run with `[shared]` entries naming the files, for QA (a test works
