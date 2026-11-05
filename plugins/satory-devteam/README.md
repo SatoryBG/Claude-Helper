@@ -462,6 +462,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.3** - the questions of the agents are recorded again. Since the notes moved into the runner's prompt
+  (1.7.16), `question add` and `polish add` still read only stdin, which was empty: every decision of Dev,
+  every question of the Reviewer and QA was dropped without an error (one project lost them for six tasks).
+  Both read the note from the prompt now, and the build logs a warning when a list of questions comes back
+  with nothing added, skipped or reopened.
+
 - **1.8.2** - the step that brings the app up for QA is named for where it runs: `test copy T-023 r2` in the
   progress, the status line and a blocked task's reason, not `staging` - the user's staging is never touched
   there. A project without copies still says `staging`. `satory plan json` gives `test_copies`.

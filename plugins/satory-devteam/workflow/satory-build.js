@@ -895,6 +895,10 @@ async function addQuestions(items, kind, source, { task, milestone, phase }) {
       { phase, label: `questions ${source}`, note: JSON.stringify(list) })
     const added = (res && res.added_items) || ((res && res.added) || []).map(id => ({ id, title: '' }))
     if (added.length) log(`❓ ${added.length} new question(s) for the user from ${source} - /satory-devteam:status`)
+    // nothing added, skipped or reopened from a non-empty list: the CLI did not get the list (it lost every
+    // question for a day once, without an error) - said, not swallowed
+    if (!added.length && !((res && res.skipped) || []).length && !((res && res.reopened) || []).length)
+      log(`⚠ the ${list.length} question(s) from ${source} were not recorded: the CLI got an empty list`)
     return added
   } catch (e) {
     log(`Could not record the questions from ${source}: ${e.message}`)

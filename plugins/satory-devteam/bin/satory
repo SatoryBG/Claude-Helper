@@ -1043,7 +1043,7 @@ def cmd_question(p: Project, a) -> None:
     reg = questions_load(p)
     if a.action == "add":
         try:
-            new = json.loads(sys.stdin.read() or "[]")
+            new = json.loads(note_input(a) or "[]")
         except json.JSONDecodeError as e:
             raise SatoryError(f"question add expects a JSON list on stdin: {e}")
         if isinstance(new, dict):
@@ -1191,6 +1191,15 @@ def read_note(args) -> str:
             sys.exit(1)
         return text
     return sys.stdin.read() if getattr(args, "note_stdin", False) else ""
+
+
+def note_input(args) -> str:
+    """The input of a command that always takes it on stdin (question add, polish add): the note from the runner's
+    prompt when the workflow put it there, else stdin. Reading only stdin lost every question the agents raised
+    after the notes moved into the prompt (1.7.16): stdin was empty and the command added nothing, without an error."""
+    if os.environ.get("SATORY_NOTE_PROMPT"):
+        return read_note(args)
+    return sys.stdin.read()
 
 
 _CRC_TABLE: list[int] = []
@@ -2775,7 +2784,7 @@ def cmd_polish(p: Project, a) -> None:
     reg = load_json(path, {"items": []})
     if a.action == "add":
         try:
-            new = json.loads(sys.stdin.read() or "[]")
+            new = json.loads(note_input(a) or "[]")
         except json.JSONDecodeError as e:
             raise SatoryError(f"polish add expects a JSON list on stdin: {e}")
         seen = {(x["source"], x["issue"]) for x in reg["items"]}
