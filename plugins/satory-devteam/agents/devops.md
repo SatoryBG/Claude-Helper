@@ -12,7 +12,7 @@ write your notes for the next round to `.satory/run/notes/<ID>-devops.md` (as th
 ## Responsibilities
 - The solution skeleton according to `docs/ARCHITECTURE.md`: projects, configuration, a `/health` endpoint for web services.
 - **Test infrastructure**: test projects and, for web projects, `e2e/` with Playwright (TypeScript,
-  `@playwright/test`, Chromium). `baseURL` comes from `process.env.SATORY_BASE_URL`. If `ui.review` in
+  `@playwright/test`, Chromium). The address comes from `process.env.SATORY_BASE_URL`; without it the e2e config gets the tests' copy that runs now from `.satory/run/satory env vars test` (JSON: `url`, `vars` - one is brought up when none runs) and puts its `vars` into `process.env` before it reads them - never a fixed fallback to staging (`?? "http://localhost:8081"`), which sent the tests of agents that forgot the export into the user's own staging. If `ui.review` in
   `.satory/project.json` is not false, also add `@axe-core/playwright` to `e2e/` (QA and the UI reviewer use it
   for accessibility checks). You may create NEW files under `paths.tests` (projects, configuration, one
   smoke test with `@smoke` in its title - the check after QA runs it with each task's own e2e tests), but

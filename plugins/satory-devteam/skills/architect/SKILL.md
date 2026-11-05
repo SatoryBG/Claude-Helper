@@ -52,8 +52,10 @@ Fill in `docs/ARCHITECTURE.md` from the template:
   generated once by the staging `up` command, the same for all, and no test changes it in place (a test that
   needs to change it works on a temporary copy).
 - **Tests**: unit and integration with the stack's framework. For web: e2e with Playwright (TypeScript) in
-  `e2e/`, with `baseURL` from `SATORY_BASE_URL`, plus `@axe-core/playwright` for projects with a UI. The
-  test naming convention is stable and unique.
+  `e2e/`, with `baseURL` from `SATORY_BASE_URL` (without it, the tests' copy from `.satory/run/satory env vars
+  test` - never a fixed fallback to staging), plus `@axe-core/playwright` for projects with a UI. Unit and
+  integration tests run in parallel: shared containers are one fixture for the whole test project and each class
+  takes its own database from it. The test naming convention is stable and unique.
 - **Security**: authentication, secrets (only through the environment), scanners (gitleaks, semgrep, dependency audit).
 - **CI**: GitHub Actions with build, lint, test, e2e and security.
 

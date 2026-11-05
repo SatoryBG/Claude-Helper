@@ -83,7 +83,7 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    `HOST_PORT`, read from `deploy/compose.yml`). The tests run in such copies, several at once on other ports: a
    test reads the address, the ports and the compose project from these variables and never names a host port or the
    staging compose project itself (`localhost:8081`, `"8081"`, `<name>-staging`) - such a spec file could reach
-   the user's own staging, so the CLI does not run it and fails the `pinned` check until you change it. Files the environments mount from the project (the bind mounts of the staging compose files, e.g. generated
+   the user's own staging, so the CLI does not run it and fails the `pinned` check until you change it. The address comes from `process.env.SATORY_BASE_URL`; without it the e2e config gets the tests' copy that runs now from `.satory/run/satory env vars test` (JSON: `url`, `vars` - one is brought up when none runs) and puts its `vars` into `process.env` before it reads them - never a fixed fallback to staging (`?? "http://localhost:8081"`), which sent the tests of agents that forgot the export into the user's own staging. Files the environments mount from the project (the bind mounts of the staging compose files, e.g. generated
    test certificates or a trust list) are shared by the user's staging and every copy: a test never changes them -
    one that must (e.g. a check that a generator replaces its files) runs it on its own temporary copy of the
    folder. An e2e run that changes them fails with `[shared]` entries naming the files. Also do **exploratory testing**: temporary Playwright
@@ -110,8 +110,8 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 5. Fill in "QA: coverage": which test covers which criterion or point.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
-   crash the next build or test run. Use the staging app instead when you can; otherwise stop every
-   process you started (and its children) before you return.
+   crash the next build or test run. Use the tests' copy of staging instead when you can; otherwise stop
+   every process you started (and its children) before you return.
 6. **Assert what the requirement fixes, not a whole list.** When a requirement names items that must be
    there (the sections of a page, menu entries, columns, the secrets a container uses), assert that each
    of them is present - in order when the order is required - instead of asserting that the list is
@@ -119,11 +119,19 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    when the requirement itself is exhaustive ("only these secrets", "no other roles"), and say so in the
    test name. An exact-list test of an earlier task that fails because this task adds an item on purpose is
    adapted to this form (see "A test from an earlier task" above).
-7. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
+7. **Unit and integration tests run in parallel.** Expensive shared resources (a database container, an
+   identity stub) are one fixture for the whole test project (xUnit v3: an assembly fixture; NUnit/JUnit/Vitest:
+   their global setup), and each test class takes its own database or schema from it - never one shared collection
+   that makes every class wait for the others (the .NET tests of one project grew from 13 to 26 minutes that way).
+   A test that changes something of the whole process (an environment variable, a static field, the current
+   directory, a file every test reads) goes into one collection that does not run in parallel, or better, passes
+   the value to its own host only. Cap the parallel threads at about half the cores.
+
+8. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
    the test projects and use it; put a step you need in two places into a shared helper. Wait for the
    state you check (a response, a visible text, an enabled button), never for a fixed time.
-8. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
+9. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
    at most about 60 lines, facts only, not a log): the key files and what each does for this task, the
    commands that worked (run one test, reach a state on staging, log in as a role), the traps you hit
    and how you got past them, and what is still open. The next round starts from it (the digest lists

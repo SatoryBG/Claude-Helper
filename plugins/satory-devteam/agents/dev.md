@@ -55,8 +55,13 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    them pass. The orchestrator runs them again and sends the task back to you if they fail.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
-   crash the next build or test run. Use the staging app instead when you can; otherwise stop every
-   process you started (and its children) before you return.
+   crash the next build or test run. Use the tests' copy of staging instead when you can (below); otherwise
+   stop every process you started (and its children) before you return.
+   **The running app**: your task names the tests' copy of staging and how to deploy your work tree into it
+   (`satory deploy test`) and get its export line (`satory env vars test --shell`). Never open, call, deploy to
+   or run a test against the user's staging (the `url` of staging in `.satory/project.json`): it holds the
+   user's own data and runs main, so a check there does not even test your changes. `satory deploy staging`
+   from a task branch goes to the copy. Notes from earlier tasks that say otherwise are outdated.
 7. **Feedback.** Address every point. The findings of the checks have ids (F-1 ...; the full record of
    each is in `.satory/run/findings/<task>/<id>.md`): fix each one, or, if you disagree, return it in
    `finding_disputes` with the reason - the check that raised it decides. Never ignore one silently.

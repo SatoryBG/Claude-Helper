@@ -206,6 +206,14 @@ staging whose ports cannot be read) keeps the tests on staging itself, as before
 staging's own host port or compose project could reach your data: it does not run, and the `pinned` check
 fails until QA makes it read `SATORY_BASE_URL` and `SATORY_COMPOSE_PROJECT`.
 
+Dev checks its changes in the same copy: `satory deploy test` builds the work tree into it and prints its
+address and an `export` line; `satory env vars test` (`--shell`: only the export line) gives the copy that runs
+now and brings one up from the work tree when none runs - the address is found or made, never assumed. The
+copy that runs is also written to `.satory/run/test-env.json` and `test-env.sh`, and `.satory/run/satory` calls
+the installed CLI, so an e2e config without `SATORY_BASE_URL` asks it for the copy instead of falling back to
+staging. Staging takes main only, between two tasks: `satory deploy staging` during a task, from another branch
+or with uncommitted changes goes to the tests' copy (`--force` deploys to staging anyway - your own call).
+
 A separate `preview` can still be set (e.g. when staging is ephemeral):
 
 ```json
@@ -453,6 +461,27 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.8.0** - your staging is yours alone, the checks are faster and a slower check is reported.
+  - **Dev no longer uses your staging.** QA and the UI review moved to the tests' copies in 1.7.14, but Dev kept
+    the old rule "use the staging app" and its notes from earlier tasks: it deployed its unfinished work tree to
+    staging (a migration of an unfinished task broke the next deploy) and its e2e runs left over a thousand
+    processes there. Dev now gets the tests' copy (`satory deploy test`, `satory env vars test`), and
+    `satory deploy staging` during a task, from another branch or with uncommitted changes goes to the copy, with
+    a `↪` line in the progress. `--force` still deploys to staging.
+  - **The copy's address is found, not assumed.** `.satory/run/test-env.json`/`.sh` hold the copy that runs,
+    `.satory/run/satory` calls the installed CLI, and the e2e config takes the copy from
+    `satory env vars test` when `SATORY_BASE_URL` is not set (QA, DevOps and the architect write it so) - one is
+    brought up from the work tree when none runs, and a fixed fallback to staging is gone.
+  - **The task's own e2e tests first.** When most of the suite is affected, the check after QA runs the task's
+    own e2e tests before the whole suite; when they fail, the round goes back to Dev without waiting 35 minutes
+    for the rest, and the whole suite stays due. `"e2e_task_first": false` runs the whole suite at once.
+  - **A check that grows slower is reported.** The build, lint, unit and whole e2e commands are timed; when one
+    takes 1.5 times as long as when it was first measured (and at least 3 minutes more), a `⚠` line says so,
+    and again at each further step. `"check_trend": false` turns it off, `"check_trend_growth"` sets the factor.
+  - **Unit tests run in parallel.** QA and the architect keep shared containers in one fixture for the whole
+    test project, each class with its own database, and only tests that change the whole process in one
+    serial collection (one project's .NET tests had grown from 13 to 26 minutes in one shared collection).
 
 - **1.7.24** - three ways a build lost rounds or work without a word. A test of an earlier feature that fails in
   two rounds in a row is sent to Dev with "the task cannot finish while it fails, even when this task did not

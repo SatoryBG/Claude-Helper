@@ -729,8 +729,20 @@ Round: ${round} of at most ${MAX_ROUNDS}.
 ${feedback ? `The task was sent back to you. Address EVERY point of the feedback.\n\n## Feedback\n${feedback}` : 'Implement the task.'}
 
 Reminder: tests belong to QA (do not touch them), the mini-spec in the task file must be up to date,
-build/lint/test must pass. Do not commit.`
+build/lint/test must pass. Do not commit.${devApp()}`
 }
+
+// Dev checks its changes on the tests' copy of staging, never on the user's staging (it holds the user's own
+// data and runs main): agents that deployed their work tree to staging left a migration there that broke the
+// next deploy, and their e2e runs left over a thousand processes in the user's app
+const devApp = () => plan && plan.has_deploy ? `
+
+The running app for your own checks is the tests' copy of staging, never the user's staging (its URL in
+.satory/project.json): that one holds the user's own data and runs main. \`${BIN} deploy test\` builds your
+work tree into the copy (a few minutes) and prints its \`url\` and an \`export\` line; \`${BIN} env vars test --shell\`
+prints the export line of the copy that runs now (one is brought up when none runs). Run the export in the
+same Bash command as every e2e test, curl or script, e.g. \`eval "$(${BIN} env vars test --shell)" && cd e2e && npx playwright test …\`.` : ''
+
 
 // In round > 1 a check starts from its own open findings in the register (stable F-ids) and the changes
 // made since it ran: it verifies each one instead of reporting it again. After an interrupted build they are

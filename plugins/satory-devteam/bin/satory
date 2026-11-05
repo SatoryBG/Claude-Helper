@@ -9,6 +9,7 @@ gates, checkpoints, the append-only journal, merge/push and local deploys.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import functools
 import hashlib
@@ -383,10 +384,12 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
         return {"ok": True, "skipped": True}
     log.parent.mkdir(parents=True, exist_ok=True)
     code = 0
+    times = []
     with open(log, "w", encoding="utf-8") as f:
         for cmd in cmds:
             f.write(f"$ {cmd}\n")
             f.flush()
+            t0 = time.time()
             try:
                 code = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root,
                                       stdout=f, stderr=subprocess.STDOUT, env=env,
@@ -395,9 +398,43 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
                 f.write(f"\n[satory] timeout after {p.cmd_timeout()}s (command_timeout_minutes in .satory/project.json)\n")
                 code = 124
             f.write(f"\n[satory] exit {code}\n")
+            times.append((cmd, round(time.time() - t0), code))
             if code != 0:
                 break
-    return {"ok": code == 0, "exit": code, "log": p.rel(log)}
+    return {"ok": code == 0, "exit": code, "log": p.rel(log), "times": times}
+
+
+# A check that grows much slower over the tasks (the .NET tests of one project went from 13 to 26 minutes in
+# three days while their number grew 14%: their classes waited for each other in one shared collection) is
+# reported once it takes TREND_GROWTH times as long as when it was first measured, and again at each further
+# step. "check_trend": false in .satory/project.json turns it off, "check_trend_growth" sets the factor.
+TREND_GROWTH = 1.5
+TREND_MIN_SECONDS = 180   # a smaller growth is not worth a word
+TREND_SAMPLES = 3         # the first passing runs that set the baseline (their median)
+
+
+def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
+    if p.config.get("check_trend", True) is False:
+        return
+    growth = float(p.config.get("check_trend_growth") or TREND_GROWTH)
+    ct = p.state.setdefault("check_times", {})
+    for cmd, secs, code in times or []:
+        if code != 0:
+            continue
+        e = ct.setdefault(cmd[:300], {"recent": []})
+        e["recent"] = (e["recent"] + [secs])[-8:]
+        if "baseline" not in e:
+            if len(e["recent"]) >= TREND_SAMPLES:
+                e["baseline"] = sorted(e["recent"])[len(e["recent"]) // 2]
+            continue
+        b = e["baseline"]
+        if secs >= b * growth and secs - b >= TREND_MIN_SECONDS:
+            short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
+            progress(p, f"⚠ {tid} r{rnd}: `{short}` took {secs / 60:.0f} min, {b / 60:.0f} min when first measured - "
+                        f"it grows faster than the work it checks: look for tests that wait for each other "
+                        f"(one shared collection or lock, fixed sleeps) or a slower setup")
+            e["baseline"], e["warned"] = secs, now()
+    p.save_state()
 
 
 # a crash of the runtime or the test host, not a failing test: the gate runs once more before it fails
@@ -507,6 +544,7 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
                                for c in unchanged), encoding="utf-8")
         return {"ok": True, "exit": 0, "log": p.rel(log), "unchanged": unchanged}
     res = run_cmds(p, cmds, log, p.env(tid, rnd))
+    check_trend(p, tid, rnd, res.get("times"))
     if unchanged:
         with open(log, "a", encoding="utf-8") as f:
             f.writelines(f"[satory] not run - no change in its part of the code since it last passed: {c}\n" for c in unchanged)
@@ -778,6 +816,8 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     else:
         t0 = time.time()
         res = run_cmds(p, cmds, log, p.env(tid, rnd, e2e=True))
+        if whole:
+            check_trend(p, tid, rnd, res.get("times"))
         if cfg:  # a whole suite in one run: measured as 1, so the copies are kept only when they are faster
             f1, total1, _ = e2e_failures(log)
             res.update(seconds=round(time.time() - t0), tests=total1, failed_count=f1)
@@ -1525,11 +1565,13 @@ def test_env_down(p: Project, label: str = "") -> dict:
     cfg = test_copy_cfg(p)
     if not t or not cfg:
         p.state.pop("test_env", None)
+        test_env_record(p, None)
         return {"ok": True, "skipped": True}
     env = dict(p.env(), SATORY_IMAGE=t.get("image") or "", **(t.get("vars") or {}))
     r = run_cmds(p, test_env_cmds(cfg, down=True), p.logs / f"down-test-{label or now('%Y%m%d-%H%M%S')}.log", env)
     p.state.pop("test_env", None)
     p.save_state()
+    test_env_record(p, None)
     return r
 
 
@@ -1560,8 +1602,82 @@ def test_env_up(p: Project, image: str, label: str) -> dict | None:
     # a test without them falls back to the user's staging
     exports = {"SATORY_BASE_URL": url, "SATORY_COMPOSE_PROJECT": cfg["name"], **env_vars}
     export = "export " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in exports.items())
+    p.state["test_env"]["export"] = export
+    p.save_state()
+    test_env_record(p, {"url": url, "vars": exports, "export": export, "image": image, "at": now()} if healthy else None)
     return {"ok": healthy, "stage": "health" if not healthy else "done", "url": url, "health_url": health_url,
-            "image": image, "log": up["log"], "test_copy": cfg["name"], "export": export}
+            "image": image, "log": up["log"], "test_copy": cfg["name"], "export": export, "vars": exports}
+
+
+TEST_ENV_FILE = "test-env.json"   # .satory/run/: the tests' copy that runs now, for a test run without the export
+TEST_ENV_SH = "test-env.sh"
+
+
+def test_env_record(p: Project, rec: dict | None) -> None:
+    """Write (or remove) .satory/run/test-env.json and test-env.sh: the address and the variables of the copy
+    that runs now. A test started without the export line finds the copy there (or through
+    `.satory/run/satory env vars test`), never the user's staging."""
+    for name in (TEST_ENV_FILE, TEST_ENV_SH):
+        (p.run / name).unlink(missing_ok=True)
+    if rec:
+        write_json(p.run / TEST_ENV_FILE, rec)
+        (p.run / TEST_ENV_SH).write_text(rec["export"] + "\n", encoding="utf-8")
+
+
+def build_work_image(p: Project, label: str) -> dict:
+    """The image of the work tree as it is now (Dev's changes need no commit): <image>:<HEAD>-work."""
+    d = p.config.get("deploy") or {}
+    sha = p.git("rev-parse", "--short=12", "HEAD")
+    image = f"{d['image']}:{sha}-work"
+    built = run_cmds(p, as_list(d.get("build")), p.logs / f"deploy-test-{label}.build.log",
+                     dict(p.env(), SATORY_IMAGE=image, SATORY_ENV="test"))
+    return {"ok": built["ok"], "image": image, "log": built.get("log")}
+
+
+@contextlib.contextmanager
+def run_lock(p: Project, name: str):
+    """One process at a time (two agents asking for the tests' copy at once would build it twice)."""
+    import fcntl
+    p.run.mkdir(parents=True, exist_ok=True)
+    with open(p.run / f"{name}.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def test_env_now(p: Project, rebuild: bool = False) -> dict:
+    """The tests' copy for an agent or a test run: the one that runs now (healthy), else one brought up from the
+    work tree - found or made dynamically, never the user's staging. Without copies (an ephemeral staging, or
+    "test_copies": false) the tests use staging itself."""
+    cfg = test_copy_cfg(p)
+    if not cfg:
+        e = env_cfg(p, "staging")
+        url = e.get("url") or ""
+        return {"ok": bool(url), "url": url, "copy": False, "vars": {"SATORY_BASE_URL": url} if url else {},
+                "export": f"export SATORY_BASE_URL={shlex.quote(url)}" if url else ""}
+    with run_lock(p, "test-env"):
+        p.state = load_json(p.state_path, {"tasks": {}, "deploy": {}})  # another process may have brought one up
+        t = p.state.get("test_env") or {}
+        health = cfg.get("health", "")
+        if not rebuild and t.get("export") and wait_health_quick(t["url"].rstrip("/") + health):
+            exports = {"SATORY_BASE_URL": t["url"], "SATORY_COMPOSE_PROJECT": t.get("project", ""), **(t.get("vars") or {})}
+            test_env_record(p, {"url": t["url"], "vars": exports, "export": t["export"], "image": t.get("image"),
+                                "at": t.get("at")})
+            return {"ok": True, "url": t["url"], "export": t["export"], "vars": exports, "image": t.get("image"),
+                    "reused": True, "copy": True}
+        built = build_work_image(p, "work")
+        if not built["ok"]:
+            return {"ok": False, "stage": "build", "log": built["log"], "copy": True}
+        res = test_env_up(p, built["image"], "work")
+        return {**res, "copy": True}
+
+
+def staging_is_main_only(p: Project) -> bool:
+    """The user's staging takes main only, and only between two tasks: a task in progress, another branch or
+    uncommitted changes send a staging deploy to the tests' copy."""
+    return bool(p.state.get("tasks")) or p.current_branch() != p.main or p.dirty()
 
 
 def build_head_image(p: Project, label: str) -> dict:
@@ -1663,6 +1779,14 @@ def cmd_env(p: Project, a) -> None:
         return emit(staging_ensure(p))
     if a.action == "down" and a.env == "test":
         return emit(test_env_down(p, "manual"))
+    if a.action == "vars":
+        if a.env != "test":
+            raise SatoryError("env vars is for the tests' copy: env vars test")
+        r = test_env_now(p)
+        if a.shell:  # for eval "$(satory env vars test --shell)" in a test command or a config
+            print(r.get("export") or "")
+            sys.exit(0 if r.get("ok") else 1)
+        return emit(r)
     if a.action == "down":
         if a.env == "preview" and not a.force:
             raise SatoryError("preview holds the user's data: env down preview needs --force")
@@ -3931,7 +4055,21 @@ def cmd_step(p: Project, a) -> None:
         if broad:
             progress(p, f"⚡ {tid} r{rnd}: {len(affected)} of {all_specs} e2e spec files are likely affected - "
                         "the whole suite runs after QA")
-        if first and a.split_e2e and not broad and (not st.get("full_e2e_failed") or again):
+        # before the whole suite, the task's own e2e tests (a few minutes): when they fail, the round goes back to
+        # Dev with them and the whole suite waits for a round in which they pass (it is still due). Two rounds of
+        # T-020 and T-021 waited 35 minutes each for a whole suite whose only failures were the task's own tests.
+        # "e2e_task_first": false runs the whole suite at once.
+        task_first = None
+        if broad and first and a.split_e2e and p.config.get("e2e_task_first", True) is not False:
+            g = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
+            if not g["ok"] and not g.get("skipped"):
+                task_first = {**g, "note": " (the task's own e2e tests, run first; the whole suite runs in a round "
+                                           "in which they pass)"}
+                progress(p, f"⚡ {tid} r{rnd}: the task's own e2e tests failed - the whole suite waits for a round "
+                            "in which they pass")
+        if task_first:
+            gates["e2e"] = task_first
+        elif first and a.split_e2e and not broad and (not st.get("full_e2e_failed") or again):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
             if affected_cmds:
                 gates["e2e_affected"] = {**e2e_run(p, tid, rnd, affected_cmds, "e2e-affected", whole=True,
@@ -3965,7 +4103,7 @@ def cmd_step(p: Project, a) -> None:
                       "affected": " (the e2e specs of earlier features this task likely affects)",
                       "failed": " (the tests that failed in the whole suite before)"}
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
-                  f"{scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
+                  f"{g.get('note') or scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
         extra += [f"- Not run, no change in its part of the code since it passed: {c}" for c in gates["test"].get("unchanged", [])]
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
@@ -4194,6 +4332,26 @@ def cmd_task_unblock(p: Project, a) -> None:
 
 
 def cmd_deploy(p: Project, a) -> None:
+    if a.env == "test" or (a.env == "staging" and not a.force and test_copy_cfg(p) and staging_is_main_only(p)):
+        # staging is the user's environment and runs main: the work of a task (an agent checking its changes on
+        # the running app) goes to the tests' copy, with its address and the export line for the agent's shell
+        if not test_copy_cfg(p):
+            raise SatoryError("this project has no tests' copy (an ephemeral staging or \"test_copies\": false): "
+                              "deploy staging")
+        with run_lock(p, "test-env"):
+            if a.image:
+                res = test_env_up(p, a.image, "manual")
+            else:
+                built = build_work_image(p, "manual")
+                res = test_env_up(p, built["image"], "manual") if built["ok"] else \
+                    {"ok": False, "stage": "build", "log": built["log"]}
+        if a.env == "staging":
+            res["redirected"] = ("staging is the user's environment and takes main only, between two tasks: "
+                                 "this work tree runs in the tests' copy instead - use its url and run its export line "
+                                 "in the same Bash command as every test or script")
+            progress(p, f"↪ deploy staging from {p.current_branch()} went to the tests' copy "
+                        f"({res.get('url') or '-'}): staging is the user's environment")
+        return emit(res)
     image = a.image
     if a.env == "prod" and not image:
         image = p.state.get("deploy", {}).get("main_image")
@@ -4692,9 +4850,10 @@ def main() -> None:
     s.add_argument("--step-minutes", type=float, default=2, help="report a CLI step once it has run this long")
 
     s = sub.add_parser("env", help="staging and preview: ensure (staging), down, status")
-    s.add_argument("action", choices=["ensure", "down", "status"])
+    s.add_argument("action", choices=["ensure", "down", "status", "vars"])
     s.add_argument("env", choices=["staging", "preview", "test"])
     s.add_argument("--force", action="store_true", help="down preview (it holds the user's data)")
+    s.add_argument("--shell", action="store_true", help="env vars test: only the export line")
     sub.add_parser("parallel", help="the parallel e2e setting: shards for the next whole suite, why, the measured runs")
     s = sub.add_parser("qa-check", help="what the check after QA would restore (QA runs it before it returns)")
     s.add_argument("task")
@@ -4703,8 +4862,10 @@ def main() -> None:
     s.add_argument("--minutes", type=float, default=45)
 
     s = sub.add_parser("deploy")
-    s.add_argument("env", choices=["staging", "preview", "prod"])
+    s.add_argument("env", choices=["staging", "preview", "prod", "test"])
     s.add_argument("--image")
+    s.add_argument("--force", action="store_true",
+                   help="staging: deploy this work tree to staging itself, also from a task branch (the user's own call)")
     s = sub.add_parser("release")
     s.add_argument("--version", required=True)
 
@@ -4717,6 +4878,7 @@ def main() -> None:
         if a.cmd == "statusline":
             return cmd_statusline(a)
         p = Project.find(a.project)
+        write_shim(p)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
                     "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
@@ -4728,6 +4890,21 @@ def main() -> None:
     except SatoryError as e:
         emit({"ok": False, "error": str(e)})
         sys.exit(1)
+
+
+def write_shim(p: Project) -> None:
+    """.satory/run/satory: this CLI for the project's own scripts (an e2e config that asks for the tests' copy),
+    whatever version of the plugin is installed - rewritten by every newer run."""
+    if not p.run.is_dir():
+        return
+    shim = p.run / "satory"
+    text = f"#!/usr/bin/env bash\nexec python3 {shlex.quote(str(Path(__file__).resolve()))} --project {shlex.quote(str(p.root))} \"$@\"\n"
+    try:
+        if not shim.exists() or shim.read_text(encoding="utf-8") != text:
+            shim.write_text(text, encoding="utf-8")
+            shim.chmod(0o755)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
