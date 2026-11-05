@@ -462,6 +462,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.2** - the step that brings the app up for QA is named for where it runs: `test copy T-023 r2` in the
+  progress, the status line and a blocked task's reason, not `staging` - the user's staging is never touched
+  there. A project without copies still says `staging`. `satory plan json` gives `test_copies`.
+
 - **1.8.1** - parallel unit and integration tests are the default for every project and every task, not only a
   hint: DevOps sets them up so from the start (one fixture for the shared containers, a database per class, the
   threads capped at half the cores, one serial collection for the few tests that change the whole process),

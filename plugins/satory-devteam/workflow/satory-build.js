@@ -426,6 +426,11 @@ async function stage(role, prompt, opts) {
 // A step between two tasks that looks at the running app gets it with the image of main first: the tests' own
 // copy of staging (staging itself is the user's), or an ephemeral staging. APP_URL is where it runs.
 let APP_URL = '', APP_EXPORT = ''
+// the step that brings the app up for the tests is named for where it runs: the tests' copy of staging (the user's
+// staging is never touched), or staging itself in a project without copies
+const appUpLabel = () => plan && plan.test_copies ? 'test copy' : 'staging'
+const appWhereShort = () => plan && plan.test_copies ? "in the tests' copy of staging" : 'on staging'
+
 async function stagingUp(phase) {
   try {
     const r = must(await sh('env ensure test', { phase, label: 'app up', long: true }), 'env ensure test')
@@ -1288,18 +1293,18 @@ async function runTask(t) {
     // ---- QA, UI, Security (a round resumed at the whole suite passed them before the interruption: its
     // copy of staging comes up again and the whole suite goes on) --------------------------------------
     if (skip === 'e2e') {
-      const again = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'Full tests', label: `staging ${tag}`, long: true }), `staging ${tag}`)
+      const again = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'Full tests', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
       if (!again.ok) {
-        lastStage = 'staging'
-        feedback = `### The app does not start on staging\nStage: ${again.stage}. Log: ${again.log}`
+        lastStage = appUpLabel()
+        feedback = `### The app does not start ${appWhereShort()}\nStage: ${again.stage}. Log: ${again.log}`
         continue
       }
     } else {
       // ---- QA -----------------------------------------------------------
-      const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `staging ${tag}`, long: true }), `staging ${tag}`)
+      const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
       if (!staging.ok) {
-        lastStage = 'staging'
-        feedback = `### The app does not start on staging\nStage: ${staging.stage}. Log: ${staging.log}` +
+        lastStage = appUpLabel()
+        feedback = `### The app does not start ${appWhereShort()}\nStage: ${staging.stage}. Log: ${staging.log}` +
           (staging.health_url ? `\nHealth check: ${staging.health_url}` : '')
         continue
       }
