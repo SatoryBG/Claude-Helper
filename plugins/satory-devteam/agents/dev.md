@@ -96,6 +96,15 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    commands that worked (build one project, run one test, reach a state on staging), the traps you hit
    and how you got past them, and what is still open. The next round starts from it (the digest lists
    it), so it does not have to rediscover the code. It is not committed and never replaces the mini-spec.
+13. **Check your work as the Reviewer will, before you return.** Most rounds the Reviewer sent back were for
+   two things you can see yourself:
+   - **The mini-spec and the code disagree.** Read the mini-spec point by point against the code you wrote:
+     every rule, limit, message (quoted exactly as in the translations), format and edge case it states is
+     what the code does, and everything the code decides is in it. Correct whichever is wrong.
+   - **A rule written twice.** For every rule, check, mapping or label your change adds, `grep` for the
+     place that already computes it (rule 9) - an equality of records, a label like „name · account“, a
+     calculation of the domain. Two places that must give the same answer call one function.
+   Say in your summary which existing functions you reused for the new rules.
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:

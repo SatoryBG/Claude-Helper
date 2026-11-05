@@ -74,7 +74,15 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 
 ## How you work
 1. At least one test for every acceptance criterion and every point of the mini-spec, including
-   negative scenarios and boundary values.
+   negative scenarios and boundary values. **Test each point at the cheapest level that proves it.** Rules,
+   calculations, validation, error codes and their texts, limits and the data an endpoint returns are unit or
+   API (integration) tests: fast, exact, and they do not break on a layout change. E2e tests are for what only
+   a browser shows: the user's path through a page or dialog end to end, the layout at the widths, focus and
+   the keyboard, axe, and what the page shows after an action. Do not repeat in e2e what an API test already
+   proves (one e2e path that the result reaches the page is enough). A test for a defect found in a later
+   round goes into the task's spec file next to the criterion it belongs to, not into a new file or a block
+   named after the round. The whole e2e suite runs in every round of every task, so each e2e test you add
+   costs every task after this one.
 2. **Web apps**: e2e tests with Playwright in `e2e/`. The app is already running in the tests' own copy of
    staging; your task gives an `export …` line with its address, compose project and ports: run it in the same
    Bash command as every test, Playwright script or curl (your shell has none of them, and a test without them

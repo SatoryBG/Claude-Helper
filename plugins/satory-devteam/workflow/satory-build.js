@@ -929,29 +929,53 @@ Review the whole code base on the current branch (everything built so far, not o
 for duplicated logic, inefficient code (database queries first), naming, dead code and consistency.`
 }
 
+// A milestone of at most this many tasks gets one task for its code health findings and its small improvements
+// together: each task runs the whole cycle (3-4 hours), and after a milestone of two tasks the reviews had added
+// three (refactoring, polish, UX)
+const SMALL_MILESTONE = 3
+
+// The polish items noted during the milestone's tasks, grouped by task and check, as subtasks
+async function polishItems(m) {
+  const list = must(await sh('polish list', { phase: 'Milestone review', label: `polish items ${m}` }), 'polish list')
+  const items = list.items || []
+  const bySource = {}
+  for (const x of items) (bySource[`${x.task} - ${x.source.split('-')[0]}`] ||= []).push(x)
+  return { items, subtasks: Object.entries(bySource).map(([k, xs]) => ({ title: k, acceptance: [POLISH_KEEP], questions: [],
+    description: bullets(xs.map(x => `[${x.severity}] ${x.where}: ${x.issue} → ${x.fix}`)) })) }
+}
+const POLISH_KEEP = 'Behaviour unchanged unless an item says otherwise; skip an item the code already does, and say so in the mini-spec'
+
 // The code health findings of a milestone become one refactoring task (one subtask per finding) ahead of
-// the work still to do, so the whole cycle runs once for all of them; behaviour stays the same.
+// the work still to do, so the whole cycle runs once for all of them; behaviour stays the same. After a small
+// milestone the polish items join it (returns true when they did).
 async function healthTask(m, tasks, plan) {
   const out = await spawn('code-health', healthPrompt(m, tasks),
     { phase: 'Milestone review', label: `code health ${m}`, model: MODELS['code-health'], schema: HEALTH_SCHEMA })
   if (!out) { log(`The code health review of ${m} returned no result.`); return }
   const items = out.items || []
-  if (!items.length) { log(`🧹 ${m} code health: nothing to refactor`); return }
+  if (!items.length) { log(`🧹 ${m} code health: nothing to refactor`); return false }
   const next = plan.tasks.find(t => t.status === 'todo')
   const keep = 'Behaviour unchanged: the existing unit and e2e tests pass without changing what they assert'
+  const polish = tasks.length <= SMALL_MILESTONE && plan.polish_task !== false ? await polishItems(m) : { items: [], subtasks: [] }
   const task = {
-    ref: `refactor-${m}`, title: out.title,
+    ref: `refactor-${m}`, title: polish.items.length ? `${out.title}; ${polish.items.length} small improvements from the reviews` : out.title,
     milestone: next ? next.milestone : m, owner: 'dev', ui: items.some(x => x.ui), depends_on: [], requirements: [],
     description: `${out.summary}\n\nA refactoring from the code health review of ${m}: the behaviour of the app must stay exactly the same.`,
-    acceptance: [keep], questions: [],
-    subtasks: items.map(x => ({ title: `${x.title} (${x.kind}, ${x.impact})`, description: `${x.description}\n\nFiles: ${x.files.join(', ') || '-'}`, acceptance: [keep], questions: [] })),
+    acceptance: polish.items.length ? [keep, POLISH_KEEP] : [keep], questions: [],
+    subtasks: [...items.map(x => ({ title: `${x.title} (${x.kind}, ${x.impact})`, description: `${x.description}\n\nFiles: ${x.files.join(', ') || '-'}`, acceptance: [keep], questions: [] })),
+      ...polish.subtasks],
     ...(next ? { insert_before: next.id } : {}),
   }
+  if (polish.items.length) task.description += `\n\nThe small improvements the Reviewer, the UI reviewer and Security noted during ${m} are subtasks here too (the milestone was small, so they share one cycle): do each, or skip it with a reason when it no longer applies.`
   const res = must(await sh(`plan add --source code-health-${m}`, {
     phase: 'Milestone review', label: `refactoring task ${m}`,
     note: JSON.stringify({ title: `refactoring after ${m}`, summary: out.summary, tasks: [task], depends: [], resolved: [] }),
   }), 'plan add')
-  log(`🧹 ${m} code health: ${items.length} finding(s) → ${res.added.join(', ')}`)
+  if (polish.items.length) {
+    await sh(`polish planned --task ${res.added[0] || '-'}`, { phase: 'Milestone review', label: `polish planned ${m}` })
+    log(`🧹 ${m} code health: ${items.length} finding(s) and ${polish.items.length} small improvement(s) → ${res.added.join(', ')}`)
+  } else log(`🧹 ${m} code health: ${items.length} finding(s) → ${res.added.join(', ')}`)
+  return polish.items.length > 0
 }
 
 // Two levels of e2e tests: every task runs the whole suite at fewer widths, and the end of a milestone at every
@@ -1050,20 +1074,16 @@ ${JSON.stringify(draft, null, 1)}`,
 // The small improvements noted during the milestone's tasks (minor findings of the Reviewer and the UI
 // reviewer, hardening suggestions of Security) become one polish task, done without asking.
 async function polishTask(m, plan) {
-  const list = must(await sh('polish list', { phase: 'Milestone review', label: `polish items ${m}` }), 'polish list')
-  const items = list.items || []
+  const { items, subtasks } = await polishItems(m)
   if (!items.length) return
   const next = plan.tasks.find(t => t.status === 'todo')
-  const bySource = {}
-  for (const x of items) (bySource[`${x.task} - ${x.source.split('-')[0]}`] ||= []).push(x)
-  const keep = 'Behaviour unchanged unless an item says otherwise; skip an item the code already does, and say so in the mini-spec'
+  const keep = POLISH_KEEP
   const task = {
     ref: `polish-${m}`, title: `Polish after ${m}: ${items.length} small improvements from the reviews`,
     milestone: next ? next.milestone : m, owner: 'dev', ui: items.some(x => x.source.startsWith('ui')), depends_on: [], requirements: [],
     description: `The small improvements the Reviewer, the UI reviewer and Security noted during ${m} without sending the tasks back (minor/nit findings, hardening suggestions). Do each, or skip it with a reason when it no longer applies.`,
     acceptance: [keep], questions: [],
-    subtasks: Object.entries(bySource).map(([k, xs]) => ({ title: k, acceptance: [keep], questions: [],
-      description: bullets(xs.map(x => `[${x.severity}] ${x.where}: ${x.issue} → ${x.fix}`)) })),
+    subtasks,
     ...(next ? { insert_before: next.id } : {}),
   }
   const res = must(await sh(`plan add --source polish-${m}`, {
@@ -1107,13 +1127,14 @@ async function reviewMilestones(plan) {
       { phase: 'Milestone review', label: `review ${m}`, model: MODELS.auditor, schema: AUDIT_SCHEMA })
     if (!audit) { log(`The milestone review of ${m} returned no result; it runs again next time.`); continue }
     const n = (await addQuestions(audit.items, 'question', `milestone ${m} review`, { milestone: m, phase: 'Milestone review' })).length
+    let polished = false
     if (plan.code_health_review !== false) {
       try {
-        await healthTask(m, tasks, plan)
+        polished = await healthTask(m, tasks, plan)
         plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The code health review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
     }
-    if (plan.polish_task !== false) {
+    if (plan.polish_task !== false && !polished) {
       try {
         await polishTask(m, plan)
         plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')

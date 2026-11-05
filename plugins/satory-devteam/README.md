@@ -462,6 +462,15 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.4** - fewer rounds and a smaller e2e suite. Dev checks its work as the Reviewer will before it returns:
+  the mini-spec against the code point by point, and every new rule against the code that already computes it
+  (in one project the Reviewer sent back the first round of 5 of 7 tasks, for exactly these two). QA tests
+  each point at the cheapest level that proves it - rules, calculations, errors and their texts in unit and
+  API tests, e2e only for what a browser shows - and puts a test for a later round's defect next to its
+  criterion, not into a new "round N" file (the suite had grown by about 100 e2e tests per task). After a
+  milestone of at most 3 tasks, its small improvements join the refactoring task as subtasks instead of a
+  task of their own: one cycle less (after a milestone of two tasks the reviews had added three).
+
 - **1.8.3** - the questions of the agents are recorded again. Since the notes moved into the runner's prompt
   (1.7.16), `question add` and `polish add` still read only stdin, which was empty: every decision of Dev,
   every question of the Reviewer and QA was dropped without an error (one project lost them for six tasks).
