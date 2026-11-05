@@ -26,6 +26,10 @@ and `docs/ARCHITECTURE.md`. Do not read `docs/JOURNAL.md`.
      timeouts.
    - UI: the same data fetched several times, request waterfalls, query keys that do not invalidate,
      heavy dependencies for small needs, needless re-renders of large tables.
+   - Tests: test classes that wait for each other (most of them in one collection or behind one lock or
+     fixture that serialises them), fixed sleeps, containers started per class where one per test project
+     would do - the time of the unit suite should grow with the number of tests, not faster (unless
+     `"tests_parallel": false` in `.satory/project.json`).
 3. **Naming**: identifiers in another language in Latin letters (`vnoska`, `cena`), the same concept
    under different names in different places, names that do not say what a thing is.
 4. **Dead code and magic values**: functions, endpoints, components, styles or translation keys nothing

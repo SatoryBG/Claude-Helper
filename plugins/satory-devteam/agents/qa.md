@@ -119,13 +119,19 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    when the requirement itself is exhaustive ("only these secrets", "no other roles"), and say so in the
    test name. An exact-list test of an earlier task that fails because this task adds an item on purpose is
    adapted to this form (see "A test from an earlier task" above).
-7. **Unit and integration tests run in parallel.** Expensive shared resources (a database container, an
+7. **Unit and integration tests run in parallel** (unless `"tests_parallel": false` in `.satory/project.json`).
+   This holds for every test you add, in every task: a new test class never joins a collection that makes
+   classes wait for each other, and when the existing setup does (one shared collection for most classes), you
+   change it to the setup below in the same task - only the test infrastructure, never the app, with the
+   assertions untouched - and run the whole unit suite three times in a row without a flaky test before you
+   return. Expensive shared resources (a database container, an
    identity stub) are one fixture for the whole test project (xUnit v3: an assembly fixture; NUnit/JUnit/Vitest:
    their global setup), and each test class takes its own database or schema from it - never one shared collection
    that makes every class wait for the others (the .NET tests of one project grew from 13 to 26 minutes that way).
    A test that changes something of the whole process (an environment variable, a static field, the current
    directory, a file every test reads) goes into one collection that does not run in parallel, or better, passes
-   the value to its own host only. Cap the parallel threads at about half the cores.
+   the value to its own host only. Cap the parallel threads at about half the cores. A test that passes alone
+   but fails in parallel depends on another test: fix the test (its own data, its own host), never the order.
 
 8. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in

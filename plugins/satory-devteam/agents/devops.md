@@ -16,7 +16,13 @@ write your notes for the next round to `.satory/run/notes/<ID>-devops.md` (as th
   `.satory/project.json` is not false, also add `@axe-core/playwright` to `e2e/` (QA and the UI reviewer use it
   for accessibility checks). You may create NEW files under `paths.tests` (projects, configuration, one
   smoke test with `@smoke` in its title - the check after QA runs it with each task's own e2e tests), but
-  you may not change existing tests.
+  you may not change existing tests. Set the unit and integration tests up to run in parallel from the start
+  (unless `"tests_parallel": false` in `.satory/project.json`): shared containers (the database, identity or
+  other stubs) are one fixture for the whole test project (xUnit v3: `[assembly: AssemblyFixture(...)]`;
+  NUnit: a `SetUpFixture`; JUnit 5: an extension with a static resource; Vitest/Jest: `globalSetup`), each test
+  class takes its own database or schema from it, the parallel threads are capped at about half the cores
+  (`xunit.runner.json`: `maxParallelThreads`), and one non-parallel collection is ready for the few tests that
+  must change something of the whole process. Never one collection or fixture that serialises the classes.
 - **Commands in `.satory/project.json`**: only you may edit it. Every command must actually work.
   `test_list` must print one stable, unique test identifier per line and nothing else, because satory
   compares the lists to guarantee that a test never disappears. Verify this.

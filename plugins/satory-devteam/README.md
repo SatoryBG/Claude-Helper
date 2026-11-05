@@ -462,6 +462,14 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.1** - parallel unit and integration tests are the default for every project and every task, not only a
+  hint: DevOps sets them up so from the start (one fixture for the shared containers, a database per class, the
+  threads capped at half the cores, one serial collection for the few tests that change the whole process),
+  the architect writes it into the test strategy, QA keeps every new test that way and moves an existing setup
+  that serialises the classes over in the same task (test infrastructure only, assertions untouched, three
+  green runs in a row), and the code health review at the end of a milestone looks for tests that wait for
+  each other. `"tests_parallel": false` in `.satory/project.json` turns it off.
+
 - **1.8.0** - your staging is yours alone, the checks are faster and a slower check is reported.
   - **Dev no longer uses your staging.** QA and the UI review moved to the tests' copies in 1.7.14, but Dev kept
     the old rule "use the staging app" and its notes from earlier tasks: it deployed its unfinished work tree to
