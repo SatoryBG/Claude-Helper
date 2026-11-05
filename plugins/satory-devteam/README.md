@@ -454,6 +454,14 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.7.24** - three ways a build lost rounds or work without a word. A test of an earlier feature that fails in
+  two rounds in a row is sent to Dev with "the task cannot finish while it fails, even when this task did not
+  cause it - fix the cause in the app"; a third round blocks the task for the user (Dev and QA had passed a
+  date-dependent layout failure back and forth for three rounds). A unit run whose tests all passed but which
+  failed on an unhandled error (Vitest: a toast timer firing after the test environment was torn down) runs once
+  more like a flaky test instead of costing a round. A queued plan change is dropped as "already planned" only
+  when a task of the plan names its question - a question marked planned by hand dropped a whole milestone.
+
 - **1.7.23** - a regression in an earlier feature comes back with QA's findings, not a round later: the check
   after QA also runs the e2e specs the task likely affects (the pages of the changed features, the files they
   name; in parallel copies when there are many), or the whole suite when most of it is affected. QA runs the

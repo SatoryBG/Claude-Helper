@@ -410,15 +410,24 @@ CRASH = re.compile(r"Internal CLR error|^Fatal error\.|Segmentation fault|core d
 # a test's duration after its name: "(559ms)", "(36s 277ms)", "(1m 2s)" - not part of the name
 DURATION = r"\s+\((?:\d[\d.]*\s*(?:ms|s|m|h)\s*)+\)"
 UNIT_FAILED = re.compile(r"^\s*(?:failed|FAIL|×|✗)\s+(.+?)(?:" + DURATION + r")?\s*$", re.M)
+# every test passed, but the runner failed on an error outside the tests (Vitest: a timer of a toast that fires
+# after the test environment was torn down) - flaky like a failing test, not a defect of the task
+UNIT_UNHANDLED = re.compile(r"Unhandled Errors|Uncaught Exception|Unhandled Rejection")
+UNIT_ORIGIN = re.compile(r'This error originated in "([^"]+)"')
+UNIT_ANY_FAILED = re.compile(r"^\s*(?:Tests|Test Files)\s+\d+ failed|^\s*Failed:\s+[1-9]|^\s*failed:\s+[1-9]", re.M)
 
 
 def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str, cmds: list[str] | None = None) -> dict:
     """A few failing unit tests are run once more (the whole command, it is quick): passing then counts as
     passing, and the tests go to the register as flaky, as for e2e. Many failures are a real failure."""
     names = sorted({m.strip() for m in UNIT_FAILED.findall(text)})[:20]
+    unhandled = not names and UNIT_UNHANDLED.search(text) and not UNIT_ANY_FAILED.search(text)
+    if unhandled:
+        names = [f"{f} (unhandled error)" for f in sorted(set(UNIT_ORIGIN.findall(text)))[:5]] or ["unhandled error"]
     if not names or len(names) > int(p.config.get("unit_retry_max", 3)):
         return res
-    progress(p, f"↻ {tid} r{rnd} test: {len(names)} unit test(s) failed, running the tests once more")
+    progress(p, f"↻ {tid} r{rnd} test: " + (f"every test passed, but the run failed on an unhandled error ({', '.join(names)})"
+                                             if unhandled else f"{len(names)} unit test(s) failed") + ", running the tests once more")
     again = run_cmds(p, p.commands("test") if cmds is None else cmds, p.logs / f"{tid}-r{rnd}-test-retry.log", p.env(tid, rnd))
     if not again["ok"]:
         return res
@@ -2605,8 +2614,13 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     qids = {x for t in data.get("tasks", []) for x in t.get("questions", [])}
     qids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
     reg = questions_load(p)
-    if qids and all(any(q["id"] == x and q["status"] in ("planned", "resolved") for q in reg["items"]) for x in qids):
-        data = {"links": data["links"]} if data.get("links") else {}  # already planned: documents and links remain
+    # already planned (the planner or an earlier copy of this change made its tasks): documents and links remain.
+    # "planned" counts only when a task of the plan names the question - marked so by hand before the change was
+    # applied, it would drop the tasks without a word
+    linked = {x for t in p.plan().get("tasks", []) for x in (t.get("questions") or [])}
+    done = lambda q: q["status"] == "resolved" or (q["status"] == "planned" and q["id"] in linked)
+    if qids and all(any(q["id"] == x and done(q) for q in reg["items"]) for x in qids):
+        data = {"links": data["links"]} if data.get("links") else {}
     res = {"file": name, "branch": branch, "merged": False, "added": [], "updated": [], "resolved": []}
     if branch:
         if not p.branch_exists(branch):
@@ -3783,6 +3797,32 @@ def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bo
     return rules, adapted_used, listed, names, missing
 
 
+# An earlier test that fails round after round: Dev said "not caused by this task" and changed nothing, and QA
+# could not change a correct test (T-075 of financials-helper: three rounds on a date-dependent layout). On the
+# second round in a row Dev is told that the fix is still Dev's; on the third the task is blocked for the user.
+STUCK_HINT_ROUNDS, STUCK_BLOCK_ROUNDS = 2, 3
+
+
+def stuck_tests(st: dict, rnd: int, gates: dict) -> dict:
+    """Count, per failing test outside this task's own run, the rounds in a row it failed: {"stuck": [names
+    failing STUCK_HINT_ROUNDS rounds or more], "stuck_block": [... STUCK_BLOCK_ROUNDS or more]}. A check whose
+    earlier tests all passed clears the counts."""
+    others = [g for g in gates.values() if g.get("scope") not in ("task", "pinned") and not g.get("skipped")]
+    # the line of a test moves when tests are added above it: the same test without it
+    failed = {re.sub(r":\d+:\d+(?= › )", "", str(t)) for g in others if not g.get("ok") for t in (g.get("failed_tests") or [])
+              if not str(t).startswith(("[pinned]", "[shared]"))}
+    if others and all(g.get("ok") for g in others):
+        st["stuck_tests"] = {}
+    else:
+        prev = {t: v for t, v in (st.get("stuck_tests") or {}).items() if v[1] >= rnd - 1}
+        for t in failed:
+            n, last = prev.get(t) or [0, 0]
+            prev[t] = [n, last] if last == rnd else [n + 1 if last == rnd - 1 else 1, rnd]
+        st["stuck_tests"] = prev
+    names = lambda k: sorted(t for t, (n, _) in st["stuck_tests"].items() if n >= k)
+    return {"stuck": names(STUCK_HINT_ROUNDS), "stuck_block": names(STUCK_BLOCK_ROUNDS)}
+
+
 def cmd_step(p: Project, a) -> None:
     tid, rnd = a.task, a.round
     st = p.task_state(tid)
@@ -3938,8 +3978,9 @@ def cmd_step(p: Project, a) -> None:
                                *[f"- Log of {k}: {g.get('log')}" for k, g in gates.items() if not g["ok"]]]))
         if gates["e2e"].get("scope") != "task":  # the whole suite ran here: its result is in the qa entry
             (st.get("reviews") or {}).pop("full e2e", None)
+        stuck = stuck_tests(st, rnd, gates)
         p.save_state()
-        emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used,
+        emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used, **stuck,
               "tests": {"listed": listed, "count": len(names), "missing": []},
               "gates": gates, "checkpoint": st["checkpoint"], "context_error": refresh_context(p, tid)})
 
@@ -3983,8 +4024,9 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Flaky (passed on the retry): {t}" for t in g.get("flaky", [])]
         journal_pending(p, tid, "e2e", rnd, "pass" if g["ok"] else "fail", join_note(note, extra))
         save_review(p, st, "full e2e", rnd, "pass" if g["ok"] else "fail", "\n".join(extra + [f"- Log: {g.get('log')}"]))
+        stuck = stuck_tests(st, rnd, {"e2e": g})
         p.save_state()
-        emit({"ok": g["ok"], "gates": {"e2e": g}, "context_error": refresh_context(p, tid)})
+        emit({"ok": g["ok"], "gates": {"e2e": g}, **stuck, "context_error": refresh_context(p, tid)})
 
     elif a.step == "docs-check":
         changed = changed_files(p, ck)

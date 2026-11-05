@@ -651,6 +651,16 @@ const SUITE_HINT = 'For each failing test of an earlier feature: if your change 
   'clarification from the user) or pins a file the task has to change, do not work around it: dispute it in ' +
   '"Test disputes" in the task file in this round, citing the source - QA decides it in the next round.'
 
+// an earlier test that failed in two rounds in a row (satory stuck_tests): "not caused by this task" does not end it
+const stuckHint = tests => `### These tests have failed in two rounds in a row:\n${bullets(tests.slice(0, 20))}\n` +
+  'The task cannot finish while they fail, even when this task did not cause them (a layout that depends on the ' +
+  'date, a race that shows only now). QA may not change a correct test. Fix the cause in the app in this round; ' +
+  'only if this task\'s requirements contradict the test, dispute it citing the source. One more round in which ' +
+  'they fail blocks the task for the user.'
+const stuckReason = (tests, round) => `Tests of earlier features have failed in ${round > 2 ? 'three' : 'several'} rounds in a row ` +
+  `and the task cannot finish:\n${bullets(tests.slice(0, 20))}\nDecide: fix the app (guidance for Dev), change the ` +
+  `requirement the test checks, or let QA adapt the test.`
+
 // the earlier tests that failed in the whole e2e suite (or in their rerun), for QA's next prompt
 function suiteFailures(gates) {
   return Object.values(gates || {}).filter(g => !g.ok && g.scope !== 'task').flatMap(g => g.failed_tests || [])
@@ -847,6 +857,7 @@ function qaFeedback(r, after, res) {
   const gates = gateLines(after.gates)
   if (gates.length) parts.push('Automatic checks (the whole test suite):\n' + bullets(gates))
   if (suiteFailures(after.gates).length) parts.push(SUITE_HINT)
+  if ((after.stuck || []).length) parts.push(stuckHint(after.stuck))
   return parts.join('\n\n')
 }
 
@@ -1308,6 +1319,7 @@ async function runTask(t) {
       const qaRes = await record('qa', qa.findings.map(f => ({ severity: f.severity, title: f.title, where: '', detail: f.description + (f.repro ? ` (reproduce: ${f.repro})` : ''), fix: '' })),
         qa.verified, 'QA', qaText)
       suiteFailed = suiteFailures(aq.gates)
+      if ((aq.stuck_block || []).length) { await settleUi(); return block(t, round, stuckReason(aq.stuck_block, round)) }
       const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
 
       // ---- UI (its review ran beside QA's) --------------------------------
@@ -1364,12 +1376,13 @@ async function runTask(t) {
       if (!full.ok) {
         lastStage = 'full e2e'
         suiteFailed = suiteFailures(full.gates)
+        if ((full.stuck_block || []).length) return block(t, round, stuckReason(full.stuck_block, round))
         feedback = `### The whole e2e suite fails
 This task's own tests pass, but tests of earlier features fail - ` +
           `most likely a regression caused by this task.
 ${bullets(gateLines(full.gates))}${suiteFailed.length ? `\nFailed:\n${bullets(suiteFailed.slice(0, 30))}` : ''}
 
-${SUITE_HINT}`
+${SUITE_HINT}${(full.stuck || []).length ? `\n\n${stuckHint(full.stuck)}` : ''}`
         continue
       }
     }
