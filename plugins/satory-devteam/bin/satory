@@ -4649,7 +4649,7 @@ def cmd_statusline(a) -> None:
                 f.seek(max(0, f.seek(0, 2) - 4096))
                 tail = f.read().decode("utf-8", "replace").splitlines()
             if tail:
-                parts.append(first_line(tail[-1], 70))
+                parts.append(first_line(short_event(tail[-1]), 60))
         run = e2e_progress(p)
         if run:
             parts.append(run)
@@ -4674,6 +4674,47 @@ def cmd_statusline(a) -> None:
         print(f"\033[{color}m{line}\033[0m" if color else line)
     except Exception:  # noqa: BLE001 - a status line prints nothing rather than an error
         pass
+
+
+# The last event in the status line says what happened, not its details: ids, file names and explanations are
+# in the progress log and the watch. Each rule rewrites one kind of line; anything else keeps its text.
+SHORT_EVENT = [
+    (r"❓ (\d+) new question\(s\) from (.+?): .*", r"❓+\1 from \2"),
+    (r"❓ open again, raised once more by (.+?): (.*)", lambda m: f"❓ {len(m.group(2).split(','))} open again ({m.group(1)})"),
+    (r"❓ (Q-\d+) is open again: the test was flaky once more \((.+?)\)", r"❓ flaky again (\2)"),
+    (r"❓ Q-\d+: flaky (\w+) test \((?:\w+ )?(.+?)\) - .*", r"❓ flaky \1 test (\2)"),
+    (r"🗂 (Q-\d+): flaky (\d+) times .*", r"🗂 \1 flaky \2x - planned"),
+    (r"🗂 queued change applied: .*", "🗂 queued change applied"),
+    (r"✓ (T-\d+) done in (\d+) round\(s\).*?(\d+/\d+) tasks done", r"✓ \1 done in \2 round(s) · \3"),
+    (r"✓ (T-\d+) done in (\d+) round\(s\).*", r"✓ \1 done in \2 round(s)"),
+    (r"▶ (T-\d+) \(resumed at (?:the )?(\w+(?: e2e)?) of round (\d+).*", r"▶ \1 resumed at \2 r\3"),
+    (r"▶ (T-\d+) \(resumed, (\d+) round\(s\) used\).*", r"▶ \1 resumed after r\2"),
+    (r"⚡ (T-\d+ r\d+): (\d+) of (\d+) e2e spec files are likely affected.*", r"⚡ \1: whole e2e (\2/\3 affected)"),
+    (r"⚡ (T-\d+ r\d+): the task's own e2e tests failed.*", r"⚡ \1: own e2e failed, whole suite waits"),
+    (r"⚡ (T-\d+ r\d+): whole e2e suite in (\d+) parallel shards", r"⚡ \1: whole e2e in \2 shards"),
+    (r"🧽 (\d+) small improvement\(s\) from (.+?) noted for the polish task", r"🧽 \1 for polish (\2)"),
+    (r"↻ (T-\d+ r\d+) (\S+): (\d+) of (\d+) failed in (\d+) parallel copies.*", r"↻ \1 \2: \3/\4 failed, rerun"),
+    (r"↻ (T-\d+ r\d+) (\S+): the run crashed.*", r"↻ \1 \2: crashed, rerun"),
+    (r"↪ deploy staging from (\S+) went to the tests' copy.*", r"↪ staging deploy -> test copy (\1)"),
+    (r"⚠ (T-\d+ r\d+): `(.+?)` took (\d+) min, (\d+) min when first measured.*", r"⚠ \1: check \3 min (was \4)"),
+    (r"⚠ (T-\d+ r\d+) (\S+): (\d+) spec file\(s\) name the user's staging literally.*", r"⚠ \1 \2: \3 spec(s) name staging"),
+    (r"↻ (T-\d+ r\d+) test: (\d+) unit test\(s\) failed.*", r"↻ \1 test: \2 failed, rerun"),
+    (r"(✓|✗|⛔|↻) (\S+(?: r\d+)?) (\S+): (\S+) - .*", r"\1 \2 \3: \4"),
+]
+
+
+def short_event(line: str) -> str:
+    """The last progress line, short enough to leave room for the rest of the status line."""
+    m = re.match(r"(\d\d:\d\d )(.*)$", line)
+    stamp, text = (m.group(1), m.group(2)) if m else ("", line)
+    for pat, sub in SHORT_EVENT:
+        mm = re.match(pat + "$", text)
+        if mm:
+            text = sub(mm) if callable(sub) else mm.expand(sub)
+            break
+    else:
+        text = re.sub(r":? (?:Q-\d+(?:, |…)?)+$", "", text)  # a list of question ids at the end
+    return stamp + text
 
 
 def cmd_doctor(a) -> None:

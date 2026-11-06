@@ -462,6 +462,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.5** - the status line shows the last event in short: what happened, not its details -
+  `❓+4 from dev T-023 r1` instead of the four question ids, `⚡ T-023 r2: whole e2e (88/127 affected)`,
+  `✓ T-023 done in 2 round(s) · 43/68`, a blocked task or a plan step without its explanation. The full lines
+  stay in the progress log and in `satory watch`.
+
 - **1.8.4** - fewer rounds and a smaller e2e suite. Dev checks its work as the Reviewer will before it returns:
   the mini-spec against the code point by point, and every new rule against the code that already computes it
   (in one project the Reviewer sent back the first round of 5 of 7 tasks, for exactly these two). QA tests
