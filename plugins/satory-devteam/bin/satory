@@ -4617,6 +4617,7 @@ def cmd_watch(p: Project, a) -> None:
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_CACHE_SECONDS = 120
+USAGE_WARN = 90  # % of a limit: marked with ⚠ next to it
 
 
 def usage_text(p: Project) -> str:
@@ -4644,7 +4645,7 @@ def usage_text(p: Project) -> str:
             for key, name in (("five_hour", "D"), ("seven_day", "W")):
                 v = (u.get(key) or {}).get("utilization")
                 if v is not None:
-                    parts.append(f"{name}: {round(v)}%")
+                    parts.append(f"{name}: {round(v)}%{'⚠' if v >= USAGE_WARN else ''}")
             text = f"[{'; '.join(parts)}]" if parts else ""
     except Exception:  # noqa: BLE001 - usage is extra information, never a reason to stop the watch
         text = ""

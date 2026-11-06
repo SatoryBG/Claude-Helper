@@ -462,6 +462,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.8** - a limit at 90% or more is marked next to its value: `[D: 92%⚠; W: 80%]`.
+
 - **1.8.7** - the usage in the watch comes first, as `[D: 9%; W: 80%] 11:17 ▷ dev T-071 r1 started`
   (D: the 5-hour session, W: the week).
 
