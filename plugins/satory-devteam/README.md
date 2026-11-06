@@ -462,6 +462,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.6** - `satory watch` adds the Claude account's usage, as `/usage` shows it, after each batch of events:
+  `· usage 5h 9% · 7d 80%⚠` (the 5-hour session and the week; ⚠ from 80%). It is read with Claude Code's own
+  login and cached for two minutes; where the login cannot be read the watch goes on without it.
+  `"usage_in_watch": false` in `.satory/project.json` turns it off.
+
 - **1.8.5** - the status line shows the last event in short: what happened, not its details -
   `❓+4 from dev T-023 r1` instead of the four question ids, `⚡ T-023 r2: whole e2e (88/127 affected)`,
   `✓ T-023 done in 2 round(s) · 43/68`, a blocked task or a plan step without its explanation. The full lines

@@ -4605,10 +4605,54 @@ def cmd_watch(p: Project, a) -> None:
             at = time.strftime("%H:%M", time.localtime(x["started"]))
             lines.append(f"{at} ⚙ {x['label']} running ({took(x['minutes'])})" if x["runner"]
                          else f"{at} ▷ {x['label']} started" + (f" ({x['phase']})" if x["phase"] else ""))
+        lines = [x for x in lines if x.strip()]
+        if lines and p.config.get("usage_in_watch", True) is not False:
+            u = usage_text(p)  # the account's usage, as /usage shows it, after the last line of each batch
+            if u:
+                lines[-1] += f" · {u}"
         for line in lines:
-            if line.strip():
-                print(line, flush=True)
+            print(line, flush=True)
         time.sleep(a.interval)
+
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_CACHE_SECONDS = 120
+
+
+def usage_text(p: Project) -> str:
+    """The Claude account's usage as /usage shows it - the 5-hour session and the week, in % - e.g.
+    "usage 5h 9% · 7d 80%⚠", read with Claude Code's own login (~/.claude/.credentials.json) and cached for two
+    minutes. "" when it cannot be read (another platform keeps the login elsewhere, no network): the watch goes
+    on without it. "usage_in_watch": false in .satory/project.json turns it off."""
+    cache = p.run / "usage.json"
+    try:
+        c = load_json(cache, {})
+        if c.get("text") is not None and time.time() - c.get("at", 0) < USAGE_CACHE_SECONDS:
+            return c["text"]
+    except Exception:  # noqa: BLE001
+        pass
+    text = ""
+    try:
+        cred = json.loads((Path.home() / ".claude" / ".credentials.json").read_text(encoding="utf-8"))
+        tok = (cred.get("claudeAiOauth") or {}).get("accessToken")
+        if tok:
+            req = urllib.request.Request(USAGE_URL, headers={"Authorization": f"Bearer {tok}",
+                                                              "anthropic-beta": "oauth-2025-04-20"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                u = json.load(r)
+            parts = []
+            for key, name in (("five_hour", "5h"), ("seven_day", "7d")):
+                v = (u.get(key) or {}).get("utilization")
+                if v is not None:
+                    parts.append(f"{name} {round(v)}%{'⚠' if v >= 80 else ''}")
+            text = ("usage " + " · ".join(parts)) if parts else ""
+    except Exception:  # noqa: BLE001 - usage is extra information, never a reason to stop the watch
+        text = ""
+    try:
+        write_json(cache, {"at": time.time(), "text": text})
+    except OSError:
+        pass
+    return text
 
 
 def cmd_statusline(a) -> None:
