@@ -4607,9 +4607,9 @@ def cmd_watch(p: Project, a) -> None:
                          else f"{at} ▷ {x['label']} started" + (f" ({x['phase']})" if x["phase"] else ""))
         lines = [x for x in lines if x.strip()]
         if lines and p.config.get("usage_in_watch", True) is not False:
-            u = usage_text(p)  # the account's usage, as /usage shows it, after the last line of each batch
+            u = usage_text(p)  # the account's usage, as /usage shows it, before the first line of each batch
             if u:
-                lines[-1] += f" · {u}"
+                lines[0] = f"{u} {lines[0]}"
         for line in lines:
             print(line, flush=True)
         time.sleep(a.interval)
@@ -4620,8 +4620,8 @@ USAGE_CACHE_SECONDS = 120
 
 
 def usage_text(p: Project) -> str:
-    """The Claude account's usage as /usage shows it - the 5-hour session and the week, in % - e.g.
-    "usage 5h 9% · 7d 80%⚠", read with Claude Code's own login (~/.claude/.credentials.json) and cached for two
+    """The Claude account's usage as /usage shows it - the 5-hour session (D) and the week (W), in % - e.g.
+    "[D: 9%; W: 80%]", read with Claude Code's own login (~/.claude/.credentials.json) and cached for two
     minutes. "" when it cannot be read (another platform keeps the login elsewhere, no network): the watch goes
     on without it. "usage_in_watch": false in .satory/project.json turns it off."""
     cache = p.run / "usage.json"
@@ -4641,11 +4641,11 @@ def usage_text(p: Project) -> str:
             with urllib.request.urlopen(req, timeout=5) as r:
                 u = json.load(r)
             parts = []
-            for key, name in (("five_hour", "5h"), ("seven_day", "7d")):
+            for key, name in (("five_hour", "D"), ("seven_day", "W")):
                 v = (u.get(key) or {}).get("utilization")
                 if v is not None:
-                    parts.append(f"{name} {round(v)}%{'⚠' if v >= 80 else ''}")
-            text = ("usage " + " · ".join(parts)) if parts else ""
+                    parts.append(f"{name}: {round(v)}%")
+            text = f"[{'; '.join(parts)}]" if parts else ""
     except Exception:  # noqa: BLE001 - usage is extra information, never a reason to stop the watch
         text = ""
     try:

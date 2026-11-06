@@ -462,6 +462,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.7** - the usage in the watch comes first, as `[D: 9%; W: 80%] 11:17 ▷ dev T-071 r1 started`
+  (D: the 5-hour session, W: the week).
+
 - **1.8.6** - `satory watch` adds the Claude account's usage, as `/usage` shows it, after each batch of events:
   `· usage 5h 9% · 7d 80%⚠` (the 5-hour session and the week; ⚠ from 80%). It is read with Claude Code's own
   login and cached for two minutes; where the login cannot be read the watch goes on without it.
