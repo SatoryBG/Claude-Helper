@@ -462,6 +462,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.8.9** - a spec file that names staging only where it cannot reach it runs again: in a comment, in a test's
+  title, in a regular expression or in a negative assertion (`.not.toMatch(/localhost:8081/)`). A test that
+  checks that nothing uses staging has to name it, and the `pinned` check kept it from running. A real use -
+  `goto`, a request, a compose project, a base address - is still caught.
+
 - **1.8.8** - a limit at 90% or more is marked next to its value: `[D: 92%⚠; W: 80%]`.
 
 - **1.8.7** - the usage in the watch comes first, as `[D: 9%; W: 80%] 11:17 ▷ dev T-071 r1 started`

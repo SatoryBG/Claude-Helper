@@ -2116,10 +2116,33 @@ def pinned_tests(p: Project, cfg: dict, cmds: list[str]) -> tuple[list[str], lis
 ENV_FALLBACK = re.compile(r"process\.env\.\w+\s*(\?\?|\|\|)\s*$")
 
 
+# where naming staging cannot reach it: a comment, the title of a test, a regular expression or a negative
+# assertion - a test that checks that nothing uses staging has to name it (T-071 had one, and it did not run)
+COMMENT_LINE = re.compile(r"^\s*(//|/\*|\*|#)")
+TEST_TITLE = re.compile(r"^\s*(?:test|it|describe)(?:\.\w+)*\(\s*([\"'`])")
+NEGATIVE = re.compile(r"\.not\.|\bnot\s*\(|\bnotTo\w*\(|\b(?:assertNotEqual|assertNotIn|assertFalse)\b")
+
+
+def in_regex_literal(line: str, start: int, end: int) -> bool:
+    """Whether line[start:end] lies inside a /.../ regular expression literal (JavaScript)."""
+    for m in re.finditer(r"(?:^|[=(,:!&|?{;\[]\s*)/((?:[^/\\\n]|\\.)+)/[dgimsuy]*", line):
+        if m.start(1) <= start and end <= m.end(1):
+            return True
+    return False
+
+
 def names_staging(line: str, mark: re.Pattern) -> bool:
     """A line naming staging literally - except inside a string that is the fallback of an environment variable
-    (`process.env.SATORY_BASE_URL ?? "http://localhost:8081"`): the CLI always sets those variables."""
+    (`process.env.SATORY_BASE_URL ?? "http://localhost:8081"`): the CLI always sets those variables; and except
+    where the name cannot reach staging: a comment, a test's title, a regular expression, a negative assertion."""
+    if COMMENT_LINE.match(line) or NEGATIVE.search(line):
+        return False
+    title = TEST_TITLE.match(line)
     for m in mark.finditer(line):
+        if title and line.find(title.group(1), title.end()) > m.start():  # inside the title string
+            continue
+        if in_regex_literal(line, m.start(), m.end()):
+            continue
         q = max(line.rfind(c, 0, m.start() + 1) for c in "\"'`")  # where the string with the match opens
         if q < 0 or not ENV_FALLBACK.search(line[:q]):
             return True
