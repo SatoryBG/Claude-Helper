@@ -4513,7 +4513,7 @@ def e2e_progress(p: Project, fresh: float = 120) -> str:
             if found:
                 done, total = done + int(found[-1][0]), total + int(found[-1][1])
         if total:
-            return f"🧪 e2e {done}/{total} ({round(100 * done / total)}%) ⚡{len(shards)}"
+            return f"{e2e_count(done, total)} ⚡{len(shards)}"
     log = max(logs, key=lambda f: f.stat().st_mtime)
     if time.time() - log.stat().st_mtime > fresh:
         return ""
@@ -4523,6 +4523,14 @@ def e2e_progress(p: Project, fresh: float = 120) -> str:
     if not found:
         return ""
     done, total = (int(x) for x in found[-1])
+    return e2e_count(done, total)
+
+
+def e2e_count(done: int, total: int) -> str:
+    """"🧪 e2e 1268/2565 (49%)"; the retries of failed tests (Playwright counts them on top of the total) are
+    shown apart, never as more than 100%: "🧪 e2e 2565/2565 (100%) · 17 retried"."""
+    if total and done > total:
+        return f"🧪 e2e {total}/{total} (100%) · {done - total} retried"
     return f"🧪 e2e {done}/{total} ({round(100 * done / total) if total else 0}%)"
 
 

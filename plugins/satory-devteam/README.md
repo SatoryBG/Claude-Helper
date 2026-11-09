@@ -462,6 +462,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.4** - the e2e progress in the status line no longer goes past 100%: Playwright counts the retries of
+  failed tests on top of the total (`2582/2565 (101%)`), now shown apart as `2565/2565 (100%) · 17 retried`.
+
 - **1.9.3** - the status line leaves out the coverage of the acceptance criteria (`AC 140/212 tested (66%) ·
   11788 tests`): most of the untested ones belong to tasks not built yet, so the number said little while it took
   room. `/satory-devteam:status` still reports it; `"statusline_coverage": true` in `.satory/project.json` brings it
