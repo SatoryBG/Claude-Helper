@@ -462,6 +462,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.2** - the status line names the part of a long step that runs now: `⚙ checks qa 56m › whole e2e 23m`
+  (or `› unit tests`, `› e2e (task)`, `› e2e rerun`, `› test copy up`, `› scanners` ...). The checks after QA run
+  the unit tests, the task's e2e and the whole suite in turn, and the line said only "checks qa" for an hour.
+
 - **1.9.1** - the question at the end of `/satory-devteam:status` is a single choice (one click): only the
   overview, the questions, the blocked tasks, or both. It was a multiple choice that needed a second screen to
   submit, although the options exclude each other.

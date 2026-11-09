@@ -395,6 +395,11 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
     log.parent.mkdir(parents=True, exist_ok=True)
     code = 0
     times = []
+    now_f = p.logs / NOW_RUNNING
+    try:  # what runs now, for the status line: a long step (the checks after QA) runs several of these in turn
+        write_json(now_f, {"log": log.name, "started": time.time(), "pid": os.getpid()})
+    except OSError:
+        pass
     with open(log, "w", encoding="utf-8") as f:
         for cmd in cmds:
             f.write(f"$ {cmd}\n")
@@ -411,7 +416,34 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
             times.append((cmd, round(time.time() - t0), code))
             if code != 0:
                 break
+    try:
+        if load_json(now_f, {}).get("log") == log.name:
+            now_f.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
     return {"ok": code == 0, "exit": code, "log": p.rel(log), "times": times}
+
+
+NOW_RUNNING = ".now.json"
+# the part of a long step that runs now, by the name of its log
+NOW_KINDS = [(r"-e2e-task\.log$", "e2e (task)"), (r"-e2e-affected\.log$", "e2e (affected)"),
+             (r"-e2e-failed\.log$", "e2e (failed before)"), (r"-e2e-retry\.log$", "e2e rerun"),
+             (r"-shard\d+\.log$", "whole e2e"), (r"-e2e\.log$", "whole e2e"), (r"-test(-rerun)?\.log$", "unit tests"),
+             (r"-build\.log$|\.build\.log$", "build"), (r"-lint\.log$", "lint"), (r"-security-\d+\.log$", "scanners"),
+             (r"^deploy-test-", "test copy up"), (r"^down-test-", "test copy down"), (r"^deploy-staging-", "staging deploy"),
+             (r"^deploy-preview-", "preview deploy")]
+
+
+def now_running(p: Project) -> str:
+    """The part of a CLI step that runs now ("whole e2e 23m"), from the record run_cmds keeps; "" when none."""
+    try:
+        d = load_json(p.logs / NOW_RUNNING, {})
+        if not d or not pid_alive(int(d.get("pid") or 0)):
+            return ""
+        kind = next((k for pat, k in NOW_KINDS if re.search(pat, d.get("log", ""))), None)
+        return f"{kind} {took(int((time.time() - float(d['started'])) // 60))}" if kind else ""
+    except (OSError, ValueError, TypeError):
+        return ""
 
 
 # A check that grows much slower over the tasks (the .NET tests of one project went from 13 to 26 minutes in
@@ -4609,7 +4641,12 @@ def activity(p: Project, running: list[str], agents: list[dict] | None = None) -
         if x["phase"] and not x["runner"] and mine:
             label = f"{x['phase']}: {label}"
         return f"{label.strip()} {took(x['minutes'])}"
-    return ("⚙ " if shown[0]["runner"] else "") + " + ".join(name(x) for x in shown)
+    text = ("⚙ " if shown[0]["runner"] else "") + " + ".join(name(x) for x in shown)
+    if shown[0]["runner"]:
+        part = now_running(p)  # the checks after QA run the unit tests, then the e2e: say which
+        if part:
+            text += f" › {part}"
+    return text
 
 
 def cmd_watch(p: Project, a) -> None:
