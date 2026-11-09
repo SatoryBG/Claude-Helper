@@ -462,6 +462,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.3** - the status line leaves out the coverage of the acceptance criteria (`AC 140/212 tested (66%) ·
+  11788 tests`): most of the untested ones belong to tasks not built yet, so the number said little while it took
+  room. `/satory-devteam:status` still reports it; `"statusline_coverage": true` in `.satory/project.json` brings it
+  back to the line.
+
 - **1.9.2** - the status line names the part of a long step that runs now: `⚙ checks qa 56m › whole e2e 23m`
   (or `› unit tests`, `› e2e (task)`, `› e2e rerun`, `› test copy up`, `› scanners` ...). The checks after QA run
   the unit tests, the task's e2e and the whole suite in turn, and the line said only "checks qa" for an hour.

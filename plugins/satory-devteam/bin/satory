@@ -4860,10 +4860,10 @@ def cmd_statusline(a) -> None:
         run = e2e_progress(p)
         if run:
             parts.append(run)
-        cov = load_json(p.run / "coverage.json", {})
+        cov = load_json(p.run / "coverage.json", {}) if p.config.get("statusline_coverage") is True else {}
         counts = cov.get("counts") or {}
         total = sum(counts.values())
-        if total:
+        if total:  # off by default: most of the untested criteria belong to tasks not built yet
             parts.append(f"AC {counts.get('tested', 0)}/{total} tested ({round(100 * counts.get('tested', 0) / total)}%)"
                          + (f" · {cov['tests_listed']} tests" if cov.get("tests_listed") else ""))
         items = questions_load(p)["items"]
