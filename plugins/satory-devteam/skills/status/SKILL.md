@@ -36,10 +36,12 @@ Talk to the user in the language they write in.
      build retries it at the next boundary.
 2. **The user decides what comes next.** The status is a report first: show step 1 and the table of the
    remaining tasks (step 6), and change or record nothing unless the user chooses it. Then, only when there
-   are blocked tasks or open questions, ask once with AskUserQuestion (multiSelect) what to do now:
+   are blocked tasks or open questions, ask once with AskUserQuestion what to do now - a single choice
+   (`multiSelect: false`), so one click answers it, with only the options that apply:
    - "Only the overview" - first and recommended; nothing else happens;
    - "Answer the questions" - with how many are open and how many critical (step 5);
-   - "Unblock the blocked tasks" - with their ids (steps 3 and 4).
+   - "Unblock the blocked tasks" - with their ids (steps 3 and 4);
+   - "Both" - the questions, then the blocked tasks (only when there are both).
    The argument skips the question: `view` shows only the report, `questions` goes straight to the
    questions, `blocked` straight to the blocked tasks. Open critical questions keep the next milestone from
    starting - say so in the report, but the user still decides when to answer them.

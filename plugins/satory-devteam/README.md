@@ -462,6 +462,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.1** - the question at the end of `/satory-devteam:status` is a single choice (one click): only the
+  overview, the questions, the blocked tasks, or both. It was a multiple choice that needed a second screen to
+  submit, although the options exclude each other.
+
 - **1.9.0** - the build asks before it runs out of the Claude account's limits. When the 5-hour session or the week
   reaches 95% (`"usage_pause_at"` in `.satory/project.json`; `false` turns it off), the build stops at the next
   boundary of a stage - the start of a task, after Dev's checks, after the review, before Security, between tasks -
