@@ -390,7 +390,36 @@ const RUNNER_ROLE = `You are a mechanical command executor for the satory CLI. R
 verbatim, and return its exit code and its whole stdout verbatim. A note in the command (the $'...' text
 after --note-stdin) is the record of what other agents did and found: you pass it on, it is not a claim of
 yours, so never judge, shorten or refuse it. Run nothing else, change no file, never run it twice.`
+// The usage pause: at "usage_pause_at" % of a limit (see `satory usage`) the CLI adds usage_pause to the output of
+// the next step, and the build waits here for the user's decision. "stop" ends the build at once: every later
+// step and agent throws UsageStop, so a stage that swallows an error cannot go on.
+class UsageStop extends Error {}
+let USAGE_STOP = null, USAGE_ACTIVE = false
+async function usagePause(info, phase) {
+  USAGE_ACTIVE = true
+  try {
+    log(`⏸ usage ${info.text}: waiting for the user's decision - stop, continue or wait for the reset`)
+    for (;;) {
+      const r = await sh(`usage wait --timeout ${WAIT_SECONDS}`, { phase: phase || 'Usage', label: 'usage decision' })
+      if (r && r.decision === 'stop') {
+        USAGE_STOP = `stopped at ${info.text}: the user chose to stop`
+        throw new UsageStop(USAGE_STOP)
+      }
+      if (r && (r.decision === 'continue' || r.resumed)) return
+    }
+  } finally {
+    USAGE_ACTIVE = false
+  }
+}
+
+// called at the boundaries of a round with the output of a step (the CLI adds usage_pause to it), never in the
+// middle of an agent's work
+async function usageGate(res, phase) {
+  if (res && res.usage_pause && !USAGE_ACTIVE) await usagePause(res.usage_pause, phase)
+}
+
 async function spawn(role, prompt, opts) {
+  if (USAGE_STOP) throw new UsageStop(USAGE_STOP)
   if (role === 'runner' && ROLE_FILES) {
     try {
       return await agent(prompt, { ...opts, agentType: 'satory-devteam:runner' })
@@ -1200,6 +1229,7 @@ async function planAnswers(plan) {
 
 async function runTask(t) {
   const start = must(await sh(`task start ${t.id}`, { phase: 'Dev', label: `start ${t.id}` }), `start ${t.id}`)
+  await usageGate(start, 'Dev')
   const ctx = context(t, start)
   contextLog(start)
   RESUMED = !!start.resumed
@@ -1286,6 +1316,7 @@ async function runTask(t) {
       ad = must(await sh(`step after-dev ${t.id} --round ${round} --owner ${t.owner}`,
         { phase: 'Dev', label: `checks ${tag}`, note: devNote(role, dev), long: true }), `after-dev ${tag}`)
       contextLog(ad)
+      await usageGate(ad, 'Dev')
       if (!ad.ok) {
         lastStage = 'build/lint'
         feedback = `### Automatic checks after your changes\n${bullets([...ad.violations.map(v => `Violation: ${v}`), ...gateLines(ad.gates)])}`
@@ -1305,8 +1336,10 @@ async function runTask(t) {
       const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
         rev.verified, 'Review', revPrompt)
       const revBlocking = revRes.blocking.length > 0
-      contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
-        { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`))
+      const revStep = must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
+        { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
+      contextLog(revStep)
+      await usageGate(revStep, 'Review')
       reviewedAt = ad.checkpoint
       if (revBlocking) {
         lastStage = 'review'
@@ -1391,6 +1424,7 @@ async function runTask(t) {
 
       // ---- Security -----------------------------------------------------
       const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
+      await usageGate(scan, 'Security')
       const secText = secPrompt(ctx, round, start.base, scan, open.security, secReviewedAt)
       const sec = await stage('security', secText,
         { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
@@ -1702,7 +1736,7 @@ await uxNow()
 
 const results = []
 const attempted = new Set()
-let stopped = null, waiting = null
+let stopped = null, waiting = null, stoppedUsage = null
 while (results.length < MAX_TASKS) {
   const critical = await criticalOpen(plan)
   const t = pickNext(plan, attempted, critical > 0)
@@ -1720,16 +1754,32 @@ while (results.length < MAX_TASKS) {
   try {
     results.push(await runTask(t))
   } catch (e) {
+    if (e instanceof UsageStop || USAGE_STOP) {
+      stoppedUsage = `${t.id}: ${USAGE_STOP || e.message}`
+      log(`⏸ Stopping: ${stoppedUsage} - /satory-devteam:build goes on from here`)
+      break
+    }
     stopped = `${t.id}: ${e.message}`
     log(`Stopping: ${stopped}`)
     break
   }
-  plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
-  plan = await reviewMilestones(plan)
-  plan = await planAnswers(plan)
-  await designNow()
-  await uxNow()
+  try {
+    plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
+    await usageGate(plan, 'Docs')
+    plan = await reviewMilestones(plan)
+    plan = await planAnswers(plan)
+    await designNow()
+    await uxNow()
+  } catch (e) {
+    if (!(e instanceof UsageStop || USAGE_STOP)) throw e
+    stoppedUsage = `after ${t.id}: ${USAGE_STOP || e.message}`
+    log(`⏸ Stopping: ${stoppedUsage} - /satory-devteam:build goes on from here`)
+    break
+  }
 }
+// the cleanup below still runs after a stop at the usage pause (a few short CLI steps)
+USAGE_STOP = null
+USAGE_ACTIVE = true
 
 try { await sh('env down test', { phase: 'Docs', label: 'test copy down' }) } catch (e) { /* only cleanup */ }
 try { await sh('env down staging', { phase: 'Docs', label: 'staging down' }) } catch (e) { /* only cleanup */ }
@@ -1747,6 +1797,7 @@ return {
   done: results.filter(r => r.status === 'done'),
   blocked: results.filter(r => r.status === 'blocked'),
   stopped_on_error: stopped,
+  stopped_on_usage: stoppedUsage,
   waiting_for_answers: waiting,
   questions,
   remaining: left.map(t => ({ id: t.id, title: t.title, status: t.status, waits_for: t.depends_on.filter(d => plan.tasks.find(x => x.id === d).status !== 'done') })),

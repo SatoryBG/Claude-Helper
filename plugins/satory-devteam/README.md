@@ -462,6 +462,15 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.0** - the build asks before it runs out of the Claude account's limits. When the 5-hour session or the week
+  reaches 95% (`"usage_pause_at"` in `.satory/project.json`; `false` turns it off), the build stops at the next
+  boundary of a stage - the start of a task, after Dev's checks, after the review, before Security, between tasks -
+  and waits for the user's decision, which the build skill asks for: stop (the build ends cleanly and goes on from
+  there next time), continue (asked again 3 points higher) or wait for the reset (it goes on by itself when the
+  limit resets, as it also does when the user does not answer). A limit used up in the middle of a step had left
+  the build hanging for a day with an agent cut off halfway. New: `satory usage [status]`, `satory usage decide
+  stop|continue|wait`; the summary of the build has `stopped_on_usage`.
+
 - **1.8.9** - a spec file that names staging only where it cannot reach it runs again: in a comment, in a test's
   title, in a regular expression or in a negative assertion (`.not.toMatch(/localhost:8081/)`). A test that
   checks that nothing uses staging has to name it, and the `pinned` check kept it from running. A real use -

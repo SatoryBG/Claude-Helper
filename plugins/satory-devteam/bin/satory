@@ -45,7 +45,17 @@ class SatoryError(Exception):
     pass
 
 
+EMIT_EXTRA = None  # set by main for the steps of the build: adds usage_pause to their output
+
+
 def emit(obj: dict) -> None:
+    if EMIT_EXTRA is not None and isinstance(obj, dict):
+        try:
+            extra = EMIT_EXTRA()
+            if extra:
+                obj = {**obj, "usage_pause": extra}
+        except Exception:  # noqa: BLE001 - the usage check never breaks a step
+            pass
     print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -4643,19 +4653,18 @@ USAGE_CACHE_SECONDS = 120
 USAGE_WARN = 90  # % of a limit: marked with ⚠ next to it
 
 
-def usage_text(p: Project) -> str:
-    """The Claude account's usage as /usage shows it - the 5-hour session (D) and the week (W), in % - e.g.
-    "[D: 9%; W: 80%]", read with Claude Code's own login (~/.claude/.credentials.json) and cached for two
-    minutes. "" when it cannot be read (another platform keeps the login elsewhere, no network): the watch goes
-    on without it. "usage_in_watch": false in .satory/project.json turns it off."""
+def usage_data(p: Project) -> dict:
+    """The Claude account's usage as /usage shows it: {"D": {"pct", "resets"}, "W": {...}} for the 5-hour session
+    and the week, read with Claude Code's own login (~/.claude/.credentials.json) and cached for two minutes; {}
+    when it cannot be read (another platform keeps the login elsewhere, no network)."""
     cache = p.run / "usage.json"
     try:
         c = load_json(cache, {})
-        if c.get("text") is not None and time.time() - c.get("at", 0) < USAGE_CACHE_SECONDS:
-            return c["text"]
+        if isinstance(c.get("data"), dict) and time.time() - c.get("at", 0) < USAGE_CACHE_SECONDS:
+            return c["data"]
     except Exception:  # noqa: BLE001
         pass
-    text = ""
+    data = {}
     try:
         cred = json.loads((Path.home() / ".claude" / ".credentials.json").read_text(encoding="utf-8"))
         tok = (cred.get("claudeAiOauth") or {}).get("accessToken")
@@ -4664,19 +4673,112 @@ def usage_text(p: Project) -> str:
                                                               "anthropic-beta": "oauth-2025-04-20"})
             with urllib.request.urlopen(req, timeout=5) as r:
                 u = json.load(r)
-            parts = []
             for key, name in (("five_hour", "D"), ("seven_day", "W")):
                 v = (u.get(key) or {}).get("utilization")
                 if v is not None:
-                    parts.append(f"{name}: {round(v)}%{'⚠' if v >= USAGE_WARN else ''}")
-            text = f"[{'; '.join(parts)}]" if parts else ""
-    except Exception:  # noqa: BLE001 - usage is extra information, never a reason to stop the watch
-        text = ""
+                    data[name] = {"pct": round(v), "resets": (u.get(key) or {}).get("resets_at")}
+    except Exception:  # noqa: BLE001 - usage is extra information, never a reason to stop
+        data = {}
     try:
-        write_json(cache, {"at": time.time(), "text": text})
+        write_json(cache, {"at": time.time(), "data": data})
     except OSError:
         pass
-    return text
+    return data
+
+
+def usage_text(p: Project, data: dict | None = None) -> str:
+    """"[D: 9%; W: 80%]" ("D" the 5-hour session, "W" the week; ⚠ from USAGE_WARN %); "" when unknown.
+    "usage_in_watch": false in .satory/project.json keeps it out of the watch."""
+    data = usage_data(p) if data is None else data
+    parts = [f"{k}: {v['pct']}%{'⚠' if v['pct'] >= USAGE_WARN else ''}" for k, v in data.items()]
+    return f"[{'; '.join(parts)}]" if parts else ""
+
+
+# At "usage_pause_at" % (default 95) of either limit the build stops at its next step and waits for the user's
+# decision: stop, continue, or wait for the limit to reset. A limit used up in the middle of a step leaves the
+# workflow hanging until it resets, with an agent cut off halfway. After "continue" it asks again 3 points higher;
+# when the limit resets while it waits, it goes on by itself. "usage_pause_at": false turns it off.
+USAGE_PAUSE_AT = 95
+USAGE_ASK_AGAIN = 3
+USAGE_ASK = "usage-ask.json"
+USAGE_DECISION = "usage-decision.json"
+
+
+def usage_threshold(p: Project) -> int | None:
+    v = p.config.get("usage_pause_at", USAGE_PAUSE_AT)
+    return None if v in (False, None, 0) else int(v)
+
+
+def usage_over(p: Project, data: dict | None = None) -> dict:
+    thr = usage_threshold(p)
+    data = usage_data(p) if data is None else data
+    return {k: v for k, v in data.items() if thr is not None and v["pct"] >= thr}
+
+
+def usage_pause(p: Project) -> dict | None:
+    """The pause the build has to make now ({"text", "limits", "asked_at"}), or None. Writes the question for the
+    user (.satory/run/usage-ask.json and a ⏸ line in the progress) the first time."""
+    if usage_threshold(p) is None:
+        return None
+    data = usage_data(p)
+    over = usage_over(p, data)
+    ask_f, dec_f = p.run / USAGE_ASK, p.run / USAGE_DECISION
+    if not over:
+        ask_f.unlink(missing_ok=True)
+        return None
+    dec = load_json(dec_f, {}) if dec_f.exists() else {}
+    if dec.get("action") == "continue":
+        allowed = dec.get("levels") or {}
+        windows = dec.get("windows") or {}
+        if all(k in allowed and windows.get(k) == v.get("resets") and v["pct"] < allowed[k] + USAGE_ASK_AGAIN
+               for k, v in over.items()):
+            return None
+    ask = load_json(ask_f, {}) if ask_f.exists() else {}
+    text = usage_text(p, data)
+    if not ask:
+        ask = {"asked_at": now(), "text": text, "limits": over}
+        write_json(ask_f, ask)
+        resets = ", ".join(f"{k} {v.get('resets') or '?'}" for k, v in over.items())
+        progress(p, f"⏸ usage {text}: the build waits for your decision - stop, continue or wait for the reset "
+                    f"(resets: {resets})")
+    return {"text": text, "limits": over, "asked_at": ask["asked_at"]}
+
+
+def cmd_usage(p: Project, a) -> None:
+    """satory usage [status] | decide stop|continue|wait | wait --timeout N."""
+    if a.action == "decide":
+        if a.choice not in ("stop", "continue", "wait"):
+            raise SatoryError("usage decide stop|continue|wait")
+        data = usage_data(p)
+        write_json(p.run / USAGE_DECISION, {"action": a.choice, "at": now(),
+                                            "levels": {k: v["pct"] for k, v in data.items()},
+                                            "windows": {k: v.get("resets") for k, v in data.items()}})
+        (p.run / USAGE_ASK).unlink(missing_ok=True) if a.choice != "wait" else None
+        progress(p, f"⏸ usage {usage_text(p, data)}: the user chose to {a.choice}"
+                    + (" - the build goes on after the reset" if a.choice == "wait" else ""))
+        return emit({"ok": True, "decision": a.choice})
+    if a.action == "wait":
+        # the workflow waits here, in calls below the Bash limit, until the user decides or the limit resets
+        deadline = time.monotonic() + a.timeout
+        ask = load_json(p.run / USAGE_ASK, {}) if (p.run / USAGE_ASK).exists() else {}
+        while True:
+            dec = load_json(p.run / USAGE_DECISION, {}) if (p.run / USAGE_DECISION).exists() else {}
+            fresh = dec and (not ask or dec.get("at", "") >= ask.get("asked_at", ""))
+            if fresh and dec.get("action") in ("stop", "continue"):
+                return emit({"ok": True, "decision": dec["action"]})
+            if usage_threshold(p) is None or not usage_over(p):
+                (p.run / USAGE_ASK).unlink(missing_ok=True)
+                if fresh and dec.get("action") == "wait":
+                    progress(p, f"⏸ usage {usage_text(p)}: the limit reset - the build goes on")
+                return emit({"ok": True, "resumed": True})
+            if time.monotonic() >= deadline:
+                return emit({"ok": True, "pending": True, "decision": dec.get("action") if fresh else None,
+                             "text": usage_text(p)})
+            time.sleep(60)
+    data = usage_data(p)
+    emit({"ok": True, "usage": data, "text": usage_text(p, data), "pause_at": usage_threshold(p),
+          "asked": load_json(p.run / USAGE_ASK, None) if (p.run / USAGE_ASK).exists() else None,
+          "decision": load_json(p.run / USAGE_DECISION, None) if (p.run / USAGE_DECISION).exists() else None})
 
 
 def cmd_statusline(a) -> None:
@@ -4980,6 +5082,11 @@ def main() -> None:
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
+    s = sub.add_parser("usage", help="the account's usage; the user's decision at the pause (stop|continue|wait)")
+    s.add_argument("action", nargs="?", default="status", choices=["status", "decide", "wait"])
+    s.add_argument("choice", nargs="?")
+    s.add_argument("--timeout", type=float, default=540)
+
     s = sub.add_parser("deploy")
     s.add_argument("env", choices=["staging", "preview", "prod", "test"])
     s.add_argument("--image")
@@ -4998,8 +5105,11 @@ def main() -> None:
             return cmd_statusline(a)
         p = Project.find(a.project)
         write_shim(p)
+        if a.cmd in ("step", "plan") or (a.cmd == "task" and getattr(a, "action", "") == "start"):
+            global EMIT_EXTRA
+            EMIT_EXTRA = lambda: usage_pause(p)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "usage": cmd_usage, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":

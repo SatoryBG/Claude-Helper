@@ -49,6 +49,12 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - On each event, write the user one short line in their language (what happened, in plain words; no
      tool calls needed). Several events that arrive together are one line or a few short bullets.
    - When the monitor expires and the workflow is still running, start it again the same way.
+   - **The usage pause** (a `⏸ usage [D: …; W: …]` line: a limit of the Claude account reached `usage_pause_at`,
+     95% by default): the build waits at the boundary of a stage for the user's decision. Ask them at once with
+     AskUserQuestion - "Stop" (the build ends here; `/satory-devteam:build` goes on from this point later),
+     "Continue" (asked again 3 points higher) or "Wait for the reset" (the build goes on by itself when the limit
+     resets; show the reset time from the line) - and record the answer with `$SATORY usage decide
+     stop|continue|wait`. Without an answer the build keeps waiting; it goes on by itself when the limit resets.
    - When the monitor expires with no events, and right after a notice that a usage limit has reset, run
      `$SATORY stall`. An agent cut off by a usage limit or an API error can leave the workflow waiting for a
      result that never comes. If `stalled` is true (no progress event, runner step, changed file, commit,
@@ -67,6 +73,8 @@ Summarise the result:
   URL when there is no preview);
 - blocked tasks with the reason → `/satory-devteam:status` to answer them;
 - `stopped_on_error`, if any: show the error and propose a fix;
+- `stopped_on_usage`, if any: the user chose to stop at the usage pause; say where it stopped and that
+  `/satory-devteam:build` goes on from there (after the limit resets);
 - remaining tasks and what they wait for;
 - `questions`: the open questions for the user (and how many are critical), collected without stopping
   the work → `/satory-devteam:status` whenever it suits the user;
