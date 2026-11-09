@@ -101,7 +101,18 @@ or contradicts the SPEC, the task fails and goes back to Dev.
 3. **UI regression guards** (when `docs/UI.md` exists and the task adds or changes a page): for every such
    page add permanent e2e tests that (a) run `@axe-core/playwright` and fail on `serious` or `critical`
    violations, and (b) fail if the page scrolls horizontally at any viewport listed in `docs/UI.md`.
-4. **Run only this task's tests.** Run the unit tests you added or changed in this round and the unit
+4. **Earlier tests that this task changes on purpose - in your first round, not after the whole suite.** Before
+   you write tests, list what the task changes in behaviour that earlier features already had: an element that
+   now appears or disappears on a page (a button, a menu entry, a column), a text, a status, an endpoint's
+   answer, an error code, a rule. Search the earlier tests for each one by what they would assert - the role and
+   name of the element, the test id, the text, the route, the code (e.g. `grep -rn 'Замени\|replace-button'
+   e2e/tests tests`) - including assertions that something is absent (`toHaveCount(0)`, `.not.`). Where an earlier
+   test expects the old behaviour that the task's requirements change, adapt it now under your rules (with its line
+   in "QA: adapted tests" and the source); where the old behaviour should stay, leave it - a failure is then a
+   regression for Dev. One task lost a round to a test that checked a page had no "Замени" button, a button the
+   task added on purpose.
+
+5. **Run only this task's tests.** Run the unit tests you added or changed in this round and the unit
    tests of the code this task changes, filtered to those classes or files (e.g. `dotnet test --project
    <test project> -- --filter-class "<namespace>.*"`, `npx vitest run <path>`, `mvnw test -Dtest=<pattern>`),
    the e2e tests you added, and the e2e tests you changed (an adapted or a flaky test, selected by its name
@@ -115,19 +126,19 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    the whole unit suite right after you and the whole e2e suite once more
    before the task is finished, and a failure there comes back to Dev with the log. A test run that takes
    more than about ten minutes means you are running too much: stop it and narrow it.
-5. Fill in "QA: coverage": which test covers which criterion or point.
+6. Fill in "QA: coverage": which test covers which criterion or point.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
    crash the next build or test run. Use the tests' copy of staging instead when you can; otherwise stop
    every process you started (and its children) before you return.
-6. **Assert what the requirement fixes, not a whole list.** When a requirement names items that must be
+7. **Assert what the requirement fixes, not a whole list.** When a requirement names items that must be
    there (the sections of a page, menu entries, columns, the secrets a container uses), assert that each
    of them is present - in order when the order is required - instead of asserting that the list is
    exactly these items: a later task that adds an item must not break the test. Assert an exact list only
    when the requirement itself is exhaustive ("only these secrets", "no other roles"), and say so in the
    test name. An exact-list test of an earlier task that fails because this task adds an item on purpose is
    adapted to this form (see "A test from an earlier task" above).
-7. **Unit and integration tests run in parallel** (unless `"tests_parallel": false` in `.satory/project.json`).
+8. **Unit and integration tests run in parallel** (unless `"tests_parallel": false` in `.satory/project.json`).
    This holds for every test you add, in every task: a new test class never joins a collection that makes
    classes wait for each other, and when the existing setup does (one shared collection for most classes), you
    change it to the setup below in the same task - only the test infrastructure, never the app, with the
@@ -141,11 +152,11 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    the value to its own host only. Cap the parallel threads at about half the cores. A test that passes alone
    but fails in parallel depends on another test: fix the test (its own data, its own host), never the order.
 
-8. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
+9. **Reuse the test helpers.** Before writing setup code (creating records through the API, opening a
    form, confirming a dialog, waiting for a state), look for a helper or fixture that already does it in
    the test projects and use it; put a step you need in two places into a shared helper. Wait for the
    state you check (a response, a visible text, an enabled button), never for a fixed time.
-9. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
+10. **Notes for the next round.** Before you return, write `.satory/run/notes/<ID>-qa.md` (replace it;
    at most about 60 lines, facts only, not a log): the key files and what each does for this task, the
    commands that worked (run one test, reach a state on staging, log in as a role), the traps you hit
    and how you got past them, and what is still open. The next round starts from it (the digest lists

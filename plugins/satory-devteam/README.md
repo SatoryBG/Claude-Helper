@@ -462,6 +462,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.5** - QA looks for the earlier tests a task changes on purpose in its first round: it lists what the task
+  changes in behaviour that earlier features already had (an element that appears or disappears, a text, a status,
+  an answer, a rule), searches the earlier tests for it - also for assertions that something is absent - and adapts
+  those the requirements change, instead of finding them a round later in the whole suite. A static search of the
+  diff for such tests was tried first and found nothing useful: the button a task adds already existed elsewhere.
+
 - **1.9.4** - the e2e progress in the status line no longer goes past 100%: Playwright counts the retries of
   failed tests on top of the total (`2582/2565 (101%)`), now shown apart as `2565/2565 (100%) · 17 retried`.
 
