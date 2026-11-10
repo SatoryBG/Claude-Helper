@@ -187,6 +187,10 @@ register of questions as a `minor` `test` item ("Flaky e2e test: ..."). A test f
 at once - the item is answered "Plan it" automatically and the planner makes a task that stabilises it
 (QA makes it wait for the state it checks, Dev fixes a race in the app behind it); the user's "Not needed"
 stands. A test flaky 3 times becomes `major` (and reopens if it was dismissed). A real regression fails again and sends the task back as before.
+A flaky test that then passes on its first try is not asked about in `/satory-devteam:status` (it may be fixed
+or was a passing glitch; the status counts it as `watching`), and after 5 clean runs in a row it disappears from
+the register with its history, as if it had never been flaky - unless a task for it is already planned. A failure
+starts the count again. `"flaky_clear_after": N` in `.satory/project.json` sets the number of runs, 0 turns it off.
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
@@ -478,6 +482,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.9** - A flaky test is forgotten after 5 clean runs in a row: its item disappears from the register with its
+  history, so an old glitch does not add up with a new one into "flaky twice" and a needless task
+  (`"flaky_clear_after"`, 0 off). One that passed cleanly since it failed is not asked about in the status
+  (`watching`). While the user answers questions in `/satory-devteam:status` (`question session begin|end`), the
+  build waits at the next boundary before it plans the answers and starts the next task (`question wait`): a
+  planning in the middle of the answers took only part of them, and the rest could become a second task.
 - **1.9.8** - Every agent of the build is told that the user request the harness relays to it is the message that
   started or restarted the build, addressed to the orchestrator, and not an instruction for its work. A build
   relaunched in the turn of "stop it now" had Dev stop at once and block its task. The build skill says not to

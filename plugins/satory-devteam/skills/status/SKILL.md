@@ -23,7 +23,10 @@ Talk to the user in the language they write in.
    - staging (yours), a preview if set, prod: URL (`urls`), image, when; the tests' copy only when one
      runs now (`test_env` in the status); the remote;
    - where the history is: `docs/JOURNAL.md` (for humans; the agents do not read it);
-   - the open questions for the user (`questions` in the status): how many, how many critical.
+   - the open questions for the user (`questions` in the status): how many, how many critical. Flaky tests
+     that passed cleanly since they last failed (`watching`) are not among them and are not asked about: they
+     may be fixed or were a passing glitch; one that fails again is open again, and one that passes 5 runs in
+     a row disappears from the register (`flaky_clear_after` in `.satory/project.json`, 0 turns it off).
    - the coverage of the acceptance criteria: `$SATORY coverage` (from the latest test list): the counts,
      the share of all criteria that have a test (`tested` of the sum, in %), the number of tests listed
      (`tests_listed`), and the `untested` and `claimed` criteria by id and title (details in `.satory/run/coverage.md`).
@@ -43,7 +46,12 @@ Talk to the user in the language they write in.
    - "Unblock the blocked tasks" - with their ids (steps 3 and 4);
    - "Both" - the questions, then the blocked tasks (only when there are both).
    The argument skips the question: `view` shows only the report, `questions` goes straight to the
-   questions, `blocked` straight to the blocked tasks. Open critical questions keep the next milestone from
+   questions, `blocked` straight to the blocked tasks.
+   **While the user answers** (any choice but "Only the overview"), the build must not plan half of the
+   answers: run `$SATORY question session begin` before the first question and `$SATORY question session end`
+   right after the last answer or unblock is recorded - also when the user stops early. In between, a running
+   build waits at the next boundary between two tasks (before it plans the answers and starts the next task);
+   every `question answer` keeps the session alive, and one idle for 20 minutes is over by itself. Open critical questions keep the next milestone from
    starting - say so in the report, but the user still decides when to answer them.
 3. **Blocked tasks** (when the user chose them): for each, show the reason (`reason`) and classify it:
    - **Question from an agent** (business decision): ask the user (AskUserQuestion with options or a

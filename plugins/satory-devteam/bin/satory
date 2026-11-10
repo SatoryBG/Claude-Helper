@@ -667,6 +667,8 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
         return r
 
     if res["ok"] or res.get("skipped"):
+        if name == "test" and res["ok"] and not unchanged and not res.get("skipped"):
+            flaky_clean(p, unit=True)  # every unit test ran and passed on the first run
         return passed(res)
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if not ((isinstance(res.get("exit"), int) and res["exit"] < 0) or CRASH.search(text)):
@@ -786,7 +788,10 @@ def e2e_affected_specs(p: Project, ref: str, head: str = "HEAD") -> tuple[str, l
 
 def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
     """(failed, total, failed test names) from the summary of a Playwright run (line/list reporter)."""
-    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+    return e2e_failures_text(log.read_text(encoding="utf-8", errors="replace") if log.exists() else "")
+
+
+def e2e_failures_text(text: str) -> tuple[int, int, list[str]]:
     counts: dict[str, int] = {}
     for n, kind in E2E_COUNT.findall(text):
         counts[kind] = int(n)
@@ -947,6 +952,11 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
             f1, total1, _ = e2e_failures(log)
             res.update(seconds=round(time.time() - t0), tests=total1, failed_count=f1)
             n = 1
+
+    try:  # the recorded flaky tests that passed on their first try in this run
+        flaky_clean(p, e2e=e2e_ran_clean(log.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        pass
 
     def record(flaky: int) -> None:
         if shards_max:
@@ -1114,10 +1124,64 @@ FLAKY_ESCALATE = 3  # a test flaky this many times is likely a real timing probl
 FLAKY_PLAN = 2  # a test flaky this many times is planned at once: a task makes it stable, no answer needed
 
 
+FLAKY_CLEAR = 5  # clean runs in a row after which a flaky test is forgotten, as if it had never been flaky
+
+
+def flaky_norm(t: str) -> str:
+    """The same test in another Playwright project ("[tablet-768] › "), at another line or with another
+    duration is the same test."""
+    return re.sub(r"^\[[^\]]+\] › ", "", re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip())
+
+
+def flaky_watching(q: dict) -> bool:
+    """A flaky test that has passed cleanly since it last failed: it may be fixed or was a passing glitch, so the
+    user is not asked about it; it comes back only if it fails again."""
+    return str(q.get("key") or "").startswith("flaky:") and int(q.get("clean_runs") or 0) > 0
+
+
+# a test of a Playwright line-reporter run: "[12/864] [desktop-1280] › tests/a.spec.ts:12:5 › title (retry #1)"
+E2E_RUN_LINE = re.compile(r"^\[\d+/\d+\] (?:\(retries\) )?(\[[^\]]+\] › \S+?:\d+:\d+ › .+?)(\s\(retry #\d+\))?\s*$", re.M)
+
+
+def e2e_ran_clean(text: str) -> set[str]:
+    """The tests of a run (normalised names) that passed on their first try: started, never retried, not failed."""
+    ran, retried = set(), set()
+    for m in E2E_RUN_LINE.finditer(text):
+        (retried if m.group(2) else ran).add(flaky_norm(m.group(1)))
+    _, _, failed = e2e_failures_text(text)
+    return ran - retried - {flaky_norm(x) for x in failed}
+
+
+def flaky_clean(p: Project, e2e: set[str] | None = None, unit: bool = False) -> None:
+    """Count a clean run for every recorded flaky test that ran and passed on its first try (e2e: by name; unit:
+    the whole unit suite passed on its first run). After `flaky_clear_after` (5) in a row the item is removed
+    from the register with its history - as if the test had never been flaky - unless a task for it is already
+    planned. 0 turns it off."""
+    n = int(p.config.get("flaky_clear_after", FLAKY_CLEAR) or 0)
+    if n <= 0 or (not e2e and not unit):
+        return
+    reg = questions_load(p)
+    removed, changed = [], False
+    for q in list(reg["items"]):
+        key = str(q.get("key") or "")
+        if not key.startswith("flaky:") or q["status"] == "planned":
+            continue
+        name = flaky_norm(key[6:])
+        if not ((unit and name.startswith("unit › ")) or (e2e and name in e2e)):
+            continue
+        q["clean_runs"], changed = int(q.get("clean_runs") or 0) + 1, True
+        if q["clean_runs"] >= n:
+            reg["items"].remove(q)
+            removed.append(q["id"])
+    if changed:
+        questions_save(p, reg)
+    if removed:
+        progress(p, f"✓ {', '.join(removed)}: stable for {n} runs in a row - no longer flaky, removed")
+
+
 def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e2e") -> None:
     """Record a test that failed and passed on the retry; repeated flakiness raises the severity."""
-    # the same test in another Playwright project ("[tablet-768] › ") or with another duration is the same test
-    norm = lambda t: re.sub(r"^\[[^\]]+\] › ", "", re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip())
+    norm = flaky_norm
     name = norm(test)
     reg = questions_load(p)
     key = f"flaky:{name}"
@@ -1137,6 +1201,7 @@ def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e
         progress(p, f"❓ {reg['items'][-1]['id']}: flaky {kind} test ({source}) - {name.split(' › ')[-1]}")
     else:
         q.setdefault("occurrences", []).append(source)
+        q["clean_runs"] = 0  # the streak of clean runs starts again
         if q["status"] == "deferred":  # it happened again: back to the user
             q["status"] = "open"
             progress(p, f"❓ {q['id']} is open again: the test was flaky once more ({source})")
@@ -1162,6 +1227,15 @@ def question_find(reg: dict, qid: str) -> dict:
         if q["id"] == qid:
             return q
     raise SatoryError(f"unknown question {qid}")
+
+
+ANSWERING = "answering.json"  # the user answers questions now (/satory-devteam:status)
+ANSWER_IDLE = 20 * 60  # a session without an answer or a begin for this long is over (the status was left)
+
+
+def answering_active(p: Project) -> bool:
+    d = load_json(p.run / ANSWERING, {}) if (p.run / ANSWERING).exists() else {}
+    return bool(d) and time.time() - float(d.get("touched") or 0) < ANSWER_IDLE
 
 
 def cmd_question(p: Project, a) -> None:
@@ -1209,17 +1283,47 @@ def cmd_question(p: Project, a) -> None:
         if bad:
             raise SatoryError(f"unknown status {', '.join(bad)} (known: {', '.join(Q_STATUSES)})")
         items = [q for q in reg["items"] if not wanted or q["status"] in wanted]
+        if a.open:  # a flaky test that passed cleanly since it failed is not asked about
+            items = [q for q in items if not flaky_watching(q)]
         if not a.full:
             items = [q if not a.brief and q["status"] == "open"
                      else {k: q.get(k) for k in Q_BRIEF + (("answer", "refs") if not a.brief
                                                            and q["status"] == "answered" else ())}
                      for q in items]
-        open_items = [q for q in reg["items"] if q["status"] == "open"]
+        open_items = [q for q in reg["items"] if q["status"] == "open" and not flaky_watching(q)]
         return emit({"ok": True, "items": items, "open": len(open_items),
+                     "watching": sum(q["status"] in ("open", "deferred") and flaky_watching(q) for q in reg["items"]),
                      "critical_open": sum(q["severity"] == "critical" for q in open_items),
                      "deferred": sum(q["status"] == "deferred" for q in reg["items"]),
                      "milestones_reviewed": reg["milestones_reviewed"], "ux_reviewed": reg["ux_reviewed"]})
+    if a.action == "session":
+        f = p.run / ANSWERING
+        if a.target == "begin":
+            write_json(f, {"started": now(), "touched": time.time()})
+        elif a.target == "end":
+            if answering_active(p) and load_json(f, {}).get("announced"):
+                progress(p, "✓ the user finished answering questions - the build goes on")
+            f.unlink(missing_ok=True)
+        elif a.target not in (None, "status"):
+            raise SatoryError("question session begin|end|status")
+        return emit({"ok": True, "active": answering_active(p)})
+    if a.action == "wait":
+        # the workflow waits here, before it plans the answers, while the user answers in /satory-devteam:status
+        deadline = time.monotonic() + (a.timeout or 540)
+        while answering_active(p):
+            d = load_json(p.run / ANSWERING, {})
+            if not d.get("announced"):
+                write_json(p.run / ANSWERING, {**d, "announced": now()})
+                progress(p, "⏸ the user is answering questions (/satory-devteam:status) - the build waits before "
+                            "it plans the answers and starts the next task")
+            if time.monotonic() >= deadline:
+                return emit({"ok": True, "active": True})
+            time.sleep(15)
+        return emit({"ok": True, "active": False})
     if a.action == "answer":
+        if (p.run / ANSWERING).exists():  # an answer keeps the session alive
+            d = load_json(p.run / ANSWERING, {})
+            write_json(p.run / ANSWERING, {**d, "touched": time.time()})
         q = question_find(reg, a.target)
         if a.status and a.status not in ("answered", "deferred", "dismissed", "planned", "resolved"):
             raise SatoryError("question answer --status is answered, deferred, dismissed, planned or resolved")
@@ -4597,7 +4701,9 @@ def cmd_status(p: Project, a) -> None:
           "blocked": [{"id": t["id"], "title": t["title"], "reason": t.get("blocked_reason")}
                       for t in plan["tasks"] if t.get("status") == "blocked"],
           "in_progress": list(p.state["tasks"]), "deploy": p.state.get("deploy", {}),
-          "questions": {"open": sum(q["status"] == "open" for q in questions_load(p)["items"]),
+          "questions": {"open": sum(q["status"] == "open" and not flaky_watching(q) for q in questions_load(p)["items"]),
+                        "watching": sum(q["status"] in ("open", "deferred") and flaky_watching(q)
+                                        for q in questions_load(p)["items"]),
                         "critical_open": sum(q["status"] == "open" and q["severity"] == "critical"
                                              for q in questions_load(p)["items"]),
                         "deferred": sum(q["status"] == "deferred" for q in questions_load(p)["items"])},
@@ -5009,6 +5115,9 @@ def cmd_statusline(a) -> None:
 # The last event in the status line says what happened, not its details: ids, file names and explanations are
 # in the progress log and the watch. Each rule rewrites one kind of line; anything else keeps its text.
 SHORT_EVENT = [
+    (r"⏸ the user is answering questions.*", "⏸ waits: you answer questions"),
+    (r"✓ the user finished answering questions.*", "✓ answers done, build goes on"),
+    (r"✓ (Q-\d+(?:, Q-\d+)*): stable for (\d+) runs.*", lambda m: f"✓ {len(m.group(1).split(','))} flaky test(s) stable, removed"),
     (r"❓ (\d+) new question\(s\) from (.+?): .*", r"❓+\1 from \2"),
     (r"❓ open again, raised once more by (.+?): (.*)", lambda m: f"❓ {len(m.group(2).split(','))} open again ({m.group(1)})"),
     (r"❓ (Q-\d+) is open again: the test was flaky once more \((.+?)\)", r"❓ flaky again (\2)"),
@@ -5170,8 +5279,10 @@ def main() -> None:
     s.add_argument("--split-e2e", action="store_true", help="the workflow runs step full-e2e (the whole e2e suite after Security)")
 
     s = sub.add_parser("question")
-    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "ux-reviewed", "register", "flush"])
-    s.add_argument("target", nargs="?", help="question id (answer, plan) or milestone (reviewed)")
+    s.add_argument("action", choices=["add", "list", "answer", "plan", "reviewed", "ux-reviewed", "register", "flush",
+                                      "session", "wait"])
+    s.add_argument("target", nargs="?", help="question id (answer, plan), milestone (reviewed) or begin|end|status (session)")
+    s.add_argument("--timeout", type=int, help="wait: seconds at most")
     s.add_argument("--source")
     s.add_argument("--task")
     s.add_argument("--milestone")

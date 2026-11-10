@@ -1209,6 +1209,11 @@ async function planAnswers(plan) {
   try {
     const st = must(await sh('status', { phase: 'Planning', label: 'branch' }), 'status')
     if (/^satory\//.test(st.branch || '')) return plan
+    // the user is answering questions in /satory-devteam:status: plan only once all the answers are in (a planning
+    // in the middle took part of them, and the rest became a second task for the same questions)
+    for (let w = must(await sh(`question wait --timeout ${WAIT_SECONDS}`, { phase: 'Planning', label: 'answers in progress' }), 'question wait');
+      w.active;
+      w = must(await sh(`question wait --timeout ${WAIT_SECONDS}`, { phase: 'Planning', label: 'answers in progress' }), 'question wait')) {}
     const q = must(await sh('queue apply', { phase: 'Planning', label: 'queued changes' }), 'queue apply')
     for (const a of q.applied || []) {
       skippedLog(a)
