@@ -363,8 +363,12 @@ task.
 
 ## Tests in a round
 
-A round does not run the whole test suite more than it has to. Dev runs `build`, `lint` and `test`
-before handing over. QA runs only the unit and e2e tests it added or changed and the ones of the code the
+A round does not run the whole test suite more than it has to. Dev runs `build` and `lint` and, of `test`,
+only the tests of what it changed (filtered to those classes or files), before handing over; a whole test
+command only when it changed what most of its tests stand on (the domain rules, a migration, the shared test
+setup, the startup, the build files). A two-minute fix took 45 minutes when Dev waited for the whole .NET
+suite in every round, which then ran again after QA. `"dev_targeted_tests": false` makes Dev run every `test`
+command whole. QA runs only the unit and e2e tests it added or changed and the ones of the code the
 task touches. The check after QA runs the whole unit suite (`test`), this task's e2e tests plus
 the smoke tests, and the spec files of earlier features the task likely affects (for one plain Playwright
 command): the specs that open the page of a changed feature (a directory under `features/`, `pages/`,
@@ -474,6 +478,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.7** - Dev runs only the tests of what it changed (filtered to those classes or files), not the whole `test`
+  commands: the whole unit suite runs anyway in the check after QA of the same round. A whole command only when the
+  change touches what most of its tests stand on (domain rules, a migration or the database model, the shared test
+  setup, the startup, a shared helper, the build files). A two-minute focus fix took 45 minutes when Dev waited for
+  the 22-28-minute .NET suite in every round. `"dev_targeted_tests": false` restores the whole run.
 - **1.9.6** - Less work twice in the checks of a round. The whole e2e suite after Security leaves out what QA's
   check ran on the same code (the affected spec files, the task's own and the smoke tests); any change of the code
   since then runs it whole, `"e2e_whole_skip_covered": false` always does (T-054 ran 1592 tests twice, about 22

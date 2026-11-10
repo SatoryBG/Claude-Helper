@@ -51,8 +51,19 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
    in `assumptions` with the options you saw, so the user can confirm it later. Report each one once,
    in the round you decide it. Write it in the documentation language and skip what
    is already in the register (the list is in your task).
-6. **Before you finish**, run the `build`, `lint` and `test` commands from `.satory/project.json` and make
-   them pass. The orchestrator runs them again and sends the task back to you if they fail.
+6. **Before you finish**, run the `build` and `lint` commands from `.satory/project.json` and make them pass.
+   Of the `test` commands, run only the tests of what you changed: the tests of the classes, endpoints,
+   components and pages you touched and the tests that name them - filtered (e.g.
+   `dotnet test --solution <sln> --filter-class "<namespace>.<Class>"` or `--filter-namespace "*<Feature>*"`,
+   `npx vitest run <paths>`, `mvnw test -Dtest=<pattern>`), never the whole suite to wait for it. The whole
+   unit suite runs anyway in the check after QA, in the same round, and comes back to you if it fails; a
+   whole .NET suite of 20-28 minutes, waited for in every round of Dev and run again after QA, made a
+   two-minute fix take 45 minutes. Run a whole test command only when you changed what most of its tests
+   stand on: the domain rules, a migration or the database model, the shared setup of the tests, the
+   startup and dependency registration, a shared base class or helper, the build or package files - and a
+   command whose part of the code you did not touch (the web tests for a change only in the API) not at all.
+   `"dev_targeted_tests": false` in `.satory/project.json` means you run every `test` command whole, as
+   before. The orchestrator runs `build` and `lint` again and sends the task back to you if they fail.
    **Processes you start**: a server, watcher or stub you start yourself (`dotnet run`, `npm run dev`,
    a stub) runs from a copy of the build output that the gates rebuild, so a process left running can
    crash the next build or test run. Use the tests' copy of staging instead when you can (below); otherwise
