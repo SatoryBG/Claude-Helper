@@ -110,7 +110,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    test expects the old behaviour that the task's requirements change, adapt it now under your rules (with its line
    in "QA: adapted tests" and the source); where the old behaviour should stay, leave it - a failure is then a
    regression for Dev. One task lost a round to a test that checked a page had no "Замени" button, a button the
-   task added on purpose.
+   task added on purpose. When the task adds or removes something in the shared frame of the app - a link in the
+   navigation, an entry of a menu, a page a role can open - search also for the tests that count or list those
+   (the Tab order of the header, the entries of a menu for each role, `toHaveCount(n)` on the links): another task
+   lost a round to a header test that expected exactly four navigation links when it added a fifth.
 
 5. **Run only this task's tests.** Run the unit tests you added or changed in this round and the unit
    tests of the code this task changes, filtered to those classes or files (e.g. `dotnet test --project

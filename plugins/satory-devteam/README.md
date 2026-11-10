@@ -190,6 +190,12 @@ stands. A test flaky 3 times becomes `major` (and reopens if it was dismissed). 
 The retry runs only when few tests failed: at most `e2e_retry_max_percent` of the tests in the run
 (default 3 %, at least 1 test) - more failures are not flakiness.
 
+Unit tests work the same way, for up to `unit_retry_max` (3) failed tests. The rerun starts at the
+failing command - the commands that passed before it do not run again - and that command runs only its
+failed tests when the runner can select them: `dotnet test` on the Microsoft.Testing.Platform with
+`--filter-method` per test method, Vitest with the failed test files. A filter that selects nothing falls
+back to the whole command. `"unit_retry_narrow": false` runs the failing command whole again.
+
 Each command of a check (build, tests, e2e) may run for `command_timeout_minutes` in
 `.satory/project.json` (default 90). A command that runs longer is stopped and the check fails with
 "timeout after N s" at the end of its log: raise the limit when the e2e suite has grown past it.
@@ -279,7 +285,9 @@ staging itself, so those run there, beside the copies, and the copies share the 
   `docker stats`, plus 0.7 GB for the browser, at least 1.5); `max` lowers it. The first run uses a
   quarter of the CPUs (at least 2). After that the fastest measured count (seconds per test) is kept, and
   two more are tried while untried. A count whose run had more than 0.2 % of the tests passing only on
-  the retry lowers the ceiling below it. A number in `workers` is used as it is. `satory parallel` shows
+  the retry lowers the ceiling below it. The choice uses the 30 latest runs and, for a count none of them
+  used, the totals of every run with it, so a count measured slower is not tried again once it has dropped
+  out of the latest 30. A number in `workers` is used as it is. `satory parallel` shows
   the choice, the reason and the measured runs; the status line shows a sharded run as `🧪 e2e … ⚡N`.
 - Shards are split by test file unless the Playwright config has `fullyParallel: true`; with files of
   very different length the longest file sets the time.
@@ -362,7 +370,11 @@ the smoke tests, and the spec files of earlier features the task likely affects 
 command): the specs that open the page of a changed feature (a directory under `features/`, `pages/`,
 `Features/` …, also through a shared file its files import) or name a changed file. When 60 % of the specs
 or more are affected, the whole suite runs there instead and not again after Security. The whole e2e suite runs once, after Review, QA, UI and Security have passed and before
-Docs, so the rounds sent back by QA or the UI reviewer are much shorter. A task is never finished without
+Docs, so the rounds sent back by QA or the UI reviewer are much shorter. When QA's check passed with the
+affected specs, the whole suite after Security leaves out what that check already ran on the same code (the
+affected spec files, and the task's own and smoke tests): Security and the UI review change no file, so
+those tests would only run twice. Any change of the code since that check runs the whole suite;
+`"e2e_whole_skip_covered": false` always runs it whole. A task is never finished without
 a green whole suite. If it fails there, the task goes back to Dev and the next round runs the whole suite
 already in QA's check, so UI and Security do not review a build with a known regression. For Playwright
 with one e2e command, that check runs only the tests that failed (their files, a `--grep` of their exact
@@ -462,6 +474,18 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.6** - Less work twice in the checks of a round. The whole e2e suite after Security leaves out what QA's
+  check ran on the same code (the affected spec files, the task's own and the smoke tests); any change of the code
+  since then runs it whole, `"e2e_whole_skip_covered": false` always does (T-054 ran 1592 tests twice, about 22
+  minutes). A unit retry starts at the failing command and runs only its failed tests when the runner can select
+  them (`dotnet test` on the Microsoft.Testing.Platform with `--filter-method`, Vitest with the files), falling back
+  to the whole command when the filter selects nothing; `"unit_retry_narrow": false` turns it off (one flaky .NET
+  test cost a second 28-minute run). The choice of parallel e2e copies keeps the totals of every count ever
+  measured, so a count measured slower is not tried again once it drops out of the latest 30 runs (3 copies came
+  back after 30 runs of 1: 3 minutes slower and 5 tests failing only there). A sharded run says what it runs (the
+  affected specs, the whole suite or the rest of it), not always "whole e2e suite". QA's rule on earlier tests also
+  covers the shared frame: a task that adds a navigation link or a menu entry has QA look for tests that count or
+  list those (a header test expected exactly four links).
 - **1.9.5** - QA looks for the earlier tests a task changes on purpose in its first round: it lists what the task
   changes in behaviour that earlier features already had (an element that appears or disappears, a text, a status,
   an answer, a rule), searches the earlier tests for it - also for assertions that something is absent - and adapts

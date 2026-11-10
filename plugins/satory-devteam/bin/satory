@@ -282,6 +282,22 @@ class Project:
         return [e2e[0] + " " + " ".join(shlex.quote(x) for x in sorted(files))
                 + " --grep-invert " + shlex.quote(f"{tid}|@smoke")]
 
+    def e2e_uncovered_commands(self, covered: list[str], grep: str) -> list[str] | None:
+        """The whole-suite e2e command for what a round's check after QA did not run on the same code: the spec
+        files outside `covered` (the affected specs it ran), without the tests `grep` selects (the task's own
+        and the smoke tests, which its task run had). [] when nothing is left; None when the suite is not one
+        plain Playwright command or its spec files cannot be listed."""
+        e2e = self.e2e_suite_commands()
+        if len(e2e) != 1 or not pw_tail(e2e[0]):
+            return None
+        specs = e2e_spec_files(self)
+        if specs is None:
+            return None
+        rest = [f for f in specs if f not in set(covered)]
+        if not rest:
+            return []
+        return [pw_files(e2e[0], rest) + " --grep-invert " + shlex.quote(grep)]
+
     def e2e_task_commands(self, tid: str) -> list[str]:
         """The e2e commands for one task's own tests plus the smoke tests ({task} becomes the task id):
         commands.e2e_task or - for Playwright - the e2e commands with --grep "{task}|@smoke" appended.
@@ -428,7 +444,7 @@ NOW_RUNNING = ".now.json"
 # the part of a long step that runs now, by the name of its log
 NOW_KINDS = [(r"-e2e-task\.log$", "e2e (task)"), (r"-e2e-affected\.log$", "e2e (affected)"),
              (r"-e2e-failed\.log$", "e2e (failed before)"), (r"-e2e-retry\.log$", "e2e rerun"),
-             (r"-shard\d+\.log$", "whole e2e"), (r"-e2e\.log$", "whole e2e"), (r"-test(-rerun)?\.log$", "unit tests"),
+             (r"-shard\d+\.log$", "whole e2e"), (r"-e2e\.log$", "whole e2e"), (r"-test(-rerun|-retry|-retry-rest)?\.log$", "unit tests"),
              (r"-build\.log$|\.build\.log$", "build"), (r"-lint\.log$", "lint"), (r"-security-\d+\.log$", "scanners"),
              (r"^deploy-test-", "test copy up"), (r"^down-test-", "test copy down"), (r"^deploy-staging-", "staging deploy"),
              (r"^deploy-preview-", "preview deploy")]
@@ -496,9 +512,40 @@ UNIT_ORIGIN = re.compile(r'This error originated in "([^"]+)"')
 UNIT_ANY_FAILED = re.compile(r"^\s*(?:Tests|Test Files)\s+\d+ failed|^\s*Failed:\s+[1-9]|^\s*failed:\s+[1-9]", re.M)
 
 
+# what a narrowed rerun ran: Microsoft.Testing.Platform "total: N", Vitest "Tests  N passed"
+UNIT_RAN = re.compile(r"^\s*total:\s*(\d+)|^\s*Tests\s+(\d+)\s+passed", re.M)
+DOTNET_TEST = re.compile(r"(?:^|&&\s*)dotnet\s+test\b")
+VITEST_RUN = re.compile(r"\bvitest\s+run\b")
+
+
+def unit_narrowed(cmd: str, names: list[str]) -> str | None:
+    """The command that runs only the given failed tests, or None when it cannot be told: `dotnet test` on the
+    Microsoft.Testing.Platform (xUnit v3, MSTest, NUnit) with --filter-method per test method (a test project
+    without such a method ran 0 tests, which is not a failure here), Vitest with the failed test files."""
+    if not names or re.search(r"[|;>]|\s--\s|--filter", cmd):
+        return None
+    if DOTNET_TEST.search(cmd):
+        methods = []
+        for n in names:
+            m = re.match(r"^([\w.+`]+?)(?:\(.*\))?\s*$", n.strip())
+            if not m or "." not in m.group(1):
+                return None
+            methods.append(m.group(1))
+        return cmd + "".join(f" --filter-method {shlex.quote(x)}" for x in sorted(set(methods))) + " --ignore-exit-code 8"
+    if VITEST_RUN.search(cmd):
+        files = sorted({n.split(" > ")[0].strip() for n in names})
+        if not files or not all(re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", f) for f in files):
+            return None
+        return cmd + " " + " ".join(shlex.quote(f) for f in files)
+    return None
+
+
 def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str, cmds: list[str] | None = None) -> dict:
-    """A few failing unit tests are run once more (the whole command, it is quick): passing then counts as
-    passing, and the tests go to the register as flaky, as for e2e. Many failures are a real failure."""
+    """A few failing unit tests are run once more: passing then counts as passing, and the tests go to the
+    register as flaky, as for e2e. Many failures are a real failure. The commands that passed before the failing
+    one do not run again, and the failing one runs only its failed tests when the runner can select them (a
+    flaky .NET test cost a second 23-minute run of all the .NET tests); the commands after it run as usual.
+    "unit_retry_narrow": false runs the failing command whole again."""
     names = sorted({m.strip() for m in UNIT_FAILED.findall(text)})[:20]
     unhandled = not names and UNIT_UNHANDLED.search(text) and not UNIT_ANY_FAILED.search(text)
     if unhandled:
@@ -506,8 +553,30 @@ def unit_retry(p: Project, tid: str, rnd: int, res: dict, text: str, cmds: list[
     if not names or len(names) > int(p.config.get("unit_retry_max", 3)):
         return res
     progress(p, f"↻ {tid} r{rnd} test: " + (f"every test passed, but the run failed on an unhandled error ({', '.join(names)})"
-                                             if unhandled else f"{len(names)} unit test(s) failed") + ", running the tests once more")
-    again = run_cmds(p, p.commands("test") if cmds is None else cmds, p.logs / f"{tid}-r{rnd}-test-retry.log", p.env(tid, rnd))
+                                             if unhandled else f"{len(names)} unit test(s) failed") + ", running them once more")
+    cmds = p.commands("test") if cmds is None else cmds
+    times = res.get("times") or []
+    failing = times[-1][0] if times and times[-1][2] != 0 else None
+    rest = cmds[cmds.index(failing):] if failing in cmds else cmds
+    narrow = None
+    if failing in cmds and not unhandled and p.config.get("unit_retry_narrow", True) is not False:
+        narrow = unit_narrowed(rest[0], names)
+    log = p.logs / f"{tid}-r{rnd}-test-retry.log"
+    again = None
+    if narrow:
+        first = run_cmds(p, [narrow], log, p.env(tid, rnd))
+        out = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        ran = sum(int(x or y) for x, y in UNIT_RAN.findall(out))
+        if first["ok"] and ran > 0:
+            again = first
+            if rest[1:]:
+                tail = run_cmds(p, rest[1:], p.logs / f"{tid}-r{rnd}-test-retry-rest.log", p.env(tid, rnd))
+                again = {**tail, "log": first["log"] if tail["ok"] else tail["log"]}
+        elif not first["ok"] and set(names) & {m.strip() for m in UNIT_FAILED.findall(out)}:
+            return res  # the same test failed again: a real failure
+        # otherwise the filter selected nothing or failed on its own: the whole command decides
+    if again is None:
+        again = run_cmds(p, rest, log, p.env(tid, rnd))
     if not again["ok"]:
         return res
     for test in names:
@@ -645,6 +714,18 @@ E2E_AFFECTED_FILES = 3  # spec files per shard at least, when the affected specs
 
 def kebab(name: str) -> str:
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", name).lower()
+
+
+def e2e_spec_files(p: Project) -> list[str] | None:
+    """The spec files of the one plain Playwright e2e command, relative to its folder; None when not that."""
+    e2e = p.commands("e2e")
+    if len(e2e) != 1 or not pw_tail(e2e[0]):
+        return None
+    m = re.match(r"\s*cd\s+(\S+)\s*&&", e2e[0])
+    d = (p.root / m.group(1)) if m else p.root
+    if not d.is_dir():
+        return None
+    return sorted(str(x.relative_to(d)) for x in d.rglob("*") if E2E_SPEC.search(x.name) and "node_modules" not in x.parts)
 
 
 def e2e_affected_specs(p: Project, ref: str, head: str = "HEAD") -> tuple[str, list[str], int]:
@@ -851,14 +932,16 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     n, why = e2e_workers(p, cfg) if cfg else (1, "")
     if shards_max:
         n = min(n, shards_max)
-    res = e2e_sharded(p, tid, rnd, cmds, log, cfg, n) if cfg and n > 1 else None
+    what = ("the affected e2e specs" if name.startswith("e2e-affected")
+            else "whole e2e suite" if cmds == p.e2e_suite_commands() else "the rest of the whole e2e suite")
+    res = e2e_sharded(p, tid, rnd, cmds, log, cfg, n, what) if cfg and n > 1 else None
     sharded = res is not None
     if sharded:
         res["workers_reason"] = why
     else:
         t0 = time.time()
         res = run_cmds(p, cmds, log, p.env(tid, rnd, e2e=True))
-        if whole:
+        if whole and cmds == p.e2e_suite_commands():  # a part of the suite is not comparable with the whole
             check_trend(p, tid, rnd, res.get("times"))
         if cfg:  # a whole suite in one run: measured as 1, so the copies are kept only when they are faster
             f1, total1, _ = e2e_failures(log)
@@ -2089,6 +2172,9 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     stats: dict[int, list[dict]] = {}
     for r in hist[-30:]:
         stats.setdefault(int(r["workers"]), []).append(r)
+    for k, t in ((p.state.get("e2e_parallel") or {}).get("totals") or {}).items():  # older counts
+        if int(k) not in stats and t.get("tests"):
+            stats[int(k)] = [t]
     ratio = {n: sum(r["flaky"] for r in runs) / max(1, sum(r["tests"] for r in runs)) for n, runs in stats.items()}
     for n in stats:  # more retries than one run has (or the fixed ratio): contention, fewer copies
         if n > 1 and ratio[n] > max(PARALLEL_FLAKY_RATIO, 2 * ratio.get(1, 0)):
@@ -2211,13 +2297,25 @@ def pw_split(cmd: str) -> tuple[str | None, str]:
 def e2e_parallel_record(p: Project, n: int, seconds: float, tests: int, flaky: int, failed: int) -> None:
     st = p.state.setdefault("e2e_parallel", {})
     runs = st.setdefault("runs", [])
+    if "totals" not in st:  # started from the recent runs kept before the totals existed
+        for r in runs:
+            t = st.setdefault("totals", {}).setdefault(str(r["workers"]), {"workers": int(r["workers"]), "seconds": 0,
+                                                                           "tests": 0, "flaky": 0, "runs": 0})
+            t.update(seconds=t["seconds"] + int(r.get("seconds") or 0), tests=t["tests"] + int(r.get("tests") or 0),
+                     flaky=t["flaky"] + int(r.get("flaky") or 0), runs=t["runs"] + 1)
     runs.append({"workers": n, "seconds": round(seconds), "tests": tests, "flaky": flaky, "failed": failed,
                  "at": now()})
     del runs[:-30]
+    # every count ever measured, beyond the 30 recent runs: without it a slower count dropped out of them and
+    # was tried again (3 copies, 3 minutes slower and 5 tests failing only there, after 30 runs of 1)
+    t = st.setdefault("totals", {}).setdefault(str(n), {"workers": n, "seconds": 0, "tests": 0, "flaky": 0, "runs": 0})
+    t.update(seconds=t["seconds"] + round(seconds), tests=t["tests"] + tests, flaky=t["flaky"] + flaky,
+             runs=t["runs"] + 1, at=now())
     p.save_state()
 
 
-def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg: dict, n: int) -> dict | None:
+def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg: dict, n: int,
+                what: str = "whole e2e suite") -> dict | None:
     """Run the whole suite in n shards. None when the copies of staging cannot be started (the caller runs it
     the usual way). The log gets every shard's output and one summary in the Playwright format."""
     if not all(pw_tail(c) for c in cmds) or not shard_cmds(cfg, 1):
@@ -2256,7 +2354,7 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
     if not free_slots(cfg, n):
         progress(p, f"⚠ {tid} r{rnd}: no free ports for {n} parallel copies of staging - the suite runs in one")
         return None
-    progress(p, f"⚡ {tid} r{rnd}: whole e2e suite in {n} parallel shards")
+    progress(p, f"⚡ {tid} r{rnd}: {what} in {n} parallel shards")
     ok = up(1)  # the first one alone: it may build images the others reuse
     if ok:
         started.append(1)
@@ -4170,6 +4268,14 @@ def cmd_step(p: Project, a) -> None:
         else:
             st.pop("full_e2e_due", None)
         gates_ok = all(g["ok"] for g in gates.values())
+        # what this check ran on this code: the whole suite after Security leaves it out (Security and the UI
+        # review change no file). T-054 ran 1592 affected tests here and the same 1592 again in the whole suite.
+        st.pop("e2e_covered", None)
+        if (gates_ok and gates["e2e"].get("scope") == "task" and "e2e_affected" in gates
+                and p.config.get("e2e_whole_skip_covered", True) is not False):
+            tree = worktree_tree(p)
+            if tree:
+                st["e2e_covered"] = {"round": rnd, "tree": tree, "specs": sorted(affected), "grep": f"{tid}|@smoke"}
         st["checkpoint"] = checkpoint(p, tid, f"qa r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
         extra += [f"- Adapted test file from an earlier task: {x}" for x in adapted_used]
@@ -4224,7 +4330,16 @@ def cmd_step(p: Project, a) -> None:
             if g.get("ok"):
                 g = {**g, "rerun_of_failed": True}
         else:
-            g = e2e_run(p, tid, rnd, p.e2e_suite_commands(), "e2e", whole=True)
+            cmds, cov = p.e2e_suite_commands(), st.get("e2e_covered") or {}
+            if cov.get("round") == rnd and cov.get("tree") and cov["tree"] == worktree_tree(p):
+                rest = p.e2e_uncovered_commands(cov.get("specs") or [], cov.get("grep") or f"{tid}|@smoke")
+                if rest is not None:
+                    progress(p, f"⚡ {tid} r{rnd}: the whole e2e suite without the {len(cov.get('specs') or [])} spec "
+                                f"file(s) that passed in QA's check on the same code")
+                    cmds = rest
+            g = e2e_run(p, tid, rnd, cmds, "e2e", whole=True) if cmds else \
+                {"ok": True, "skipped": True, "note": "every spec file passed in QA's check on the same code"}
+        st.pop("e2e_covered", None)
         st.pop("full_e2e_due", None)
         st["full_e2e_failed"] = not g["ok"]
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
@@ -4907,6 +5022,9 @@ SHORT_EVENT = [
     (r"⚡ (T-\d+ r\d+): (\d+) of (\d+) e2e spec files are likely affected.*", r"⚡ \1: whole e2e (\2/\3 affected)"),
     (r"⚡ (T-\d+ r\d+): the task's own e2e tests failed.*", r"⚡ \1: own e2e failed, whole suite waits"),
     (r"⚡ (T-\d+ r\d+): whole e2e suite in (\d+) parallel shards", r"⚡ \1: whole e2e in \2 shards"),
+    (r"⚡ (T-\d+ r\d+): the affected e2e specs in (\d+) parallel shards", r"⚡ \1: affected e2e in \2 shards"),
+    (r"⚡ (T-\d+ r\d+): the rest of the whole e2e suite in (\d+) parallel shards", r"⚡ \1: rest of whole e2e in \2 shards"),
+    (r"⚡ (T-\d+ r\d+): the whole e2e suite without the (\d+) spec file.*", r"⚡ \1: whole e2e minus \2 specs passed in QA"),
     (r"🧽 (\d+) small improvement\(s\) from (.+?) noted for the polish task", r"🧽 \1 for polish (\2)"),
     (r"↻ (T-\d+ r\d+) (\S+): (\d+) of (\d+) failed in (\d+) parallel copies.*", r"↻ \1 \2: \3/\4 failed, rerun"),
     (r"↻ (T-\d+ r\d+) (\S+): the run crashed.*", r"↻ \1 \2: crashed, rerun"),
