@@ -478,6 +478,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.8** - Every agent of the build is told that the user request the harness relays to it is the message that
+  started or restarted the build, addressed to the orchestrator, and not an instruction for its work. A build
+  relaunched in the turn of "stop it now" had Dev stop at once and block its task. The build skill says not to
+  relaunch an older workflow in the turn of such a message.
 - **1.9.7** - Dev runs only the tests of what it changed (filtered to those classes or files), not the whole `test`
   commands: the whole unit suite runs anyway in the check after QA of the same round. A whole command only when the
   change touches what most of its tests stand on (domain rules, a migration or the database model, the shared test

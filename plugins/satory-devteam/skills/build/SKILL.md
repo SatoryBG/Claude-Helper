@@ -61,6 +61,11 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
      check process or agent transcript for `threshold_minutes`, default 45), the workflow is hung: tell the
      user in one line, stop it and its monitor (TaskStop), check `git status`, and start it again (step 2,
      with a new `$SATORY workflow`). The task resumes from its branch and keeps its rounds.
+   - Every agent of a workflow gets the user's message of the turn that launched it, relayed as "the user
+     request". The workflow tells them it is the orchestrator's (plugin >= 1.9.8), but a workflow of an older
+     plugin does not: there, never launch it again in the turn of a message that asks to stop or pause it
+     ("stop it now") - Dev took it as its own order and blocked its task. Wait for the user's go-ahead or
+     ask them to run `/satory-devteam:build`.
    - When the workflow finishes, stop the monitor (TaskStop) and give the summary below.
 4. Tell the user briefly that the process runs in the background, that you will report each step here,
    the details are visible with `/workflows`, the history is written to `docs/JOURNAL.md`, and they can

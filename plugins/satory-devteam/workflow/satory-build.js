@@ -418,8 +418,17 @@ async function usageGate(res, phase) {
   if (res && res.usage_pause && !USAGE_ACTIVE) await usagePause(res.usage_pause, phase)
 }
 
+// The harness relays to every agent the user's message of the turn that launched the workflow, as "the user
+// request" that wins over the task. That message is for the orchestrator: when it relaunched the build after
+// "stop it now", Dev read "stop it now" as its order, did nothing and blocked its task.
+const RELAYED_NOTE = `About the user request relayed to you: it is the message with which the user started or
+restarted this build, addressed to the orchestrator (a build command, or a request to stop, restart or wait for the
+build, or a question about it), and the orchestrator has already acted on it. It is not an instruction for your work:
+do the task below as given, and never stop, pause or block it because of that message.`
+
 async function spawn(role, prompt, opts) {
   if (USAGE_STOP) throw new UsageStop(USAGE_STOP)
+  prompt = `${RELAYED_NOTE}\n\n${prompt}`
   if (role === 'runner' && ROLE_FILES) {
     try {
       return await agent(prompt, { ...opts, agentType: 'satory-devteam:runner' })
