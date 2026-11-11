@@ -981,7 +981,9 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     contention = sharded and failed > limit
     if not failed or not total or (failed > limit and not contention) or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
-        record(0)
+        # too many failures in the copies to run them again by name (tests that did not run): contention all the
+        # same, so the next runs use fewer copies
+        record(failed if contention else 0)
         return res
     rlog = p.logs / f"{tid}-r{rnd}-{name}-retry.log"
     if contention:
@@ -2260,10 +2262,10 @@ def meminfo_gb(key: str = "MemAvailable") -> float | None:
 def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     """How many shards to run, with the reason. A number in "workers" is used as it is. "auto": a ceiling from
     the machine - half of the CPUs (a shard keeps more than one core busy: the browser, the app, the test
-    runner; more makes timing-dependent tests fail) and the free memory - and within it the best measured run:
-    the fewest seconds per test among runs with no sign of contention, trying two more shards while that is
-    untried. A count whose run had more tests passing only on the retry than PARALLEL_FLAKY_RATIO lowers the
-    ceiling below it."""
+    runner; more makes timing-dependent tests fail) and the free memory. The first runs start high and go
+    down: the ceiling, then a third of the CPUs; after that the fastest measured count (seconds per test), and
+    one fewer while the fastest is also the fewest tried. A count whose run had more tests passing only on the
+    retry (or failing in a run too broken to retry) than PARALLEL_FLAKY_RATIO lowers the ceiling below it."""
     w = cfg.get("workers")
     if isinstance(w, int) and not isinstance(w, bool):
         return max(1, w), "set in e2e_parallel.workers"
@@ -2289,15 +2291,16 @@ def e2e_workers(p: Project, cfg: dict) -> tuple[int, str]:
     cap = max(1, cap)
     clean = {n: sum(r["seconds"] for r in runs) / max(1, sum(r["tests"] for r in runs))
              for n, runs in stats.items() if n <= cap}
-    if not clean:
-        start = min(cap, max(2, cpus // 4))
-        return start, f"first measured run: {start} of at most {cap} (CPUs {cpus}, free memory {mem or 0:.0f} GB)"
-    if 1 not in stats:  # the copies are kept only when they beat one run: measure that once
-        return 1, "one run, once, to compare the parallel copies with"
+    machine = f"CPUs {cpus}, free memory {mem or 0:.0f} GB"
+    if not clean:  # start high: the most the machine allows
+        return cap, f"first measured run: {cap}, the most the machine allows ({machine})"
+    third = min(cap, max(1, cpus // 3))
+    if third not in stats:  # then a third of the CPUs, to compare
+        return third, f"second measured run: {third} (a third of the CPUs), at most {cap}"
     best = min(clean, key=clean.get)
-    up = min(cap, best + 2)
-    if up > best and up not in stats and not any(m > best for m in stats):  # more were slower: no more tries
-        return up, f"trying {up}: {best} was the fastest so far ({clean[best]:.2f} s per test), at most {cap}"
+    down = best - 1
+    if down >= 1 and down not in stats and best == min(clean):  # fewer were faster so far: one fewer
+        return down, f"trying {down}: {best} was the fastest so far ({clean[best]:.2f} s per test), at most {cap}"
     return best, f"{best} is the fastest measured ({clean[best]:.2f} s per test), at most {cap}"
 
 
@@ -2496,10 +2499,10 @@ def e2e_sharded(p: Project, tid: str, rnd: int, cmds: list[str], log: Path, cfg:
             return
         env = dict(base_env, **shard_vars(cfg, i))
         env.update({k: shard_fill(v, shard_vars(cfg, i), i) for k, v in cfg["env"].items()})
-        # Playwright runs its own workers in each shard: together they stay what one run uses (half of the
-        # CPUs by default), divided between the shards - more browsers than cores only makes tests time out
-        per = "" if re.search(r"\s(--workers|-j)[=\s]", " ".join(cmds)) else \
-            f"--workers={max(1, int(cfg.get('pw_workers') or max(1, (os.cpu_count() or 2) // 2)) // n)} "
+        # one Playwright worker in each copy: the tests of a copy share its one database and run one after
+        # another; the copies are the parallelism (1.7.9 divided half of the CPUs between the copies, which gave
+        # a copy 4 workers on one database with 16 CPUs and 2 copies)
+        per = "" if re.search(r"\s(--workers|-j)[=\s]", " ".join(cmds)) else "--workers=1 "
         own = [f"{pw_files(c, rest) if pinned and rest else c} {per}--shard={i}/{n} "
                f"--output={shlex.quote(f'test-results/shard-{i}')}" for c in cmds]
         res[i] = run_cmds(p, own, logs[i], env)

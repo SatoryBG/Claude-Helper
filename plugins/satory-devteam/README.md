@@ -289,10 +289,12 @@ staging itself, so those run there, beside the copies, and the copies share the 
 - `"workers": "auto"` chooses N: at most half of the CPUs (a shard keeps more than one core busy - the
   browser, the app, the test runner - and an overloaded machine makes timing-dependent tests fail) and
   what the free memory allows (`memory_gb` per shard; by default what the running staging uses, from
-  `docker stats`, plus 0.7 GB for the browser, at least 1.5); `max` lowers it. The first run uses a
-  quarter of the CPUs (at least 2). After that the fastest measured count (seconds per test) is kept, and
-  two more are tried while untried. A count whose run had more than 0.2 % of the tests passing only on
-  the retry lowers the ceiling below it. The choice uses the 30 latest runs and, for a count none of them
+  `docker stats`, plus 0.7 GB for the browser, at least 1.5); `max` lowers it. The measuring starts high
+  and goes down: the first run uses that ceiling, the second a third of the CPUs; after that the fastest
+  measured count (seconds per test) is kept, and one fewer is tried while the fastest is also the fewest
+  tried. A count whose run had more than 0.2 % of the tests passing only on the retry (or failing in a run
+  with too many failures to run them again) lowers the ceiling below it. Each copy runs Playwright with one
+  worker (`--workers=1`, unless the e2e command sets its own): the tests of a copy share its database. The choice uses the 30 latest runs and, for a count none of them
   used, the totals of every run with it, so a count measured slower is not tried again once it has dropped
   out of the latest 30. A number in `workers` is used as it is. `satory parallel` shows
   the choice, the reason and the measured runs; the status line shows a sharded run as `🧪 e2e … ⚡N`.
@@ -485,6 +487,15 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.13** - Each parallel e2e copy runs Playwright with one worker again. 1.7.9 divided half of the CPUs
+  between the copies (`--workers=cpus/2/N`), which only gave one worker when there were as many copies as half
+  of the CPUs: with fewer copies several workers shared one copy's database and reset it under each other (in
+  financials-helper, 16 CPUs and 2 copies: 4 workers per copy, 300-900 of 3,500 tests failing with 404s and
+  duplicates, never on the retry one after another). The copies are the parallelism, as the section on the
+  parallel suite describes; `pw_workers` is gone. The measuring of the copy count starts high and goes down:
+  half of the CPUs (or what the memory allows), then a third, then one fewer while fewer is faster - instead of
+  a quarter, one run as a baseline and two more upwards. A run with too many failures to run them again by name
+  counts as contention, so the next runs use fewer copies.
 - **1.9.12** - A request in the queue is neither planned twice nor dropped. The planner no longer sees the answered
   questions whose tasks a waiting queued change brings (a request queued while a task ran), and a queued change
   drops its tasks as already planned only when a task of the plan names the question - not when the question was
