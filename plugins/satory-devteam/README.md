@@ -485,6 +485,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.12** - A request in the queue is neither planned twice nor dropped. The planner no longer sees the answered
+  questions whose tasks a waiting queued change brings (a request queued while a task ran), and a queued change
+  drops its tasks as already planned only when a task of the plan names the question - not when the question was
+  closed without a task. A request that waited on a merge conflict had its question closed by the planner, and the
+  queue then dropped both of its tasks without a word.
 - **1.9.11** - Setup no longer writes a refresh into an existing status line on its own (1.9.10 did): an existing
   `refreshInterval` is kept, and a satory line without one gets an offer of the default 5 minutes, written only on
   yes. Claude Code has no default timer and a plugin cannot set one (a plugin's `settings.json` takes only `agent`

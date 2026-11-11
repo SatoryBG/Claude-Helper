@@ -1283,6 +1283,9 @@ def cmd_question(p: Project, a) -> None:
         if bad:
             raise SatoryError(f"unknown status {', '.join(bad)} (known: {', '.join(Q_STATUSES)})")
         items = [q for q in reg["items"] if not wanted or q["status"] in wanted]
+        if wanted == ["answered"]:  # what the planner turns into tasks: not the answers a queued change plans
+            queued = queued_question_ids(p)
+            items = [q for q in items if q["id"] not in queued]
         if a.open:  # a flaky test that passed cleanly since it failed is not asked about
             items = [q for q in items if not flaky_watching(q)]
         if not a.full:
@@ -3008,6 +3011,17 @@ def queue_dir(p: Project) -> Path:
     return p.run / "queue"
 
 
+def queued_question_ids(p: Project) -> set[str]:
+    """The questions whose tasks a waiting queued change brings (a request recorded and answered by the user,
+    queued while a task ran): the planner must not plan them again or close them as needing no task."""
+    ids: set[str] = set()
+    for f in sorted(queue_dir(p).glob("*.json")) if queue_dir(p).is_dir() else []:
+        data = (load_json(f, {}) or {}).get("data") or {}
+        ids |= {x for t in data.get("tasks", []) for x in t.get("questions", [])}
+        ids |= {x for up in data.get("updates", []) for x in up.get("questions_add", [])}
+    return ids
+
+
 def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     """On a clean main: merge the item's branch (documents), then apply its plan change."""
     data, branch = item.get("data") or {}, item.get("branch")
@@ -3018,7 +3032,9 @@ def queue_apply_one(p: Project, item: dict, name: str) -> dict:
     # "planned" counts only when a task of the plan names the question - marked so by hand before the change was
     # applied, it would drop the tasks without a word
     linked = {x for t in p.plan().get("tasks", []) for x in (t.get("questions") or [])}
-    done = lambda q: q["status"] == "resolved" or (q["status"] == "planned" and q["id"] in linked)
+    # "resolved" alone does not count: a planner that ran while the change waited (a merge conflict) closed the
+    # request as needing no task, and the change then dropped both of its tasks without a word
+    done = lambda q: q["status"] == "planned" and q["id"] in linked
     if qids and all(any(q["id"] == x and done(q) for q in reg["items"]) for x in qids):
         data = {"links": data["links"]} if data.get("links") else {}
     res = {"file": name, "branch": branch, "merged": False, "added": [], "updated": [], "resolved": []}
