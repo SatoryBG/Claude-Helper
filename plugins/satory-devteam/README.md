@@ -78,7 +78,8 @@ a round ends with its verdict, a task is done or blocked, new questions, plan an
   and for how long - the stage agents, else the CLI step they wait on (⚙), or the planner or a milestone
   review between tasks (`Planning: plan 81 answer(s) 4m`) - the last event, how far a running e2e check is, the acceptance criteria with a test of all of them and the number of tests from the coverage
   register, open questions, queued changes). `/satory-devteam:setup` offers to add it
-  to `~/.claude/settings.json`; outside a satory project it prints nothing. The text is bright cyan;
+  to `~/.claude/settings.json` and refreshes it every 5 minutes by default (also a line added earlier without a
+  refresh, which `satory doctor` notes); outside a satory project it prints nothing. The text is bright cyan;
   `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `97` white, `""` for the terminal's own).
 - `/satory-devteam:status` shows the last events too.
 
@@ -482,6 +483,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.10** - The status line refreshes every 5 minutes by default also when it was added without a refresh (by
+  a version before 1.7.20, or by hand): `/satory-devteam:setup` sets `"refreshInterval": 300` on the satory line
+  without asking, and `satory doctor` notes a satory line without a refresh (new `statusline` field:
+  `satory`, `refresh`). `refresh=0` still turns the timer off.
 - **1.9.9** - A flaky test is forgotten after 5 clean runs in a row: its item disappears from the register with its
   history, so an old glitch does not add up with a new one into "flaky twice" and a needless task
   (`"flaky_clear_after"`, 0 off). One that passed cleanly since it failed is not asked about in the status

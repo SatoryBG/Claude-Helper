@@ -5232,9 +5232,18 @@ def cmd_doctor(a) -> None:
             if not github["git_credentials"]:
                 problem("git does not use the gh credentials", "gh auth setup-git")
 
+    line = load_json(Path.home() / ".claude" / "settings.json", {}).get("statusLine")
+    line = line if isinstance(line, dict) else {}
+    statusline = {"satory": "statusline" in str(line.get("command", "")) and "satory" in str(line.get("command", "")),
+                  "refresh": line.get("refreshInterval")}
+    if statusline["satory"] and not statusline["refresh"]:
+        notes.append("the satory status line has no refreshInterval, so it changes only with a new message - "
+                     f"the default is 5 minutes ({setup})")
+
     emit({"ok": not problems, "problems": problems, "notes": notes, "tools": found,
           "git_identity": ident if ident["email"] else None, "docker_running": docker_ok,
-          "playwright_browsers": browsers, "github": github, "python": sys.version.split()[0]})
+          "playwright_browsers": browsers, "github": github, "statusline": statusline,
+          "python": sys.version.split()[0]})
 
 
 # ------------------------------------------------------------------- main ---

@@ -56,10 +56,13 @@ It runs the installed version (from `~/.claude/plugins/installed_plugins.json`),
 plugin updates. It shows from the next prompt on.
 
 The line is refreshed every 5 minutes also while the session is idle (`refreshInterval` in seconds: a build runs
-in the background and sends no messages for long stretches). `refresh=<minutes>` in the arguments sets another
-period (`refresh=2` -> `"refreshInterval": 120`), and `refresh=0` turns the timer off (no `refreshInterval`: the
-line then changes only with a new message). Apply it also when the user keeps their own `statusLine`: set or
-remove only `refreshInterval` there, and when nothing else needs doing, only that.
+in the background and sends no messages for long stretches). **5 minutes is the default:** when the satory line is
+already there (`statusline.satory` in doctor) but has no `refreshInterval` (`statusline.refresh` is empty), set
+`"refreshInterval": 300` without asking and say so in one line; only the other keys of the file stay as they are.
+`refresh=<minutes>` in the arguments sets another period (`refresh=2` -> `"refreshInterval": 120`), and `refresh=0`
+turns the timer off (no `refreshInterval`: the line then changes only with a new message; a later setup without
+`refresh=` sets the default again). Apply it also when the user keeps their own `statusLine`: set or remove only
+`refreshInterval` there, and when nothing else needs doing, only that.
 
 ## 6. Finish
 Run `$SATORY doctor` again and show the result. If everything is fine, the next step is
