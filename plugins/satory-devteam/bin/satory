@@ -5238,7 +5238,7 @@ def cmd_doctor(a) -> None:
                   "refresh": line.get("refreshInterval")}
     if statusline["satory"] and not statusline["refresh"]:
         notes.append("the satory status line has no refreshInterval, so it changes only with a new message - "
-                     f"the default is 5 minutes ({setup})")
+                     f"{setup} offers the default 5 minutes")
 
     emit({"ok": not problems, "problems": problems, "notes": notes, "tools": found,
           "git_identity": ident if ident["email"] else None, "docker_running": docker_ok,

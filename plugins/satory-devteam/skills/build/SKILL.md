@@ -71,7 +71,8 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    the details are visible with `/workflows`, the history is written to `docs/JOURNAL.md`, and they can
    keep working. If `$SATORY statusline` is not in their Claude Code status line yet, mention that
    `/satory-devteam:setup` can add it (a line like `satory 29/41 · ▶ T-014 r3 · … · ❓3`); if it is there without
-   a refresh (`statusline.refresh` empty in doctor), mention that `/satory-devteam:setup` sets the default 5 minutes.
+   a refresh (`statusline.refresh` empty in doctor), mention that it changes only with a new message and that
+   `/satory-devteam:setup` offers the default 5 minutes.
 
 ## 3. When the workflow finishes
 Summarise the result:

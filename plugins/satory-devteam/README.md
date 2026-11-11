@@ -78,8 +78,10 @@ a round ends with its verdict, a task is done or blocked, new questions, plan an
   and for how long - the stage agents, else the CLI step they wait on (⚙), or the planner or a milestone
   review between tasks (`Planning: plan 81 answer(s) 4m`) - the last event, how far a running e2e check is, the acceptance criteria with a test of all of them and the number of tests from the coverage
   register, open questions, queued changes). `/satory-devteam:setup` offers to add it
-  to `~/.claude/settings.json` and refreshes it every 5 minutes by default (also a line added earlier without a
-  refresh, which `satory doctor` notes); outside a satory project it prints nothing. The text is bright cyan;
+  to `~/.claude/settings.json` with a refresh every 5 minutes (`refreshInterval`: 300). Claude Code has no default
+  timer and a plugin cannot set one, so a line without `refreshInterval` changes only with a new message:
+  `satory doctor` notes it and setup offers the 5 minutes; an existing value is kept. Outside a satory project it
+  prints nothing. The text is bright cyan;
   `SATORY_STATUSLINE_COLOR` sets another SGR code (e.g. `97` white, `""` for the terminal's own).
 - `/satory-devteam:status` shows the last events too.
 
@@ -483,6 +485,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.11** - Setup no longer writes a refresh into an existing status line on its own (1.9.10 did): an existing
+  `refreshInterval` is kept, and a satory line without one gets an offer of the default 5 minutes, written only on
+  yes. Claude Code has no default timer and a plugin cannot set one (a plugin's `settings.json` takes only `agent`
+  and `subagentStatusLine`), so the refresh has to be in the user's settings. The `satory doctor` note stays.
 - **1.9.10** - The status line refreshes every 5 minutes by default also when it was added without a refresh (by
   a version before 1.7.20, or by hand): `/satory-devteam:setup` sets `"refreshInterval": 300` on the satory line
   without asking, and `satory doctor` notes a satory line without a refresh (new `statusline` field:
