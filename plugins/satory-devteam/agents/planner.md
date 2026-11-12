@@ -37,6 +37,11 @@ of the affected finished tasks and the code they touch. Do not read `docs/JOURNA
   (e.g. a dashboard task that shows the corrected numbers) - `{"task": "T-013", "add": ["<ref>"]}`.
   Never tasks that are done or in progress.
 - `owner`: `dev` (or `devops` for infrastructure only); `ui`: true when the task changes the UI.
+- **A `verify` item** (the user checked an external system): "It works" confirms the built behaviour -
+  `resolved`, and the task's mark "unconfirmed against the real system" is removed by the next task that
+  touches it (no task of its own). "It fails" with what the user saw is a fix task ahead of the work that
+  uses it: the code, the fake of the external system in the tests (QA) and the documentation change
+  together to the variant the failure points to, named in the `description` with the user's result.
 - **A flaky test planned automatically** (title "Flaky … test", answer "Plan it (automatically …)"): a
   subtask that makes it stable. Its `description` names the test and its file, says that QA finds why
   it fails now and then and makes it wait for the state it checks (listed in "QA: adapted tests" with

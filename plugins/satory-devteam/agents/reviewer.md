@@ -53,7 +53,11 @@ the tables of contents of the documents with line numbers (read them by section)
    constants or configuration defined once.
 10. **UI code** (if `docs/UI.md` exists): shared components and design tokens are used instead of ad-hoc
    styles and duplicated markup. The visual result is checked by the UI reviewer, not by you.
-11. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
+11. **External systems**: what the code sends to and expects from an external system (a vendor API, a local
+   app) has its evidence in the mini-spec - the vendor's example, a probe against the real system, or the
+   mark "unconfirmed against the real system" with a verification for the user (Dev's rule on external
+   systems). Behaviour taken from an unclear or contradictory document without either is `major`.
+12. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 
 ## Severity

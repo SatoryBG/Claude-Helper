@@ -1036,7 +1036,7 @@ def test_names(p: Project, tid: str = "", rnd: int = 0, cache: bool = False) -> 
 # whenever it suits them. While a task runs, the register lives in a gitignored working copy; it is
 # written to .satory/questions.json and docs/QUESTIONS.md on main together with the journal.
 
-Q_KINDS = ("question", "decision", "fix", "test", "request")
+Q_KINDS = ("question", "decision", "fix", "test", "request", "verify")  # verify: the user checks an external system
 Q_SEVERITIES = ("critical", "major", "minor")
 Q_STATUSES = ("open", "deferred", "answered", "dismissed", "planned", "resolved")  # deferred: "Later", not counted
 Q_BRIEF = ("id", "kind", "severity", "status", "title", "task", "from_task")

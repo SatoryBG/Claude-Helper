@@ -111,6 +111,7 @@ const DEV_SCHEMA = {
       items: { type: 'object', properties: { id: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'reason'] },
     },
     assumptions: { ...GAP_ITEMS, description: 'New in this round: product behaviour the SPEC does not define and you chose yourself, for the user to confirm later (does not stop the task)' },
+    verifications: { ...GAP_ITEMS, description: 'New in this round: behaviour of an external system you could not check without a person (your rule on external systems). detail: the exact steps for the user, the result that confirms it and the error that refutes it, the other variants; options: the outcomes, the confirming one first (does not stop the task)' },
   },
   required: ['summary', 'changes', 'mini_spec_updated', 'disputes', 'blocked_question'],
 }
@@ -1318,6 +1319,7 @@ async function runTask(t) {
       if (!dev) return block(t, round, `The ${role} agent returned no result in round ${round}.`)
       if (dev.blocked_question.trim()) return block(t, round, `Question from ${role}: ${dev.blocked_question.trim()}`)
       known = withAdded(known, await addQuestions(dev.assumptions, 'decision', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
+      known = withAdded(known, await addQuestions(dev.verifications, 'verify', `${role} ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Dev' }))
       if ((dev.finding_disputes || []).length) {
         try {
           const d = await sh(`finding dispute ${t.id} --round ${round}`, { phase: 'Dev', label: `disputes ${tag}`, note: JSON.stringify(dev.finding_disputes) })

@@ -165,6 +165,13 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    and how you got past them, and what is still open. The next round starts from it (the digest lists
    it), so it does not have to rediscover the code. It is not committed and never replaces "QA: coverage".
 
+11. **A fake of an external system** (a stub of a vendor API, a local signing app, a mail or identity
+   provider) implements what the real system does as Dev's mini-spec states it with its evidence - the
+   checks it applies, the error codes and texts it answers - and refuses the wrong variants the way the real
+   system does (a test that the wrong form is refused belongs to the task). Mark in the fake where its
+   behaviour comes from: the evidence, or "unconfirmed against the real system" with the verification
+   id, so that a later answer that the real system differs changes the fake together with the code.
+
 ## SPEC gaps
 When testing shows behaviour the SPEC does not define and that can make the data wrong (an edit after
 records exist, a record that contradicts another one, a value that is surely a typo), test what the

@@ -487,6 +487,19 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.14** - External systems are checked against the real thing, not only their documentation. When a
+  vendor's documentation is unclear or contradicts itself, Dev first looks for decisive evidence (sample code,
+  SDK, release notes, the installed software: its local API, logs and own code), then tests the variants
+  automatically with a probe against a local install, sandbox or test account (never production, never anything
+  that waits for a person). Only what needs a person (a card, a PIN, the user's account) becomes a new question
+  kind `verify`: exact 2-3 minute steps with the confirming and the refuting result, asked as "It works" / "It
+  fails" - never "which reading is right", which the user cannot know either. The mini-spec records the evidence
+  or the mark "unconfirmed against the real system"; QA's fake of the system implements the same behaviour,
+  refuses the wrong variants like the real one and carries the same mark; the Reviewer flags external behaviour
+  without evidence; the planner resolves "It works" and plans "It fails" as one fix of the code, the fake and the
+  docs. (In AGC-Documents-Signing the site signature for B-Trust BISS followed the example of the vendor
+  specification, whose text says otherwise; a fake built from the same reading passed every test and the real
+  BISS refused it ten days later.) Opt-out: `"verify_external": false` in `.satory/project.json`.
 - **1.9.13** - Each parallel e2e copy runs Playwright with one worker again. 1.7.9 divided half of the CPUs
   between the copies (`--workers=cpus/2/N`), which only gave one worker when there were as many copies as half
   of the CPUs: with fewer copies several workers shared one copy's database and reset it under each other (in

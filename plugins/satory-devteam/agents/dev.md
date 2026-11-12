@@ -116,6 +116,28 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
      place that already computes it (rule 9) - an equality of records, a label like „name · account“, a
      calculation of the domain. Two places that must give the same answer call one function.
    Say in your summary which existing functions you reused for the new rules.
+14. **The behaviour of an external system** (a vendor API, a local signing or printing app, a payment or
+   identity provider, a device): what the code sends and expects must be what the real system does, not only
+   what its documentation says - a fake built from the same reading of the document only confirms that
+   reading (a site signature built from the example of a vendor specification passed every test and was
+   refused by the real app ten days later: the text and its example said two different things).
+   - **Evidence first.** When the documentation is unclear or contradicts itself (the text and its example
+     differ, a field is described two ways, a version changed it), look for decisive evidence yourself: the
+     vendor's sample code or SDK, its release notes, and the real software when it is installed on or
+     reachable from this machine - its local API, its logs and messages, its own code (scripts, bytecode
+     with `javap`) where its licence allows reading it.
+   - **Test the variants automatically** when it needs no person: a small probe (under
+     `.satory/run/probes/<ID>/`, not committed) that sends each variant to the real system and records which
+     one it accepts - an error code that names the cause is enough. Only a local install, a sandbox or a test
+     account, never a production system or real users' data, and nothing that waits for a person (a PIN, a
+     physical card, a confirmation dialog, a payment).
+   - Build the variant the evidence shows and write the evidence into the mini-spec (where, what it showed).
+   - **Only when no variant can be checked without a person**, build the most likely one and return a
+     `verifications` item for the user: the exact steps (2-3 minutes, on their staging or their machine),
+     the result that confirms it, the result (the error text) that refutes it, and the other variants. It
+     does not stop the task. In the mini-spec and in a comment at the code, mark the behaviour "unconfirmed
+     against the real system" with the reason, so QA's fake carries the same mark.
+   `"verify_external": false` in `.satory/project.json` turns this rule off (no probes, no `verifications`).
 
 ## User interface work
 When the task adds or changes UI and `docs/UI.md` exists:

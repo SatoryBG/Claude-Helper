@@ -73,14 +73,17 @@ Talk to the user in the language they write in.
 5. **Questions for the user** (when the user chose them; they never stop the work, the user answers when
    it suits them).
    `$SATORY question list --open` returns them: `question` (the SPEC does not define it), `decision` (Dev
-   chose, confirm it), `fix` (defined but not enforced), `test` (not covered by a test), from Dev, the
-   Reviewer, QA and the milestone reviews. The user may also pick only the critical ones.
+   chose, confirm it), `fix` (defined but not enforced), `test` (not covered by a test), `verify` (a check of
+   an external system that needs the user: a card, a PIN, their account - Dev could not test it
+   automatically), from Dev, the Reviewer, QA and the milestone reviews. The user may also pick only the critical ones.
    - Items that ask the same thing (another wording or language, from different agents) are asked once:
      say which ids they are and record the same answer for each.
    - Go from critical to minor. For each, show the title, the concrete scenario from `detail` and the
      refs in a few lines, then ask with AskUserQuestion: the `options` (the first is recommended), plus
      "Later" (postponed) and "Not needed" (dismissed). For `fix`/`test`: "Plan it" / "Later" /
-     "Not needed". Up to 4 questions per AskUserQuestion call.
+     "Not needed". For `verify`: show the steps from `detail` as a short numbered list, then "It works" /
+     "It fails" (record what the user saw: the error text or the screen) / "Later"; it is not a question
+     of reading the documentation, so never ask the user which variant is right. Up to 4 questions per AskUserQuestion call.
    - Record each answer (the option or the user's own text, with a short reason if they gave one):
      ```bash
      $SATORY question answer Q-00X --note-stdin <<'SATORY_EOF'
