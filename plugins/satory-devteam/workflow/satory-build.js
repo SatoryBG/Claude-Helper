@@ -62,13 +62,17 @@ const RUN_SCHEMA = {
   required: ['exit_code', 'stdout'],
 }
 // Questions for the user that never stop the workflow (see `satory question`)
+// The texts for people (findings, questions, task titles) are in the project's documentation language, written
+// as that language is written: a finding titled "Fokusat se gubi" (Bulgarian in Latin letters) is unreadable
+// for its reader. Any language, in its own alphabet and spelling, never transliterated into another one.
+const IN_LANG = 'in the documentation language (given in your task), in its own alphabet and spelling - never transliterated into another alphabet'
 const GAP_ITEMS = {
   type: 'array',
   items: {
     type: 'object',
     properties: {
       severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
-      title: { type: 'string', description: 'One line, in the documentation language' },
+      title: { type: 'string', description: `One line, ${IN_LANG}` },
       detail: { type: 'string', description: 'What is undefined, what can go wrong with which data, what was done meanwhile' },
       options: { type: 'array', items: { type: 'string' }, description: '2-4 possible answers, the recommended one first' },
       refs: { type: 'array', items: { type: 'string' }, description: 'R-/AC- ids, files' },
@@ -126,8 +130,8 @@ const REVIEW_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
-          title: { type: 'string', description: 'One short line' },
-          file: { type: 'string' }, line: { type: 'integer' }, issue: { type: 'string' }, fix: { type: 'string' },
+          title: { type: 'string', description: `One short line, ${IN_LANG}` },
+          file: { type: 'string' }, line: { type: 'integer' }, issue: { type: 'string', description: IN_LANG }, fix: { type: 'string', description: IN_LANG },
         },
         required: ['severity', 'file', 'issue', 'fix'],
       },
@@ -158,7 +162,7 @@ const QA_SCHEMA = {
       description: 'New defects from the exploratory testing or an incomplete mini-spec - not the open findings listed in your task (verify those in `verified`)',
       items: {
         type: 'object',
-        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, title: { type: 'string', description: 'One short line' }, description: { type: 'string' }, repro: { type: 'string' } },
+        properties: { severity: { type: 'string', enum: ['blocker', 'major', 'minor'] }, title: { type: 'string', description: `One short line, ${IN_LANG}` }, description: { type: 'string' }, repro: { type: 'string' } },
         required: ['severity', 'description'],
       },
     },
@@ -179,9 +183,9 @@ const UI_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
-          title: { type: 'string', description: 'One short line' },
+          title: { type: 'string', description: `One short line, ${IN_LANG}` },
           page: { type: 'string' }, viewport: { type: 'string' }, screenshot: { type: 'string' },
-          issue: { type: 'string' }, fix: { type: 'string' },
+          issue: { type: 'string', description: IN_LANG }, fix: { type: 'string', description: IN_LANG },
         },
         required: ['severity', 'page', 'issue', 'fix'],
       },
@@ -203,9 +207,9 @@ const SEC_SCHEMA = {
         type: 'object',
         properties: {
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
-          title: { type: 'string', description: 'One short line' },
+          title: { type: 'string', description: `One short line, ${IN_LANG}` },
           category: { type: 'string' }, file: { type: 'string' }, line: { type: 'integer' },
-          issue: { type: 'string' }, attack: { type: 'string' }, fix: { type: 'string' },
+          issue: { type: 'string', description: IN_LANG }, attack: { type: 'string' }, fix: { type: 'string', description: IN_LANG },
         },
         required: ['severity', 'category', 'file', 'issue', 'fix'],
       },
@@ -237,7 +241,7 @@ const HEALTH_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string' },
-    title: { type: 'string', description: 'The title of the refactoring task, in the documentation language' },
+    title: { type: 'string', description: `The title of the refactoring task, ${IN_LANG}` },
     items: {
       type: 'array',
       items: {
@@ -257,7 +261,7 @@ const UX_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string' },
-    title: { type: 'string', description: 'The title of the improvement task, in the documentation language' },
+    title: { type: 'string', description: `The title of the improvement task, ${IN_LANG}` },
     items: {
       type: 'array',
       items: {
@@ -733,7 +737,7 @@ function context(t, start) {
     `Context digest: .satory/run/context/${t.id}.md (rewritten by satory whenever the work changes) - read it first: the full text of the task's requirements, the tables of contents of the documents with line numbers (read them by section), the ADRs and mockups it names, the files changed so far, the notes from earlier rounds, the findings of the task and the last results of the automatic checks. The documents stay the source of truth; if the file is missing, read them directly.`,
     `Git branch: ${start.branch}; task base: ${start.base}`,
     `satory CLI: ${BIN}`,
-    `Documentation language: ${LANG} - write the task file and every question for the user (titles, details, options) in it`,
+    `Documentation language: ${LANG} - write the task file, your findings (titles, issues, fixes) and every question for the user (titles, details, options) in it, in its own alphabet and spelling, never transliterated into another alphabet; identifiers, code and quoted texts stay as they are`,
   ].join('\n')
 }
 

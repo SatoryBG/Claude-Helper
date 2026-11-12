@@ -487,6 +487,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.15** - Findings are written in the project's documentation language as that language is written. The
+  titles, issues and fixes of the Reviewer, QA, the UI reviewer and Security, the questions and the titles of the
+  planned tasks are in the documentation language - any language - in its own alphabet and spelling, never
+  transliterated into another one (in AGC-Documents-Signing the UI reviewer wrote Bulgarian findings in Latin
+  letters, "Fokusat se gubi..."). Identifiers, code and quoted texts stay as they are. Always on: it only states
+  what the documentation language means.
 - **1.9.14** - External systems are checked against the real thing, not only their documentation. When a
   vendor's documentation is unclear or contradicts itself, Dev first looks for decisive evidence (sample code,
   SDK, release notes, the installed software: its local API, logs and own code), then tests the variants
