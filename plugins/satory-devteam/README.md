@@ -487,6 +487,16 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.16** - The rerun of e2e tests that an overloaded machine made time out really runs them one after
+  another. It said "one after another" but kept the parallelism of the e2e command: the copies' rerun used
+  Playwright's default workers, and in one copy the rerun was the same command with `--last-failed`, so an
+  explicit `--workers=14` overloaded the rerun as well. Now the rerun drops any `--workers`/`-j` of the command
+  (quoted arguments such as a `--grep` of titles stay as they are) and runs `--workers=1`. Overload is also
+  recognised in one copy: at least 5 failed tests, half or more of the failure reports timeouts. Such a run is
+  rerun one after another even above `e2e_retry_max_percent`, and the tests that then pass are not registered
+  as flaky - the machine was. (In AGC-Documents-Signing, 1 copy x 14 workers on 14 cores made the axe check of
+  a heavy page take 28 s instead of 4 against a 30 s limit: the rerun with 14 workers failed again, a task lost
+  two rounds and was blocked, the next one failed QA four times, and 12 tests went to the register as flaky.)
 - **1.9.15** - Findings are written in the project's documentation language as that language is written. The
   titles, issues and fixes of the Reviewer, QA, the UI reviewer and Security, the questions and the titles of the
   planned tasks are in the documentation language - any language - in its own alphabet and spelling, never

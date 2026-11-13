@@ -801,6 +801,29 @@ def e2e_failures_text(text: str) -> tuple[int, int, list[str]]:
     return counts.get("failed", 0), sum(counts.values()), names
 
 
+# a Playwright worker count in a command: --workers=N, --workers N, -j N, -jN
+PW_WORKERS = re.compile(r"\s(?:--workers(?:=|\s+)\S+|-j\s*\d+)")
+E2E_CONTENTION_MIN = 5  # failed tests in one run, most of them timeouts: the machine was overloaded
+
+
+def pw_serial(cmd: str) -> str:
+    """The Playwright command with one worker: the tests run one after another, whatever --workers the command
+    (or the project's e2e command it came from) sets. Quoted arguments (a --grep of test titles) stay as they are."""
+    masked = re.sub(r'"[^"]*"|\'[^\']*\'', lambda m: "x" * len(m.group(0)), cmd)
+    out, at = [], 0
+    for m in PW_WORKERS.finditer(masked):
+        out.append(cmd[at:m.start()])
+        at = m.end()
+    return ("".join(out) + cmd[at:]).rstrip() + " --workers=1"
+
+
+def e2e_timeouts(text: str) -> tuple[int, int]:
+    """(failure reports, of them timeouts) in a Playwright run: each "  N) [project] › ..." report of the
+    summary, a timeout when its text says so (a test, a locator or an expect that ran out of time)."""
+    parts = re.split(r"^\s+\d+\) \[", text, flags=re.M)[1:]
+    return len(parts), sum(1 for x in parts if re.search(r"Test timeout of|Timeout:? \d+ ?ms|timed out", x))
+
+
 def staging_pinned(p: Project) -> list[str]:
     """With the tests in their own copy, the spec files that name the user's staging literally (its host
     ports, its compose project): they could reach the user's data, so they do not run until QA makes them
@@ -977,8 +1000,15 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     limit = max(1, int(total * float(p.config.get("e2e_retry_max_percent", 3)) / 100))
     # many failures in the parallel copies are mostly the machine overloaded (timeouts): they all run once
     # more, one after another, and only those that fail again count; how many passed then tells the next
-    # runs to use fewer copies (e2e_workers)
-    contention = sharded and failed > limit
+    # runs to use fewer copies (e2e_workers). In one copy with many workers the same: several failures that
+    # are mostly timeouts (in AGC-Documents-Signing 14 workers made the axe check of a heavy page take 28 s
+    # instead of 4, and the rerun with the same 14 workers failed again - a task lost two rounds and its
+    # tests were registered as flaky).
+    reports, timeouts = e2e_timeouts(log.read_text(encoding="utf-8", errors="replace") if log.exists() else "")
+    contention = (sharded and failed > limit) or (
+        not sharded and failed >= E2E_CONTENTION_MIN and reports and timeouts * 2 >= reports)
+    if contention:  # one after another means one worker, whatever --workers the e2e command sets
+        retry = [pw_serial(c) if pw_tail(c) else c for c in retry]
     if not failed or not total or (failed > limit and not contention) or len(names) != failed:
         res["retry"] = f"not retried: {failed} of {total} failed (retry limit {limit})"
         # too many failures in the copies to run them again by name (tests that did not run): contention all the
@@ -987,7 +1017,8 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
         return res
     rlog = p.logs / f"{tid}-r{rnd}-{name}-retry.log"
     if contention:
-        progress(p, f"↻ {tid} r{rnd} {name}: {failed} of {total} failed in {n} parallel copies - running them "
+        where = f"in {n} parallel copies" if sharded else "in one run, most of them timeouts"
+        progress(p, f"↻ {tid} r{rnd} {name}: {failed} of {total} failed {where} - running them "
                     f"again one after another (an overloaded machine makes tests time out)")
     again = run_cmds(p, retry, rlog, p.env(tid, rnd, e2e=True))
     res["retry_log"] = again["log"]
