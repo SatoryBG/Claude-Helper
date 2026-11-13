@@ -1194,7 +1194,10 @@ async function reviewMilestones(plan) {
     if (held.length) log(`🔎 ${m}: reviewed without its blocked task(s) ${held.join(', ')} - they are not done, the rest of the milestone is`)
     try {
       const e2e = await sh(`milestone-e2e ${m}`, { phase: 'Milestone review', label: `e2e every width ${m}`, long: true })
-      if (e2e && !e2e.skipped && !e2e.ok) {
+      if (e2e && !e2e.skipped && !e2e.ok && !(e2e.failed_tests || []).length && !e2e.log) {
+        // the step failed without naming a test or a log (the CLI itself failed): no task without its content
+        log(`⚠ The e2e run at every width after ${m} gave no result (${e2e.error || 'no failed tests, no log'}); no task planned - look at the step's log under .satory/run/sh/`)
+      } else if (e2e && !e2e.skipped && !e2e.ok) {
         await widthsTask(m, e2e, plan)
         plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       }

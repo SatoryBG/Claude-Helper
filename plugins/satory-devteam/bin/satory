@@ -1031,7 +1031,9 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
         return res
     if contention:
         still = e2e_failures(rlog)[2]
-        if not shards_max:
+        # measured only when the run was (the copies, or a whole suite in one run with e2e_parallel): an overloaded
+        # run in one copy without it has no time to record (1.9.16 made that path reachable and it crashed)
+        if not shards_max and (sharded or (cfg and res.get("seconds") is not None)):
             e2e_parallel_record(p, n, res["seconds"], res["tests"], max(0, len(names) - len(still)), len(still))
         if still:
             res["failed_tests"] = still

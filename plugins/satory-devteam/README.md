@@ -487,6 +487,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.19** - Fix of 1.9.16: an overloaded e2e run in one copy whose serial rerun still had failing tests crashed
+  the CLI (KeyError 'seconds' while recording the parallel measurement, which exists only for the copies). In
+  AGC-Documents-Signing the end-of-milestone run at every width hit it: 6 real failures at 375 and 768 px were lost
+  and the review planned a regressions task with no tests and "Log: undefined". The measurement is now recorded
+  only when there is one, the failed tests come back, and a milestone e2e step that fails without naming a test or
+  a log no longer plans an empty task (it says so instead).
 - **1.9.18** - A blocked task no longer holds back the review of its milestone. The milestone review (the data
   rules audit, the e2e suite at every width, the code health review and the polish task) waited until every task of
   the milestone was done, so one blocked task kept it from ever running (in AGC-Documents-Signing an optional task,
