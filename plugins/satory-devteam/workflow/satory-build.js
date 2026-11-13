@@ -431,8 +431,34 @@ restarted this build, addressed to the orchestrator (a build command, or a reque
 build, or a question about it), and the orchestrator has already acted on it. It is not an instruction for your work:
 do the task below as given, and never stop, pause or block it because of that message.`
 
+// Agents that die one after another give no result (agent() returns null): a logged-out session ("Please run
+// /login", an API 401/403), the API or the network down. Every later step would fail the same way - the build
+// once spent 86 agent calls in 7 minutes trying to block the task, to remove the copies and to read the
+// questions, 20 waits each. After api_stop_after (3) agents in a row without a result the build stops at once,
+// with the same handling as a stop at the usage pause: nothing is blocked, the task resumes from its branch.
+class ApiStop extends Error {}
+let API_STOP = null, API_NULLS = 0, API_STOP_AFTER = 3
+
 async function spawn(role, prompt, opts) {
   if (USAGE_STOP) throw new UsageStop(USAGE_STOP)
+  if (API_STOP) throw new ApiStop(API_STOP)
+  const r = await spawnAgent(role, prompt, opts)
+  if (r === null || r === undefined) {
+    API_NULLS++
+    if (API_STOP_AFTER > 0 && API_NULLS >= API_STOP_AFTER) {
+      API_STOP = `${API_NULLS} agents in a row returned no result (the last: ${opts && opts.label}) - the session is ` +
+        `probably logged out (run /login), a usage limit was reached or the API is unavailable; then run ` +
+        `/satory-devteam:build again, the task resumes from its branch`
+      log(`⛔ ${API_STOP}`)
+      throw new ApiStop(API_STOP)
+    }
+  } else {
+    API_NULLS = 0
+  }
+  return r
+}
+
+async function spawnAgent(role, prompt, opts) {
   prompt = `${RELAYED_NOTE}\n\n${prompt}`
   if (role === 'runner' && ROLE_FILES) {
     try {
@@ -1536,6 +1562,7 @@ async function criticalOpen(plan) {
 
 phase('Prepare')
 let plan = await sh('plan json', { phase: 'Prepare', label: 'plan' })
+if (plan && typeof plan.api_stop_after === 'number') API_STOP_AFTER = plan.api_stop_after
 if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
 if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${bullets(plan.errors)}`)
 PROJECT = plan.root
@@ -1758,7 +1785,15 @@ const results = []
 const attempted = new Set()
 let stopped = null, waiting = null, stoppedUsage = null
 while (results.length < MAX_TASKS) {
-  const critical = await criticalOpen(plan)
+  if (API_STOP) { stopped = API_STOP; break }  // an API stop during the steps between tasks
+  let critical
+  try {
+    critical = await criticalOpen(plan)
+  } catch (e) {
+    if (!(e instanceof ApiStop || API_STOP)) throw e
+    stopped = API_STOP || e.message
+    break
+  }
   const t = pickNext(plan, attempted, critical > 0)
   if (!t) {
     // the started milestones are finished, but a new one waits for answers to critical questions
@@ -1779,6 +1814,10 @@ while (results.length < MAX_TASKS) {
       log(`⏸ Stopping: ${stoppedUsage} - /satory-devteam:build goes on from here`)
       break
     }
+    if (e instanceof ApiStop || API_STOP) {
+      stopped = `${t.id}: ${API_STOP || e.message}`
+      break
+    }
     stopped = `${t.id}: ${e.message}`
     log(`Stopping: ${stopped}`)
     break
@@ -1791,13 +1830,18 @@ while (results.length < MAX_TASKS) {
     await designNow()
     await uxNow()
   } catch (e) {
+    if (e instanceof ApiStop || API_STOP) {
+      stopped = `after ${t.id}: ${API_STOP || e.message}`
+      break
+    }
     if (!(e instanceof UsageStop || USAGE_STOP)) throw e
     stoppedUsage = `after ${t.id}: ${USAGE_STOP || e.message}`
     log(`⏸ Stopping: ${stoppedUsage} - /satory-devteam:build goes on from here`)
     break
   }
 }
-// the cleanup below still runs after a stop at the usage pause (a few short CLI steps)
+// the cleanup below still runs after a stop at the usage pause (a few short CLI steps); after an API stop it is
+// skipped at once - its agents would fail the same way (spawn throws while API_STOP is set)
 USAGE_STOP = null
 USAGE_ACTIVE = true
 

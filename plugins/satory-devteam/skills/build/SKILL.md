@@ -79,7 +79,9 @@ Summarise the result:
 - finished tasks (with the number of rounds, whether they were pushed, and the preview URL - or the staging
   URL when there is no preview);
 - blocked tasks with the reason → `/satory-devteam:status` to answer them;
-- `stopped_on_error`, if any: show the error and propose a fix;
+- `stopped_on_error`, if any: show the error and propose a fix. "agents in a row returned no result" means the
+  session is logged out, a usage limit was reached or the API is down: nothing was blocked; tell the user to run
+  `/login` (or wait for the limit or the API) and then `/satory-devteam:build` - the task resumes from its branch;
 - `stopped_on_usage`, if any: the user chose to stop at the usage pause; say where it stopped and that
   `/satory-devteam:build` goes on from there (after the limit resets);
 - remaining tasks and what they wait for;

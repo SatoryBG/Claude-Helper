@@ -3242,6 +3242,8 @@ def cmd_plan(p: Project, a) -> None:
               "ux_review": p.config.get("ux_review", True) is not False,
               "polish_task": p.config.get("polish_task", True) is not False,
               "design_step": p.config.get("design_step", True) is not False,
+              # agents without a result one after another (a logged-out session, the API down): the build stops
+              "api_stop_after": int(p.config.get("api_stop_after", 3) or 0),
               "has_design": (p.root / "docs" / "design" / "DESIGN.md").exists(),
               "design_request": load_json(p.run / "design.request.json", {}) or None,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,

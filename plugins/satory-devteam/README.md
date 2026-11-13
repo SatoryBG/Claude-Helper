@@ -487,6 +487,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.17** - A logged-out session stops the build at once. When the session needs `/login` (or the API answers
+  401/403, a usage limit is reached, the network is down), every agent dies without a result: the build treated
+  each as a single cut-off agent, ran Dev once more, tried to block the task and to remove the copies, and waited
+  20 times for each of those steps (in AGC-Documents-Signing 86 agent calls in 7 minutes, ending in a stop that
+  left the task in progress anyway). Now 3 agents in a row without a result stop the build: nothing is blocked, the
+  cleanup that needs agents is skipped, the result names `/login`, and `/satory-devteam:build` resumes the task from
+  its branch. Opt-out: `"api_stop_after": 0` in `.satory/project.json` (or another number of agents).
 - **1.9.16** - The rerun of e2e tests that an overloaded machine made time out really runs them one after
   another. It said "one after another" but kept the parallelism of the e2e command: the copies' rerun used
   Playwright's default workers, and in one copy the rerun was the same command with `--last-failed`, so an
