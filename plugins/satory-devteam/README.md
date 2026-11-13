@@ -487,6 +487,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.18** - A blocked task no longer holds back the review of its milestone. The milestone review (the data
+  rules audit, the e2e suite at every width, the code health review and the polish task) waited until every task of
+  the milestone was done, so one blocked task kept it from ever running (in AGC-Documents-Signing an optional task,
+  blocked for days, kept a 34-task milestone unreviewed, and an external review later found the duplicated code and
+  the 1,300-1,600-line files the code health review would have turned into a task). Now a milestone is reviewed when
+  none of its tasks is still to do or in progress and at least one is done; the progress says which blocked tasks
+  were left out. Opt-out: `"milestone_review_wait_blocked": true` in `.satory/project.json`.
 - **1.9.17** - A logged-out session stops the build at once. When the session needs `/login` (or the API answers
   401/403, a usage limit is reached, the network is down), every agent dies without a result: the build treated
   each as a single cut-off agent, ran Dev once more, tried to block the task and to remove the copies, and waited

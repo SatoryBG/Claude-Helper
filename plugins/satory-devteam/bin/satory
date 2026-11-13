@@ -3239,6 +3239,7 @@ def cmd_plan(p: Project, a) -> None:
               "milestones_reviewed": questions_load(p)["milestones_reviewed"],
               "ux_reviewed": questions_load(p)["ux_reviewed"],
               "code_health_review": p.config.get("code_health_review", True) is not False,
+              "milestone_review_wait_blocked": p.config.get("milestone_review_wait_blocked", False) is True,
               "ux_review": p.config.get("ux_review", True) is not False,
               "polish_task": p.config.get("polish_task", True) is not False,
               "design_step": p.config.get("design_step", True) is not False,

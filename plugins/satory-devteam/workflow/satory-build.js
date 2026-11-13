@@ -1181,8 +1181,17 @@ async function reviewMilestones(plan) {
   const order = [...new Set(plan.tasks.map(t => t.milestone).filter(Boolean))]
   for (const m of order) {
     const tasks = plan.tasks.filter(t => t.milestone === m)
-    if (reg.milestones_reviewed.includes(m) || !tasks.every(t => t.status === 'done')) continue
+    // a milestone is reviewed once nothing of it is still to do or in progress: a blocked task does not hold the
+    // review back for ever (in AGC-Documents-Signing one optional task blocked for days kept a 34-task milestone
+    // from its review, so its duplicated code never reached a refactoring task). "milestone_review_wait_blocked":
+    // true restores waiting for every task to be done.
+    const settled = plan.milestone_review_wait_blocked === true
+      ? tasks.every(t => t.status === 'done')
+      : tasks.some(t => t.status === 'done') && tasks.every(t => t.status === 'done' || t.status === 'blocked')
+    if (reg.milestones_reviewed.includes(m) || !settled) continue
     if (MILESTONE && m !== MILESTONE) continue
+    const held = tasks.filter(t => t.status === 'blocked').map(t => t.id)
+    if (held.length) log(`🔎 ${m}: reviewed without its blocked task(s) ${held.join(', ')} - they are not done, the rest of the milestone is`)
     try {
       const e2e = await sh(`milestone-e2e ${m}`, { phase: 'Milestone review', label: `e2e every width ${m}`, long: true })
       if (e2e && !e2e.skipped && !e2e.ok) {
