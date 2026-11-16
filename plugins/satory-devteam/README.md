@@ -487,6 +487,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.24** - Fix of 1.9.22: a test that waits a fixed time no longer sends the task back to Dev. The Reviewer
+  flagged it as `major`, but tests are QA's and Dev may not change them, so the task bounced between Dev and the
+  Reviewer (three times in AGC-Documents-Signing). It is now a `minor` finding titled "For QA:", and QA fixes
+  such findings in its round. Also: one flaky unit test is one item - Vitest's bare duration ("455ms") is stripped
+  from the name, and a name with the test file and describe path in front is matched with the same test without
+  them (one test was asked about twice).
 - **1.9.23** - The deployment document keeps up with the code. When the project has one (`deployment_doc`, by
   default `docs/DEPLOYMENT.md` once it exists), the check after Docs also requires it to mention every setting of
   the deploy env files (`KEY=` in `deploy/**/*.env`, `.env.example`) and every secret of the compose files, as it

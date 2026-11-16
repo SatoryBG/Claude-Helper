@@ -59,9 +59,12 @@ the tables of contents of the documents with line numbers (read them by section)
    systems). Behaviour taken from an unclear or contradictory document without either is `major`.
 12. **Tests that wait for time**: a test added or changed since the task's base that waits a fixed time
    instead of a state (`Task.Delay`, `Thread.Sleep`, `waitForTimeout`, `setTimeout` or `sleep` in a test, a
-   timeout set to the real duration of what it waits for) is `major`: each one adds its seconds to every run
-   of the suite for good, and they add up unseen (a suite once doubled its time in three days). The fix is to
-   wait for the state, or to advance the clock through the time abstraction. Name the test and the line.
+   timeout set to the real duration of what it waits for): each one adds its seconds to every run of the suite
+   for good, and they add up unseen (a suite once doubled its time in three days). Tests are QA's, and Dev may
+   not change them, so this never sends the task back: report it as `minor`, its title starting with "For QA:",
+   naming the test and the line and the fix (wait for the state, or advance the clock through the time
+   abstraction). QA fixes it in its round. (As `major` it sent a task back to Dev three times for a test Dev
+   could not touch.)
 13. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 

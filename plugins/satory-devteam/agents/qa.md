@@ -165,7 +165,10 @@ or contradicts the SPEC, the task fails and goes back to Dev.
    and how you got past them, and what is still open. The next round starts from it (the digest lists
    it), so it does not have to rediscover the code. It is not committed and never replaces "QA: coverage".
 
-11. **A fake of an external system** (a stub of a vendor API, a local signing app, a mail or identity
+11. **Findings "For QA:"** of the Reviewer (in the findings of the task): a test of this task that waits a fixed
+   time instead of a state. Fix each in this round - wait for the state, or advance the clock through the time
+   abstraction - without changing what the test checks.
+12. **A fake of an external system** (a stub of a vendor API, a local signing app, a mail or identity
    provider) implements what the real system does as Dev's mini-spec states it with its evidence - the
    checks it applies, the error codes and texts it answers - and refuses the wrong variants the way the real
    system does (a test that the wrong form is refused belongs to the task). Mark in the fake where its

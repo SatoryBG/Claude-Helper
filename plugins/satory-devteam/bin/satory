@@ -1334,8 +1334,21 @@ FLAKY_CLEAR = 5  # clean runs in a row after which a flaky test is forgotten, as
 
 def flaky_norm(t: str) -> str:
     """The same test in another Playwright project ("[tablet-768] › "), at another line or with another
-    duration is the same test."""
-    return re.sub(r"^\[[^\]]+\] › ", "", re.sub(DURATION + r"\s*$", "", re.sub(r":\d+:\d+", "", t)).strip())
+    duration - "(36s 277ms)", or Vitest's bare "455ms" - is the same test."""
+    t = re.sub(r":\d+:\d+", "", t)
+    t = re.sub(DURATION + r"\s*$", "", t)
+    t = re.sub(r"\s+\d+(?:\.\d+)?\s*m?s\s*$", "", t)
+    return re.sub(r"^\[[^\]]+\] › ", "", t.strip())
+
+
+def flaky_same(a: str, b: str) -> bool:
+    """Two normalised names of one test: equal, or one is the other with the file and describe path in front
+    (a runner's summary names a failed test with its path, its list of failures without it)."""
+    if a == b:
+        return True
+    a, b = (re.sub(r"^(?:unit|e2e) › ", "", x) for x in (a, b))
+    short, long_ = sorted((a, b), key=len)
+    return len(short) >= 30 and long_.endswith(short) and long_[-len(short) - 1] in " >›"
 
 
 def flaky_watching(q: dict) -> bool:
@@ -1392,7 +1405,7 @@ def question_flaky(p: Project, test: str, source: str, task: str, kind: str = "e
     key = f"flaky:{name}"
     # an older entry may still carry the duration in its key ("(36s 277ms)"): it is the same test
     q = next((x for x in reg["items"] if str(x.get("key") or "").startswith("flaky:")
-              and norm(str(x["key"])[6:]) == name), None)
+              and flaky_same(norm(str(x["key"])[6:]), name)), None)
     if q is None:
         question_append(reg, {
             "kind": "test", "severity": "minor", "key": key, "occurrences": [source],
