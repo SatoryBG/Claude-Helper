@@ -629,6 +629,62 @@ def test_needed(cmd: str, changed: list[str], areas: dict) -> bool:
     return False
 
 
+def format_commands(p: Project, files: list[str]) -> list[str]:
+    """The project's formatters for the files a task changed: `commands.format` when set, else derived - the
+    lint's `dotnet format ... --verify-no-changes` without the flag, and Prettier (`--write`) in every directory
+    whose package.json has it, for the changed files under it. Formatters only rewrite whitespace and wrapping."""
+    own = p.commands("format")
+    if own:
+        return own
+    cmds = []
+    cs = [f for f in files if f.endswith(".cs")]
+    for c in p.commands("lint") if cs else []:  # only the changed C# files: the whole solution is the lint's job
+        m = re.search(r"(?:^|&&\s*|;\s*)((?:cd \S+ && )?dotnet format\b[^&|;]*--verify-no-changes[^&|;]*)", c)
+        if m:
+            cmd = re.sub(r"\s*--verify-no-changes\b", "", m.group(1)).strip()
+            cmds.append(f"{cmd} --include " + " ".join(shlex.quote(f) for f in sorted(cs)) if not cmd.startswith("cd ")
+                        else cmd)
+    by_dir: dict[Path, list[str]] = {}
+    for f in files:
+        d = (p.root / f).parent
+        while True:
+            try:
+                pkg = load_json(d / "package.json", {})
+            except ValueError:
+                pkg = {}
+            if isinstance(pkg, dict) and "prettier" in {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}:
+                by_dir.setdefault(d, []).append(os.path.relpath(p.root / f, d))
+                break
+            if d == p.root or d.parent == d:
+                break
+            d = d.parent
+    for d, rel in sorted(by_dir.items()):
+        where = os.path.relpath(d, p.root)
+        cd = "" if where == "." else f"cd {shlex.quote(where)} && "
+        cmds.append(f"{cd}npx --no-install prettier --write --ignore-unknown --log-level warn -- "
+                    + " ".join(shlex.quote(x) for x in sorted(rel)))
+    return cmds
+
+
+def auto_format(p: Project, tid: str, rnd: int, base: str, who: str) -> list[str]:
+    """Formats the files the task changed before the lint gate, so a file's layout never stops a task: one agent
+    may not touch another's files (Dev the tests of QA), and the lint failed on a wrapped line nobody was allowed
+    to fix. Returns the files whose content changed. `"auto_format": false` in .satory/project.json turns it off."""
+    if p.config.get("auto_format", True) is False:
+        return []
+    files = [f for f, s in changed_files(p, base).items() if s != "D" and (p.root / f).is_file()]
+    cmds = format_commands(p, files) if files else []
+    if not cmds:
+        return []
+    digest = lambda f: hashlib.sha256((p.root / f).read_bytes()).hexdigest() if (p.root / f).is_file() else ""
+    before = {f: digest(f) for f in files}
+    run_cmds(p, cmds, p.logs / f"{tid}-r{rnd}-format-{who}.log", p.env(tid, rnd))
+    changed = sorted(f for f in files if digest(f) != before[f])
+    if changed:
+        progress(p, f"🧹 {tid} r{rnd}: {len(changed)} file(s) formatted after {who} (layout only)")
+    return changed
+
+
 def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
     cmds, unchanged, tree = p.commands(name), [], None
@@ -4313,11 +4369,15 @@ def cmd_step(p: Project, a) -> None:
                 return "tests belong to QA"
             return None
         violations = guard(p, ck, allowed)
+        # after the guard, so a test file of QA that only the formatter changed is not Dev's change
+        formatted = auto_format(p, tid, rnd, base, a.owner)
         gates = {g: gate(p, tid, rnd, g) for g in ("build", "lint")}
         ok = all(g["ok"] for g in gates.values())
         st["rounds"] = rnd
         st["checkpoint"] = checkpoint(p, tid, f"{a.owner} r{rnd}")
         extra = [f"- Violation: {v}" for v in violations]
+        if formatted:
+            extra.append(f"- Formatted by satory (layout only): {', '.join(formatted[:20])}")
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   for k, g in gates.items()]
         journal_pending(p, tid, a.owner, rnd, "ok" if ok else "gate-fail", join_note(note, extra))
@@ -4365,6 +4425,7 @@ def cmd_step(p: Project, a) -> None:
             return
         if listed:
             st["known_tests"] = sorted(set(st.get("known_tests", [])) | names)
+        auto_format(p, tid, rnd, base, "qa")  # QA's checks run no lint: its files are formatted here
         gates = {"test": gate(p, tid, rnd, "test")}
         pinned = staging_pinned(p)
         if pinned:

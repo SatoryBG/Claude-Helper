@@ -487,6 +487,14 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.20** - A file's layout no longer stops a task. Before the build/lint gate of Dev and before the checks after
+  QA, satory runs the project's formatters on the files the task changed: `commands.format` when set, else Prettier
+  (`--write`) in every directory whose package.json has it and the lint's `dotnet format ... --verify-no-changes`
+  without the flag, on the changed C# files. It runs after the guard, so a test file of QA that only the formatter
+  touched is not Dev's change. The formatted files are named in the journal and the progress (`🧹`).
+  (In financials-helper QA added a test file with lines Prettier wraps; QA's checks run no lint, Dev's lint failed on
+  it twice, Dev may not touch tests, and the task was blocked on a question about line wrapping.) Opt-out:
+  `"auto_format": false` in `.satory/project.json`.
 - **1.9.19** - Fix of 1.9.16: an overloaded e2e run in one copy whose serial rerun still had failing tests crashed
   the CLI (KeyError 'seconds' while recording the parallel measurement, which exists only for the copies). In
   AGC-Documents-Signing the end-of-milestone run at every width hit it: 6 real failures at 375 and 768 px were lost
