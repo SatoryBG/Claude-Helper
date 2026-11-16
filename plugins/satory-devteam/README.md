@@ -487,6 +487,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.26** - Fix: the cases of a parameterised test whose data QA adapted in an earlier round of the task
+  (the file listed in "QA: adapted tests") are no longer counted as deleted tests in a later round that does not
+  change the file again. In AGC-Documents-Signing QA adapted a theory in round 2 to the new behaviour of the task;
+  in round 4 the guard saw the two old case names as missing and restored QA's work twice - QA could not put the
+  old cases back without breaking the test, so the third attempt would have blocked the task.
 - **1.9.25** - A finding whose fix is in a test goes on to QA instead of back to Dev, and keeps its real
   severity. The Reviewer marks each finding with who fixes it (`owner`: `qa` when the fix is in a test or a test
   helper, which only QA may change). When the only blocking findings of a review are for QA, the task goes on to

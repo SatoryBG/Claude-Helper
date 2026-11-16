@@ -4465,7 +4465,17 @@ def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bo
                    now_cases.get(x.split("(", 1)[0], 0) >= known_cases.get(x.split("(", 1)[0], 0)]
         if varying:
             missing = [x for x in missing if x not in varying]
-    if adapted_used and missing:
+    # an adaptation made in an earlier round of this task (the file is not changed again in this one) still
+    # renames the cases: in AGC-Documents-Signing QA adapted a theory's data in round 2, and in round 4 the
+    # renamed cases counted as deleted tests (QA could not put them back without breaking the test)
+    earlier = []
+    for path in adapted:
+        if path in [u.split(" - ", 1)[0] for u in adapted_used]:
+            continue
+        numstat = p.git("diff", "--numstat", base, "--", path).split() if p.git_ok("cat-file", "-e", f"{base}:{path}") else []
+        if len(numstat) >= 2 and numstat[0].isdigit() and numstat[1].isdigit() and int(numstat[0]) >= int(numstat[1]) > 0:
+            earlier.append(path)
+    if (adapted_used or earlier) and missing:
         renamed = [x for x in missing if "(" in x and x.split("(", 1)[0] in methods]
         if renamed:
             adapted_used.append(f"{len(renamed)} case(s) of parameterised tests with changed data: "
