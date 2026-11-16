@@ -487,6 +487,24 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.21** - Three fixes from AGC-Documents-Signing.
+  - **A round that changed only documents does not run the whole e2e suite again.** When the work tree differs
+    from the one on which the whole suite last passed only in documents (`docs/`, `.satory/`, Markdown outside
+    the tests) and the suite has not failed since, QA's check skips it and says so (T-090 r4 changed one line of
+    its mini-spec and waited 36 minutes for the 2,801 tests that had passed in r3). The unit tests already skipped
+    such rounds. Opt-out: `"e2e_skip_docs_only": false`.
+  - **Parameterised tests whose data is generated at run time are not "deleted".** A case carries its data in
+    its name, so a theory over generated keys has new names in every run and the add-only rule saw 17 deleted
+    tests and blocked T-038 after three rounds. A missing case no longer counts while its test method has at
+    least as many cases as in the largest earlier listing (kept per method, since the union of names grows with
+    every run); fewer cases, or a missing plain test, still break the rule.
+  - **A slow unit test command plans a task that makes it faster**, once: a whole passing run longer than 30
+    minutes or twice its fastest run becomes an automatically answered item, and the planner makes one task of it
+    on the test infrastructure only (QA's work: measure the slowest classes, remove real-time waits, share setup,
+    split large classes, raise parallelism; the checks unchanged, no test deleted, 3 clean runs, times before and
+    after). In AGC-Documents-Signing such a task took 5 hours and brought the .NET tests from 50-57 to 15 minutes,
+    paid back after about 4 tasks. A dismissed item stays dismissed. Opt-out: `"test_speed_task": false`;
+    `"test_speed_task_minutes"` and `"test_speed_task_growth"` set the thresholds.
 - **1.9.20** - A file's layout no longer stops a task. Before the build/lint gate of Dev and before the checks after
   QA, satory runs the project's formatters on the files the task changed: `commands.format` when set, else Prettier
   (`--write`) in every directory whose package.json has it and the lint's `dotnet format ... --verify-no-changes`

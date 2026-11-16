@@ -485,6 +485,7 @@ def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
             if len(e["recent"]) >= TREND_SAMPLES:
                 e["baseline"] = sorted(e["recent"])[len(e["recent"]) // 2]
             continue
+        speed_task(p, tid, rnd, cmd, secs, e)
         b = e["baseline"]
         if secs >= b * growth and secs - b >= TREND_MIN_SECONDS:
             short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
@@ -493,6 +494,51 @@ def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
                         f"(one shared collection or lock, fixed sleeps) or a slower setup")
             e["baseline"], e["warned"] = secs, now()
     p.save_state()
+
+
+SPEED_TASK_MINUTES = 30    # a whole unit test run longer than this plans a task that makes it faster
+SPEED_TASK_GROWTH = 2.0    # ... and so does one that takes twice its fastest run
+
+
+def speed_task(p: Project, tid: str, rnd: int, cmd: str, secs: float, e: dict) -> None:
+    """A unit test command that has grown slow plans a task that makes it faster, once: the build planner turns
+    the automatically answered item into a task between two tasks. In AGC-Documents-Signing the .NET tests grew
+    from 20 to 57 minutes and ran in almost every round; one such task took 5 hours and brought them to 15
+    minutes, paid back after about 4 tasks. "test_speed_task": false turns it off; "test_speed_task_minutes" and
+    "test_speed_task_growth" set when."""
+    if p.config.get("test_speed_task", True) is False or cmd not in [c[:300] for c in p.commands("test")]:
+        return
+    e["fastest"] = min(e.get("fastest") or secs, secs)
+    limit = float(p.config.get("test_speed_task_minutes") or SPEED_TASK_MINUTES) * 60
+    growth = float(p.config.get("test_speed_task_growth") or SPEED_TASK_GROWTH)
+    if secs < limit and secs < e["fastest"] * growth:
+        return
+    key = f"speed:{cmd}"
+    reg = questions_load(p)
+    if any(x.get("key") == key and x.get("status") in ("open", "answered", "planned", "deferred") for x in reg["items"]):
+        return
+    if any(x.get("key") == key and x.get("status") == "dismissed" for x in reg["items"]):
+        return  # the user said no: their decision stays
+    short = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+    question_append(reg, {
+        "kind": "fix", "severity": "major", "key": key,
+        "title": f"The test command `{short}` takes {secs / 60:.0f} min (fastest {e['fastest'] / 60:.0f} min)",
+        "detail": "It runs in the check of almost every round, so every round waits for it. A task only on the test "
+                  "infrastructure makes it faster without changing what the tests check.",
+        "refs": [cmd]}, f"check {tid} r{rnd}", tid, None)
+    q = reg["items"][-1]
+    q["status"], q["answered"] = "answered", now("%Y-%m-%d")
+    q["answer"] = (f"Plan it (automatically: the whole run took {secs / 60:.0f} min). One task only on the test "
+                   "infrastructure, the work of QA, the app code unchanged: measure the time of every test class and "
+                   "write the 10 slowest with their cause into the mini-spec; remove waiting for real time (advance "
+                   "the clock through the time abstraction, small timeouts in the tests' configuration); share what "
+                   "is expensive within a class where the tests do not depend on each other and split large classes "
+                   "that run alone at the end; raise the parallelism when the machine has room. The checks of the "
+                   "tests do not change or weaken, no test is deleted, the number of tests does not fall; the whole "
+                   "command runs 3 times in a row without a flaky test, with the time before and after in the "
+                   "mini-spec.")
+    questions_save(p, reg)
+    progress(p, f"🗂 {q['id']}: `{short}` took {secs / 60:.0f} min - a task to make it faster is planned automatically")
 
 
 # a crash of the runtime or the test host, not a failing test: the gate runs once more before it fails
@@ -627,6 +673,21 @@ def test_needed(cmd: str, changed: list[str], areas: dict) -> bool:
         elif not f.startswith(others):  # anything outside the folders of the cd-commands
             return True
     return False
+
+
+DOC_PATHS = ("docs/", ".satory/")
+
+
+def docs_only_since(p: Project, was: str | None, tree: str | None) -> bool:
+    """Whether only documents changed between two work-tree states (docs/, .satory/, Markdown files outside the
+    test folders): the code the checks ran on is the same."""
+    if not was or not tree:
+        return False
+    r = p.git("diff", "--name-only", was, tree, check=False)
+    if r.returncode != 0:
+        return False
+    tests = tuple(g.split("*")[0] for g in p.test_globs if g.split("*")[0])
+    return all(f.startswith(DOC_PATHS) or (f.endswith(".md") and not f.startswith(tests)) for f in r.stdout.split())
 
 
 def format_commands(p: Project, files: list[str]) -> list[str]:
@@ -3356,6 +3417,7 @@ def cmd_task_start(p: Project, a) -> None:
         write_task_file(p, t)
         st = {"branch": branch, "base": base, "rounds": (st or {}).get("rounds", 0),
               "known_tests": sorted(names), "test_list_ok": listed, "started": now()}
+        merge_case_counts(st, names)
         st["checkpoint"] = checkpoint(p, tid, "start")
     if not resumed:  # a fresh start: the notes and the digest of an abandoned branch would mislead
         for f in [*(p.run / "notes").glob(f"{tid}-*.md"), p.run / "context" / f"{tid}.md",
@@ -4250,6 +4312,24 @@ def guard(p: Project, ref: str, allowed) -> list[str]:
     return violations
 
 
+def case_counts(names) -> dict:
+    """The number of cases of each parameterised test (the name before its "(data)")."""
+    out: dict = {}
+    for x in names:
+        if "(" in x:
+            m = x.split("(", 1)[0]
+            out[m] = out.get(m, 0) + 1
+    return out
+
+
+def merge_case_counts(st: dict, names) -> None:
+    """The largest number of cases each parameterised test had in one listing: the union of the names keeps
+    every run's names of cases with generated data, so it cannot be counted from known_tests."""
+    best = st.setdefault("known_case_counts", {})
+    for m, n in case_counts(names).items():
+        best[m] = max(best.get(m, 0), n)
+
+
 def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bool) -> tuple:
     """The append-only rule for tests after QA: (rules broken, adapted files used, listed, test names).
     With apply the offending files go back to the pre-QA state (the check after QA); without it nothing
@@ -4294,6 +4374,16 @@ def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bo
     # a case of a parameterised test carries its data in its name: an adaptation listed in "QA: adapted
     # tests" that changes the data renames the case. It is allowed while the test method still has cases.
     methods = {x.split("(", 1)[0] for x in names}
+    # a case whose data is generated at run time (a key, a date, a random id) has another name in every run, with
+    # nothing changed: the method keeps its cases, so they are not missing. In AGC-Documents-Signing a theory over
+    # generated PEM keys looked like 17 deleted tests and blocked the task after three rounds.
+    if missing:
+        now_cases = case_counts(names)
+        known_cases = st.get("known_case_counts") or case_counts(known)
+        varying = [x for x in missing if "(" in x and
+                   now_cases.get(x.split("(", 1)[0], 0) >= known_cases.get(x.split("(", 1)[0], 0)]
+        if varying:
+            missing = [x for x in missing if x not in varying]
     if adapted_used and missing:
         renamed = [x for x in missing if "(" in x and x.split("(", 1)[0] in methods]
         if renamed:
@@ -4425,6 +4515,7 @@ def cmd_step(p: Project, a) -> None:
             return
         if listed:
             st["known_tests"] = sorted(set(st.get("known_tests", [])) | names)
+            merge_case_counts(st, names)
         auto_format(p, tid, rnd, base, "qa")  # QA's checks run no lint: its files are formatted here
         gates = {"test": gate(p, tid, rnd, "test")}
         pinned = staging_pinned(p)
@@ -4439,7 +4530,13 @@ def cmd_step(p: Project, a) -> None:
         # would otherwise finish without the whole suite.
         # The e2e specs of earlier features the task likely affects run here too, so a regression comes back with
         # QA's findings; when most of the suite is affected (a shared component), the whole suite runs here.
-        first = p.e2e_task_commands(tid)
+        # a round that changed only documents since the whole suite passed (a mini-spec sentence a check asked for)
+        # does not run the suite again on the same code: T-090 r4 changed one line of its task file and waited 36
+        # minutes for the 2801 tests that had passed in r3. "e2e_skip_docs_only": false runs it every round.
+        now_tree = worktree_tree(p)
+        docs_round = (p.config.get("e2e_skip_docs_only", True) is not False and not st.get("full_e2e_failed")
+                      and docs_only_since(p, st.get("e2e_green_tree"), now_tree))
+        first = p.e2e_task_commands(tid) if not docs_round else []
         failed_before = (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []
         again = p.e2e_failed_commands(failed_before)
         _, affected, all_specs = e2e_affected_specs(p, base) if first and a.split_e2e else ("", [], 0)
@@ -4460,7 +4557,12 @@ def cmd_step(p: Project, a) -> None:
                                            "in which they pass)"}
                 progress(p, f"⚡ {tid} r{rnd}: the task's own e2e tests failed - the whole suite waits for a round "
                             "in which they pass")
-        if task_first:
+        if docs_round:
+            progress(p, f"⚡ {tid} r{rnd}: only documents changed since the whole e2e suite passed on this code - "
+                        "it does not run again")
+            gates["e2e"] = {"ok": True, "skipped": True, "scope": "whole",
+                            "note": " (only documents changed since the whole suite passed on this code)"}
+        elif task_first:
             gates["e2e"] = task_first
         elif first and a.split_e2e and not broad and (not st.get("full_e2e_failed") or again):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
@@ -4488,6 +4590,8 @@ def cmd_step(p: Project, a) -> None:
         else:
             st.pop("full_e2e_due", None)
         gates_ok = all(g["ok"] for g in gates.values())
+        if gates["e2e"].get("scope") != "task" and gates["e2e"].get("ok") and not gates["e2e"].get("skipped") and now_tree:
+            st["e2e_green_tree"] = now_tree  # the whole suite passed on this code
         # what this check ran on this code: the whole suite after Security leaves it out (Security and the UI
         # review change no file). T-054 ran 1592 affected tests here and the same 1592 again in the whole suite.
         st.pop("e2e_covered", None)
@@ -4562,6 +4666,10 @@ def cmd_step(p: Project, a) -> None:
         st.pop("e2e_covered", None)
         st.pop("full_e2e_due", None)
         st["full_e2e_failed"] = not g["ok"]
+        if g["ok"] and not g.get("rerun_of_failed"):
+            green = worktree_tree(p)
+            if green:
+                st["e2e_green_tree"] = green  # the whole suite passed on this code
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
         guard(p, ck, lambda path, status: "test run artifact")
         rerun = ("the next round runs the failed tests in QA's check and the whole suite again after Security"
