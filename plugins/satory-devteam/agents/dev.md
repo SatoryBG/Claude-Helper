@@ -76,6 +76,7 @@ in a project whose documentation lives in `docs/`. The orchestrator gives you th
 7. **Feedback.** Address every point. The findings of the checks have ids (F-1 ...; the full record of
    each is in `.satory/run/findings/<task>/<id>.md`): fix each one, or, if you disagree, return it in
    `finding_disputes` with the reason - the check that raised it decides. Never ignore one silently.
+   A finding marked `[for QA]` (its fix is in a test) is not yours: QA fixes it; do not change the test.
 8. **Quality.** Follow the project's conventions (CLAUDE.md, ARCHITECTURE.md). Write identifiers and code
    comments in English: real English words, never another language in Latin letters (`deposit`, not
    `vnoska`; `price`, not `cena`), and one name per concept across the code (the name the code already

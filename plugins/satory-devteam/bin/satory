@@ -3430,6 +3430,8 @@ def cmd_plan(p: Project, a) -> None:
               "design_step": p.config.get("design_step", True) is not False,
               # agents without a result one after another (a logged-out session, the API down): the build stops
               "api_stop_after": int(p.config.get("api_stop_after", 3) or 0),
+              # a blocking finding whose fix is in a test goes on to QA instead of back to Dev (off: it blocks as any other)
+              "review_qa_route": p.config.get("review_qa_route", True) is not False,
               "has_design": (p.root / "docs" / "design" / "DESIGN.md").exists(),
               "design_request": load_json(p.run / "design.request.json", {}) or None,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
@@ -3501,7 +3503,8 @@ def cmd_task_start(p: Project, a) -> None:
         for stage in dict.fromkeys(f["stage"] for f in still):
             mine = [f for f in still if f["stage"] == stage]
             open_findings.append({"stage": stage, "round": max(f["round"] for f in mine), "verdict": "open findings",
-                                  "note": "\n".join(f"- {finding_line(f)}" + ("" if finding_blocks(f) else " (optional)") for f in mine)})
+                                  "note": "\n".join(f"- {finding_line(f)}" + (" (QA fixes it, not you)" if finding_for_qa(f)
+                                                                   else "" if finding_blocks(f) else " (optional)") for f in mine)})
         open_findings += [{"stage": k, **v} for k, v in (st.get("reviews") or {}).items() if v.get("verdict") in REVIEW_FAIL]
     context_error = refresh_context(p, tid)
     resume_at = st.get("resume_at") if resumed else None
@@ -3893,6 +3896,8 @@ def cmd_spec(p: Project, a) -> None:
 # and findings/<task>/F-N.md the full record with its history. A check verifies its own open findings in the
 # next round (fixed / open / worse / dismissed) instead of reporting them again; Dev may dispute one, and the
 # check that raised it decides. The non-blocking ones still open when the task finishes go to the polish task.
+# A finding whose fix is in a test has the owner "qa" (Dev may not change tests): it keeps its severity, but it
+# does not send the task back to Dev - QA fixes it in its stage and the check that raised it verifies the fix.
 
 FINDING_BLOCKING = {"security": ("critical", "high", "medium")}
 FINDING_SEVERITIES = {"security": ("info", "low", "medium", "high", "critical")}
@@ -3912,8 +3917,12 @@ def findings_load(p: Project, tid: str) -> dict:
     return load_json(findings_path(p, tid), {"next": 1, "items": []})
 
 
+def finding_for_qa(f: dict) -> bool:
+    return f.get("owner") == "qa"
+
+
 def finding_line(f: dict) -> str:
-    return (f"{f['id']} [{f['severity']}] [{f['stage']} r{f['round']}] {f['title']}"
+    return (f"{f['id']} [{f['severity']}] [{f['stage']} r{f['round']}]{' [for QA]' if finding_for_qa(f) else ''} {f['title']}"
             + (f" ({f['where']})" if f.get("where") else "") + f" - {f['status']}")
 
 
@@ -3929,7 +3938,8 @@ def findings_save(p: Project, tid: str, reg: dict) -> None:
     for f in reg["items"]:
         body = [f"# {f['id']} - {f['title']}", "",
                 f"- Check: {f['stage']}, raised in round {f['round']}", f"- Severity: {f['severity']}",
-                f"- Status: {f['status']}", *([f"- Where: {f['where']}"] if f.get("where") else []), "",
+                f"- Status: {f['status']}", *([f"- Where: {f['where']}"] if f.get("where") else []),
+                *(["- Fixed by: QA (a test; Dev may not change tests)"] if finding_for_qa(f) else []), "",
                 "## Finding", "", f.get("detail") or f["title"], ""]
         if f.get("fix"):
             body += ["## Suggested fix", "", f["fix"], ""]
@@ -4008,6 +4018,7 @@ def cmd_finding(p: Project, a) -> None:
                 sev = FINDING_SEVERITIES.get(stage, DEFAULT_SEVERITIES)[-2]  # unknown: blocking, to be safe
             f = {"id": fid, "stage": stage, "round": rnd, "severity": sev, "title": title,
                  "where": where, "detail": detail, "fix": str(n.get("fix") or "").strip(), "status": "open",
+                 "owner": "qa" if str(n.get("owner") or "").strip().lower() == "qa" else "dev",
                  "history": [{"round": rnd, "by": stage, "event": "raised"}]}
             reg["items"].append(f)
             by_id[fid] = f
@@ -4017,8 +4028,11 @@ def cmd_finding(p: Project, a) -> None:
             by_id[x].setdefault("history", []).append({"round": rnd, "by": stage, "event": "not verified (still open)"})
         findings_save(p, tid, reg)
         mine = [f for f in reg["items"] if f["stage"] == stage and f["status"] in FINDING_OPEN]
+        blocking = [f for f in mine if finding_blocks(f)]
         return emit({"ok": True, "added": added, "unverified": unverified, "warnings": warnings,
-                     "open": mine, "blocking": [f for f in mine if finding_blocks(f)]})
+                     "open": mine, "blocking": blocking,
+                     "blocking_dev": [f for f in blocking if not finding_for_qa(f)],
+                     "blocking_qa": [f for f in blocking if finding_for_qa(f)]})
     if a.action == "dispute":
         done = []
         for d in data if isinstance(data, list) else data.get("disputes") or []:
@@ -4038,7 +4052,8 @@ def cmd_finding(p: Project, a) -> None:
             if (tid, f["id"]) not in seen:
                 pol["items"].append({"task": tid, "finding": f["id"], "source": f"{f['stage']}-{tid}-r{f['round']}",
                                      "severity": f["severity"], "where": f.get("where", ""),
-                                     "issue": f["title"] + (f": {f['detail']}" if f.get("detail") and f["detail"] != f["title"] else ""),
+                                     "issue": ("For QA: " if finding_for_qa(f) else "") + f["title"]
+                                              + (f": {f['detail']}" if f.get("detail") and f["detail"] != f["title"] else ""),
                                      "fix": f.get("fix", ""), "planned": None})
             f["status"] = "polish"
             f.setdefault("history", []).append({"round": rnd, "by": "satory", "event": "moved to the polish task"})

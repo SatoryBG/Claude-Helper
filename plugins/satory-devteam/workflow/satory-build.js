@@ -132,6 +132,7 @@ const REVIEW_SCHEMA = {
           severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'nit'] },
           title: { type: 'string', description: `One short line, ${IN_LANG}` },
           file: { type: 'string' }, line: { type: 'integer' }, issue: { type: 'string', description: IN_LANG }, fix: { type: 'string', description: IN_LANG },
+          owner: { type: 'string', enum: ['dev', 'qa'], description: 'Who fixes it: qa when the fix is in a test or a test helper (tests are QA\'s, Dev may not change them), otherwise dev (the default)' },
         },
         required: ['severity', 'file', 'issue', 'fix'],
       },
@@ -823,7 +824,10 @@ same Bash command as every e2e test, curl or script, e.g. \`eval "$(${BIN} env v
 // made since it ran: it verifies each one instead of reporting it again. After an interrupted build they are
 // not in memory: the digest lists the findings of the task.
 let RESUMED = false  // the task in progress was resumed after an interrupted build
-const fline = f => `${f.id} [${f.severity}] ${f.title}${f.where ? ` (${f.where})` : ''}${f.unverified ? ' - NOT VERIFIED by you last time' : ''}` +
+const REV_BLOCKING = ['blocker', 'major']  // the Reviewer's severities that send a task back
+let QA_ROUTE = true  // review_qa_route in .satory/project.json
+const forQa = f => QA_ROUTE && f.owner === 'qa'  // a finding whose fix is in a test: QA fixes it, it does not send the task back to Dev
+const fline = f => `${f.id} [${f.severity}]${forQa(f) ? ' [for QA]' : ''} ${f.title}${f.where ? ` (${f.where})` : ''}${f.unverified ? ' - NOT VERIFIED by you last time' : ''}` +
   (f.status === 'disputed' ? ` - DISPUTED by Dev${f.dispute ? `: ${f.dispute}` : ', see its record'}` : '')
 function openBlock(open, round, sinceRef) {
   if (!open || !open.length) return ''
@@ -847,7 +851,15 @@ ${dev.summary}
 ${bullets(dev.changes)}${prev}${disputes}`
 }
 
-function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa, suiteFailed) {
+// The Reviewer's open findings whose fix is in a test: QA fixes them in its stage (its rule 11)
+function handedBlock(handed) {
+  if (!handed || !handed.length) return ''
+  return `\n\n## Findings of the Reviewer for you (your rule 11)\nTheir fix is in a test, which only you may change. Fix each in this round ` +
+    `without changing what the test checks; the Reviewer verifies them right after you (full records: .satory/run/findings/<task>/<id>.md):\n` +
+    bullets(handed.map(f => `${fline(f)}${f.fix ? `\n  → ${f.fix}` : ''}`))
+}
+
+function qaPrompt(ctx, round, base, staging, dev, retryNote, openQa, suiteFailed, handed) {
   const env = staging.skipped
     ? 'The project has no staging environment (not a web app or no deploy) - no e2e and no browser exploration.'
     : `The app is running at ${staging.url}${staging.test_copy ? ' - the tests\' own copy of staging (compose project ' + staging.test_copy + '), from scratch for this round' : ''}. ${staging.export ? 'Your shell does not have its address: run `' + staging.export + '` in the same Bash command as every test, Playwright script or curl you run (each Bash call starts a fresh shell) - without it a test falls back to the user\'s staging. ' : ''}Never open or change the user's staging (deploy.environments.staging.url) or a preview (deploy.environments.preview): they hold the user's own data.`
@@ -865,7 +877,7 @@ ${env}
 Scope of the changes: \`git diff ${base}..HEAD\`
 Run the unit tests and the e2e tests you added or changed, not the whole e2e suite - the check after you runs this task's e2e tests, the e2e specs of earlier features the changes likely affect, and later the whole suite.
 Before you return, run \`${BIN} --project ${q(PROJECT)} qa-check ${(String(ctx).match(/^Task: (T-[\w-]+)/m) || [])[1] || '<task>'}\` (it changes nothing and lists what the check after you would restore: an earlier test file changed without its line in "QA: adapted tests", a test renamed or gone, a file outside the tests). Put right every problem it lists and run it again until it reports \`"ok": true\` - otherwise your changes to those files are restored and you do this round's work again.
-Dev reports: ${dev.summary}${disputes}${suite}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
+Dev reports: ${dev.summary}${disputes}${suite}${handedBlock(handed)}${openBlock(openQa, round, 'qa')}${retryNote ? `\n\n## ATTENTION\n${retryNote}` : ''}`
 }
 
 function uiPrompt(ctx, round, base, staging, dev, openUi, uiReviewedAt) {
@@ -927,11 +939,18 @@ const secNote = r => `${r.summary}` +
 // Feedback to Dev from the register: the blocking open findings of a check are required, its other open
 // ones optional; Dev answers by fixing them or by disputing one (finding_disputes) with the reason.
 function findingsFeedback(title, summary, res) {
-  const req = res.blocking || [], opt = (res.open || []).filter(f => !req.some(b => b.id === f.id))
+  const req = (res.blocking || []).filter(f => !forQa(f)), opt = (res.open || []).filter(f => !forQa(f) && !req.some(b => b.id === f.id))
   return `### ${title}\n${summary}\n\nRequired (full records: .satory/run/findings/<task>/<id>.md):\n` +
     bullets(req.map(f => `${fline(f)}${f.fix ? `\n  → ${f.fix}` : ''}`)) +
     (opt.length ? `\n\nOptional:\n${bullets(opt.map(fline))}` : '') +
+    qaOwnedNote(res.open) +
     `\n\nIf you disagree with a finding, return it in \`finding_disputes\` with the reason; the check that raised it decides.`
+}
+
+// The findings for QA in the feedback to Dev: shown so Dev knows them, but not Dev's to fix
+function qaOwnedNote(list) {
+  const mine = (list || []).filter(forQa)
+  return mine.length ? `\n\nFor QA - not yours, do not change the tests; QA fixes them in its stage:\n${bullets(mine.map(fline))}` : ''
 }
 
 function qaFeedback(r, after, res) {
@@ -1302,7 +1321,7 @@ async function runTask(t) {
     ? 'The task is resumed after an interruption. Check the task file and the branch\'s `git log` to see how far it got, and finish it.' +
       (lastFailed.length ? `\n\nThe open findings and the failed checks before the interruption - address every point that is still open (your last round may already have fixed some; dispute a finding in \`finding_disputes\` if you disagree):\n\n${lastFailed.join('\n\n')}` : '')
     : ''
-  let reviewedAt = null, uiReviewedAt = null, secReviewedAt = null, lastStage = ''
+  let reviewedAt = null, uiReviewedAt = null, secReviewedAt = null, lastStage = '', lastRevPrompt = ''
   let suiteFailed = start.suite_failed || []  // the earlier e2e tests that failed in the whole suite before, for QA
   const open = {}  // check -> its open findings in the register after its last run (for the next round's prompt)
   // records a check's new findings and its verdict on its open ones; returns the register's view of the check
@@ -1394,11 +1413,17 @@ async function runTask(t) {
         { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
       if (!rev) return block(t, round, `The Reviewer returned no result in round ${round}.`)
       known = withAdded(known, await addQuestions(rev.spec_gaps, 'question', `reviewer ${tag}`, { task: t.id, milestone: t.milestone, phase: 'Review' }))
-      const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix })),
-        rev.verified, 'Review', revPrompt)
-      const revBlocking = revRes.blocking.length > 0
+      const revRes = await record('reviewer', rev.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix,
+        owner: f.owner === 'qa' ? 'qa' : 'dev' })), rev.verified, 'Review', revPrompt)
+      lastRevPrompt = revPrompt
+      // a blocking finding for QA (its fix is in a test) keeps its severity but does not send the task back to Dev:
+      // the task goes on to QA, which fixes it, and the Reviewer verifies the fix right after QA
+      const revBlocking = revRes.blocking.some(f => !forQa(f))
+      const toQa = revRes.blocking.filter(forQa)
       const revStep = must(await sh(`step readonly ${t.id} --round ${round} --stage reviewer --verdict ${revBlocking ? 'changes_requested' : 'approve'}`,
-        { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) }), `review ${tag}`)
+        { phase: 'Review', label: `journal review ${tag}`, note: reviewNote(rev) +
+          (toQa.length && !revBlocking ? `\n\nFor QA (fixed in its stage, verified by the Reviewer after it):\n${bullets(toQa.map(fline))}` : '') }), `review ${tag}`)
+      if (toQa.length && !revBlocking) log(`↪ ${tag}: ${toQa.length} finding(s) of the review for QA (${toQa.map(f => f.id).join(', ')}) - on to QA`)
       contextLog(revStep)
       await usageGate(revStep, 'Review')
       reviewedAt = ad.checkpoint
@@ -1435,7 +1460,7 @@ async function runTask(t) {
       const settleUi = async () => { if (uiRun) await uiRun }
       let qa = null, aq = null, retryNote = '', qaText = ''
       for (let attempt = 1; ; attempt++) {
-        qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed) + known
+        qaText = qaPrompt(ctx, round, start.base, staging, dev, retryNote, open.qa, suiteFailed, (open.reviewer || []).filter(forQa)) + known
         qa = await stage('qa', qaText,
           { phase: 'QA', label: `qa ${tag}${attempt > 1 ? ` attempt ${attempt}` : ''}`, model: MODELS.qa, schema: QA_SCHEMA })
         if (!qa) { await settleUi(); return block(t, round, `QA returned no result in round ${round}.`) }
@@ -1456,6 +1481,23 @@ async function runTask(t) {
         qa.verified, 'QA', qaText)
       suiteFailed = suiteFailures(aq.gates)
       if ((aq.stuck_block || []).length) { await settleUi(); return block(t, round, stuckReason(aq.stuck_block, round)) }
+      // the Reviewer verifies its blocking findings that QA was to fix (a short pass; it changes no file)
+      let qaLeft = []
+      const handedNow = (open.reviewer || []).filter(f => forQa(f) && REV_BLOCKING.includes(f.severity))
+      if (handedNow.length) {
+        const ids = handedNow.map(f => f.id)
+        const base = lastRevPrompt || reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev)
+        const again = await stage('reviewer', `${base}\n\n## ONLY VERIFY - QA's fixes\nQA was to fix these findings of yours in its stage of ` +
+          `this round (their fix is in a test). Check the current files and return each one in \`verified\` (fixed / open / worse / dismissed). ` +
+          `Return no new findings and change no file.\n${bullets(handedNow.map(fline))}`,
+          { phase: 'Review', label: `review verify qa ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
+        let vres = null
+        try { vres = await recordOnce('reviewer', [], (again && again.verified) || [], 'Review', `findings reviewer verify qa ${tag}`, ids) }
+        catch (e) { log(`Could not record the Reviewer's verification of QA's fixes in ${tag}: ${e.message}`) }
+        if (vres) open.reviewer = (vres.open || []).map(f => ({ ...f, unverified: (vres.unverified || []).includes(f.id) }))
+        qaLeft = vres ? (vres.blocking || []).filter(f => forQa(f) && ids.includes(f.id)) : handedNow
+        if (qaLeft.length) log(`↩ ${tag}: QA's fixes of ${qaLeft.map(f => f.id).join(', ')} not accepted by the Reviewer yet`)
+      }
       const qaFailed = !aq.ok || qa.verdict !== 'pass' || !qa.mini_spec_complete || qaRes.blocking.length > 0
 
       // ---- UI (its review ran beside QA's) --------------------------------
@@ -1477,9 +1519,11 @@ async function runTask(t) {
         }
         if (uiRes.blocking.length) uiFeedback = findingsFeedback('UI review: changes requested (see docs/UI.md)', ui.summary, uiRes)
       }
-      if (qaFailed || uiFeedback) {
-        lastStage = qaFailed ? (uiFeedback ? 'qa and ui' : 'qa') : 'ui'
-        feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback].filter(Boolean).join('\n\n')
+      if (qaFailed || uiFeedback || qaLeft.length) {
+        lastStage = [qaFailed || qaLeft.length ? 'qa' : '', uiFeedback ? 'ui' : ''].filter(Boolean).join(' and ')
+        feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback,
+          qaLeft.length ? `### Review: QA's fixes not accepted yet\nNothing to change for you here unless another check says so: QA reworks them in its stage of the next round.${qaOwnedNote(qaLeft)}` : '',
+        ].filter(Boolean).join('\n\n')
         continue
       }
 
@@ -1581,6 +1625,7 @@ async function criticalOpen(plan) {
 phase('Prepare')
 let plan = await sh('plan json', { phase: 'Prepare', label: 'plan' })
 if (plan && typeof plan.api_stop_after === 'number') API_STOP_AFTER = plan.api_stop_after
+if (plan && plan.review_qa_route === false) QA_ROUTE = false
 if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
 if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${bullets(plan.errors)}`)
 PROJECT = plan.root

@@ -60,12 +60,15 @@ the tables of contents of the documents with line numbers (read them by section)
 12. **Tests that wait for time**: a test added or changed since the task's base that waits a fixed time
    instead of a state (`Task.Delay`, `Thread.Sleep`, `waitForTimeout`, `setTimeout` or `sleep` in a test, a
    timeout set to the real duration of what it waits for): each one adds its seconds to every run of the suite
-   for good, and they add up unseen (a suite once doubled its time in three days). Tests are QA's, and Dev may
-   not change them, so this never sends the task back: report it as `minor`, its title starting with "For QA:",
-   naming the test and the line and the fix (wait for the state, or advance the clock through the time
-   abstraction). QA fixes it in its round. (As `major` it sent a task back to Dev three times for a test Dev
-   could not touch.)
-13. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
+   for good, and they add up unseen (a suite once doubled its time in three days). Report it with its real
+   severity (normally `major`) and `owner: "qa"`, naming the test and the line and the fix (wait for the state,
+   or advance the clock through the time abstraction).
+13. **Who fixes it (`owner`)**: tests are QA's and Dev may not change them. A finding whose fix is in a test or
+   a test helper has `owner: "qa"`; every other finding is Dev's (`dev`, the default). Give it its real
+   severity either way - never lower it so that it does not send the task back. A blocking finding for QA
+   does not send the task back to Dev: the task goes on to QA, which fixes it in its stage, and you verify the
+   fix right after QA in a short pass (only `verified`, no new findings).
+14. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 
 ## Severity
@@ -80,7 +83,8 @@ or error, a broken rule of `docs/ARCHITECTURE.md`, an ADR or CLAUDE.md. An incom
 means that something the code does is missing from it or described wrongly; a case that neither the
 task nor the code decides is a gap.
 
-The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`.
+The verdict is `changes_requested` only with at least one blocker/major finding, otherwise `approve`
+(the build sends the task back to Dev only for Dev's blocking findings; those for QA go on to QA, item 13).
 Every finding has a file, a line, what the problem is and specifically what to change.
 
 ## SPEC gaps

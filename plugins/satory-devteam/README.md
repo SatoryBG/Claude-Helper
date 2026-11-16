@@ -487,6 +487,14 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.25** - A finding whose fix is in a test goes on to QA instead of back to Dev, and keeps its real
+  severity. The Reviewer marks each finding with who fixes it (`owner`: `qa` when the fix is in a test or a test
+  helper, which only QA may change). When the only blocking findings of a review are for QA, the task goes on to
+  QA, which fixes them in its stage; right after QA the Reviewer verifies those fixes in a short pass (only
+  `verified`). One not accepted ends the round and comes back to QA in the next one. Dev sees the findings for QA
+  in its feedback, marked `[for QA]`, but not as its work. Replaces the 1.9.24 workaround (a test that waits a
+  fixed time reported as `minor` "For QA:"), which lowered the severity only so the task would reach QA. Opt-out:
+  `"review_qa_route": false` (such findings block as any other).
 - **1.9.24** - Fix of 1.9.22: a test that waits a fixed time no longer sends the task back to Dev. The Reviewer
   flagged it as `major`, but tests are QA's and Dev may not change them, so the task bounced between Dev and the
   Reviewer (three times in AGC-Documents-Signing). It is now a `minor` finding titled "For QA:", and QA fixes
