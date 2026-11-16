@@ -254,6 +254,7 @@ const HEALTH_SCHEMA = {
         required: ['title', 'kind', 'impact', 'description', 'files', 'ui'],
       },
     },
+    test_questions: { ...GAP_ITEMS, description: 'Tests that look unneeded (duplicate checks, removed behaviour, something temporary): a question for the user each, never part of the task' },
   },
   required: ['summary', 'title', 'items'],
 }
@@ -1021,6 +1022,8 @@ async function healthTask(m, tasks, plan) {
   const out = await spawn('code-health', healthPrompt(m, tasks),
     { phase: 'Milestone review', label: `code health ${m}`, model: MODELS['code-health'], schema: HEALTH_SCHEMA })
   if (!out) { log(`The code health review of ${m} returned no result.`); return }
+  if ((out.test_questions || []).length)
+    await addQuestions(out.test_questions, 'fix', `code health ${m}`, { milestone: m, phase: 'Milestone review' })
   const items = out.items || []
   if (!items.length) { log(`🧹 ${m} code health: nothing to refactor`); return false }
   const next = plan.tasks.find(t => t.status === 'todo')

@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import resource
 import shlex
 import shutil
 import subprocess
@@ -416,10 +417,13 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
         write_json(now_f, {"log": log.name, "started": time.time(), "pid": os.getpid()})
     except OSError:
         pass
+    stats = {}
     with open(log, "w", encoding="utf-8") as f:
         for cmd in cmds:
             f.write(f"$ {cmd}\n")
             f.flush()
+            start = f.tell()
+            ru = resource.getrusage(resource.RUSAGE_CHILDREN)
             t0 = time.time()
             try:
                 code = subprocess.run(cmd, shell=True, executable="/bin/bash", cwd=p.root,
@@ -428,6 +432,15 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
             except subprocess.TimeoutExpired:
                 f.write(f"\n[satory] timeout after {p.cmd_timeout()}s (command_timeout_minutes in .satory/project.json)\n")
                 code = 124
+            ru2 = resource.getrusage(resource.RUSAGE_CHILDREN)
+            f.flush()
+            try:  # the tests it ran (MTP "total: N", Vitest "Tests N passed"), for the time of one test
+                with open(log, encoding="utf-8", errors="replace") as part:
+                    part.seek(start)
+                    ran = sum(int(a or b) for a, b in UNIT_RAN.findall(part.read()))
+            except OSError:
+                ran = 0
+            stats[cmd] = {"cpu": round(ru2.ru_utime + ru2.ru_stime - ru.ru_utime - ru.ru_stime), "tests": ran}
             f.write(f"\n[satory] exit {code}\n")
             times.append((cmd, round(time.time() - t0), code))
             if code != 0:
@@ -437,7 +450,7 @@ def run_cmds(p: Project, cmds: list[str], log: Path, env: dict) -> dict:
             now_f.unlink(missing_ok=True)
     except (OSError, ValueError):
         pass
-    return {"ok": code == 0, "exit": code, "log": p.rel(log), "times": times}
+    return {"ok": code == 0, "exit": code, "log": p.rel(log), "times": times, "stats": stats}
 
 
 NOW_RUNNING = ".now.json"
@@ -471,7 +484,7 @@ TREND_MIN_SECONDS = 180   # a smaller growth is not worth a word
 TREND_SAMPLES = 3         # the first passing runs that set the baseline (their median)
 
 
-def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
+def check_trend(p: Project, tid: str, rnd: int, times: list, stats: dict | None = None) -> None:
     if p.config.get("check_trend", True) is False:
         return
     growth = float(p.config.get("check_trend_growth") or TREND_GROWTH)
@@ -481,11 +494,11 @@ def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
             continue
         e = ct.setdefault(cmd[:300], {"recent": []})
         e["recent"] = (e["recent"] + [secs])[-8:]
+        speed_task(p, tid, rnd, cmd, secs, e, (stats or {}).get(cmd) or {})
         if "baseline" not in e:
             if len(e["recent"]) >= TREND_SAMPLES:
                 e["baseline"] = sorted(e["recent"])[len(e["recent"]) // 2]
             continue
-        speed_task(p, tid, rnd, cmd, secs, e)
         b = e["baseline"]
         if secs >= b * growth and secs - b >= TREND_MIN_SECONDS:
             short = cmd if len(cmd) <= 60 else cmd[:57] + "..."
@@ -496,49 +509,89 @@ def check_trend(p: Project, tid: str, rnd: int, times: list) -> None:
     p.save_state()
 
 
-SPEED_TASK_MINUTES = 30    # a whole unit test run longer than this plans a task that makes it faster
-SPEED_TASK_GROWTH = 2.0    # ... and so does one that takes twice its fastest run
+SPEED_WINDOW = 20          # the runs whose fastest time per test is the reference for a sudden slowdown
+SPEED_SUDDEN = 2.0         # time per test this many times the window's fastest: a sudden slowdown
+SPEED_CREEP = 3.0          # ... this many times the reference set after the last speed task: a slow creep
+SPEED_IDLE = 0.30          # the test processes used less than this share of the cores: they mostly wait
+SPEED_REACHABLE = 0.60     # the share of the cores a fixed suite is assumed to reach (to estimate the saving)
+SPEED_RUNS_PER_TASK = 2.0  # whole runs of a test command per task still to do (the rounds that change its code)
+SPEED_TASK_HOURS = 4.0     # what a speed task costs; it is planned only when it pays back before the plan ends
 
 
-def speed_task(p: Project, tid: str, rnd: int, cmd: str, secs: float, e: dict) -> None:
-    """A unit test command that has grown slow plans a task that makes it faster, once: the build planner turns
-    the automatically answered item into a task between two tasks. In AGC-Documents-Signing the .NET tests grew
-    from 20 to 57 minutes and ran in almost every round; one such task took 5 hours and brought them to 15
-    minutes, paid back after about 4 tasks. "test_speed_task": false turns it off; "test_speed_task_minutes" and
-    "test_speed_task_growth" set when."""
+def speed_task(p: Project, tid: str, rnd: int, cmd: str, secs: float, e: dict, stat: dict) -> None:
+    """A unit test command that got slow plans one task that makes it faster - only when the saving pays the task
+    back before the plan ends. Slow means any of: the time of one test is 2x the fastest of the last 20 runs (a
+    sudden slowdown), or 3x the reference set after the last speed task (a slow creep the window would absorb), or
+    the test processes keep most cores idle (they wait: sleeps, timeouts, one class after another - a defect
+    however slowly it grew). No fixed minutes: they are wrong for most projects (`test_speed_task_minutes` sets one
+    anyway). After the task is done the references start again from its first runs, so a task that did not help
+    is not planned again and again. In AGC-Documents-Signing the .NET tests went from 137 to 80 tests a minute in
+    three days with 2.6 of 14 cores busy; one task (5 hours) brought them from 50-57 to 15 minutes and paid back
+    after about 4 tasks. "test_speed_task": false turns it off."""
     if p.config.get("test_speed_task", True) is False or cmd not in [c[:300] for c in p.commands("test")]:
         return
-    e["fastest"] = min(e.get("fastest") or secs, secs)
-    limit = float(p.config.get("test_speed_task_minutes") or SPEED_TASK_MINUTES) * 60
-    growth = float(p.config.get("test_speed_task_growth") or SPEED_TASK_GROWTH)
-    if secs < limit and secs < e["fastest"] * growth:
-        return
+    tests = int(stat.get("tests") or 0)
+    per = secs / tests if tests else float(secs)
+    cores = os.cpu_count() or 1
+    util = (float(stat["cpu"]) / (secs * cores)) if stat.get("cpu") is not None and secs else None
     key = f"speed:{cmd}"
     reg = questions_load(p)
-    if any(x.get("key") == key and x.get("status") in ("open", "answered", "planned", "deferred") for x in reg["items"]):
+    mine = [x for x in reg["items"] if x.get("key") == key]
+    done = {t["id"] for t in p.plan().get("tasks", []) if t.get("status") == "done"}
+    finished = lambda x: x.get("status") == "resolved" or (x.get("status") == "planned" and x.get("task") in done)
+    # the last speed task is done: the references start again from the runs after it
+    if e.get("speed_item") and any(x["id"] == e["speed_item"] and finished(x) for x in mine):
+        e.update(speed_item=None, window=[], ref_runs=[], ref=None)
+    window = e.setdefault("window", [])
+    ref_runs = e.setdefault("ref_runs", [])
+    if e.get("ref") is None:
+        ref_runs.append(per)
+        if len(ref_runs) >= TREND_SAMPLES:
+            e["ref"] = sorted(ref_runs)[len(ref_runs) // 2]
+    best = min(window) if window else None
+    e["window"] = (window + [per])[-SPEED_WINDOW:]
+    if any(x.get("status") in ("open", "answered", "deferred", "dismissed") or
+           (x.get("status") == "planned" and not finished(x)) for x in mine):
+        return  # one at a time; the user's "Not needed" stands
+    if best is None or len(window) < TREND_SAMPLES:
         return
-    if any(x.get("key") == key and x.get("status") == "dismissed" for x in reg["items"]):
-        return  # the user said no: their decision stays
+    why, target = None, None
+    fixed = p.config.get("test_speed_task_minutes")
+    if per >= best * float(p.config.get("test_speed_task_growth") or SPEED_SUDDEN):
+        why, target = f"one test takes {per / best:.1f}x its fastest of the last runs", best * (tests or 1)
+    elif e.get("ref") and per >= e["ref"] * SPEED_CREEP:
+        why, target = f"one test takes {per / e['ref']:.1f}x what it took after the last speed task", e["ref"] * (tests or 1)
+    elif util is not None and util < SPEED_IDLE:
+        why, target = f"its processes used {util * 100:.0f}% of the {cores} cores - the tests mostly wait", secs * util / SPEED_REACHABLE
+    elif fixed and secs >= float(fixed) * 60:
+        why, target = f"it took more than {fixed} minutes", float(fixed) * 60
+    if not why:
+        return
+    left = sum(1 for t in p.plan().get("tasks", []) if t.get("status") in ("todo", "in_progress"))
+    saving = max(0.0, secs - target) * SPEED_RUNS_PER_TASK * left
+    cost = float(p.config.get("test_speed_task_hours") or SPEED_TASK_HOURS) * 3600
+    if not fixed and saving < cost:
+        return  # it would not pay back before the plan ends
     short = cmd if len(cmd) <= 80 else cmd[:77] + "..."
     question_append(reg, {
         "kind": "fix", "severity": "major", "key": key,
-        "title": f"The test command `{short}` takes {secs / 60:.0f} min (fastest {e['fastest'] / 60:.0f} min)",
-        "detail": "It runs in the check of almost every round, so every round waits for it. A task only on the test "
-                  "infrastructure makes it faster without changing what the tests check.",
+        "title": f"The test command `{short}` got slow: {why}",
+        "detail": f"The last whole run took {secs / 60:.0f} min for {tests or '?'} tests. It runs in the check of almost "
+                  f"every round; making it faster saves about {saving / 3600:.0f} h over the {left} task(s) still to do.",
         "refs": [cmd]}, f"check {tid} r{rnd}", tid, None)
     q = reg["items"][-1]
     q["status"], q["answered"] = "answered", now("%Y-%m-%d")
-    q["answer"] = (f"Plan it (automatically: the whole run took {secs / 60:.0f} min). One task only on the test "
-                   "infrastructure, the work of QA, the app code unchanged: measure the time of every test class and "
-                   "write the 10 slowest with their cause into the mini-spec; remove waiting for real time (advance "
-                   "the clock through the time abstraction, small timeouts in the tests' configuration); share what "
-                   "is expensive within a class where the tests do not depend on each other and split large classes "
-                   "that run alone at the end; raise the parallelism when the machine has room. The checks of the "
-                   "tests do not change or weaken, no test is deleted, the number of tests does not fall; the whole "
-                   "command runs 3 times in a row without a flaky test, with the time before and after in the "
-                   "mini-spec.")
+    q["answer"] = (f"Plan it (automatically: {why}). One task only on the test infrastructure, the work of QA, the "
+                   "app code unchanged: measure the time of every test class and write the 10 slowest with their cause "
+                   "into the mini-spec; remove waiting for real time (advance the clock through the time abstraction, "
+                   "small timeouts in the tests' configuration); share what is expensive within a class where the tests "
+                   "do not depend on each other and split large classes that run alone at the end; raise the "
+                   "parallelism when the machine has room. The checks of the tests do not change or weaken, no test is "
+                   "deleted, the number of tests does not fall; the whole command runs 3 times in a row without a flaky "
+                   "test, with the time and the share of busy cores before and after in the mini-spec.")
+    e["speed_item"] = q["id"]
     questions_save(p, reg)
-    progress(p, f"🗂 {q['id']}: `{short}` took {secs / 60:.0f} min - a task to make it faster is planned automatically")
+    progress(p, f"🗂 {q['id']}: `{short}` got slow ({why}) - a task to make it faster is planned automatically")
 
 
 # a crash of the runtime or the test host, not a failing test: the gate runs once more before it fails
@@ -772,7 +825,7 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
                                for c in unchanged), encoding="utf-8")
         return {"ok": True, "exit": 0, "log": p.rel(log), "unchanged": unchanged}
     res = run_cmds(p, cmds, log, p.env(tid, rnd))
-    check_trend(p, tid, rnd, res.get("times"))
+    check_trend(p, tid, rnd, res.get("times"), res.get("stats"))
     if unchanged:
         with open(log, "a", encoding="utf-8") as f:
             f.writelines(f"[satory] not run - no change in its part of the code since it last passed: {c}\n" for c in unchanged)

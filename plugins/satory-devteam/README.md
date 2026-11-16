@@ -487,6 +487,26 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.22** - The speed task of 1.9.21 is planned on relative signals, not on a fixed number of minutes (30
+  minutes are too much for one project and too little for another), and slow tests are caught before they pile up.
+  - **When a unit test command counts as slow**, any of: the time of one test (the run's time over the number of
+    tests it reports) is 2x the fastest of its last 20 runs - a sudden slowdown, not just more tests; or 3x the
+    reference set after the last speed task - a slow creep the window would absorb; or the test processes used
+    less than 30% of the cores - they mostly wait (sleeps, timeouts, one class after another), a defect however
+    slowly it grew. The CPU time of each command is now measured. In AGC-Documents-Signing the .NET tests went
+    from 137 to 80 tests a minute in three days with 2.6 of 14 cores busy.
+  - **Only when it pays back**: the saving per run x 2 runs per task still to do must exceed the task's cost (4
+    hours, `test_speed_task_hours`), so a project near its end gets no such task.
+  - **After the task is done the references start again** from its first 3 runs: a task that did not help is not
+    planned again and again; the next one comes only when the suite slows down again.
+  - `test_speed_task_minutes` still sets a fixed limit for a project that wants one; `"test_speed_task": false`
+    turns it off.
+  - **The Reviewer flags tests that wait for time** (`Task.Delay`, `Thread.Sleep`, `waitForTimeout`, sleeps)
+    instead of a state, as major - each adds its seconds to every run for good.
+  - **The code health review also reads the test suites**: sleeps and slow setups of tests become items of the
+    refactoring task (QA's work, the checks unchanged); tests that look unneeded - duplicate checks, removed
+    behaviour, something temporary - become questions for the user, never part of the task, since many projects
+    never delete a test.
 - **1.9.21** - Three fixes from AGC-Documents-Signing.
   - **A round that changed only documents does not run the whole e2e suite again.** When the work tree differs
     from the one on which the whole suite last passed only in documents (`docs/`, `.satory/`, Markdown outside

@@ -30,12 +30,21 @@ and `docs/ARCHITECTURE.md`. Do not read `docs/JOURNAL.md`.
      fixture that serialises them), fixed sleeps, containers started per class where one per test project
      would do - the time of the unit suite should grow with the number of tests, not faster (unless
      `"tests_parallel": false` in `.satory/project.json`).
+   - The tests' work: a unit suite whose processes keep most cores idle (they wait - sleeps, timeouts, one
+     class after another) is a defect of the test infrastructure even when its time grew slowly.
 3. **Naming**: identifiers in another language in Latin letters (`vnoska`, `cena`), the same concept
    under different names in different places, names that do not say what a thing is.
 4. **Dead code and magic values**: functions, endpoints, components, styles or translation keys nothing
    uses; the same threshold, limit or code written as a literal in several places.
 5. **Consistency**: two ways of doing the same thing (error handling, validation, date or number
    formatting, loading data) where the architecture names one.
+
+**The test suites themselves** (unit and e2e), beside their speed: tests that check the same thing as another
+test, tests of behaviour that no longer exists (a removed feature, a placeholder page a later task replaced),
+tests of something temporary. Many projects never delete a test, so these never go into the refactoring task:
+return each in `test_questions` (title, detail with the test names and files and why it looks unneeded, the
+options "Merge or remove it (QA)" and "Keep it"), and the user decides. Sleeps and slow setups of tests that
+stay are `efficiency` items of the task (QA's work, the checks unchanged).
 
 Leave alone what the linter checks, style, naming and anything that is a matter of taste. Do not
 propose new features or changes of behaviour: every finding must keep the behaviour exactly as it is.

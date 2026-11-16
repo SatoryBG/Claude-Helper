@@ -57,7 +57,12 @@ the tables of contents of the documents with line numbers (read them by section)
    app) has its evidence in the mini-spec - the vendor's example, a probe against the real system, or the
    mark "unconfirmed against the real system" with a verification for the user (Dev's rule on external
    systems). Behaviour taken from an unclear or contradictory document without either is `major`.
-12. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
+12. **Tests that wait for time**: a test added or changed since the task's base that waits a fixed time
+   instead of a state (`Task.Delay`, `Thread.Sleep`, `waitForTimeout`, `setTimeout` or `sleep` in a test, a
+   timeout set to the real duration of what it waits for) is `major`: each one adds its seconds to every run
+   of the suite for good, and they add up unseen (a suite once doubled its time in three days). The fix is to
+   wait for the state, or to advance the clock through the time abstraction. Name the test and the line.
+13. Do not comment on style the linter already checks. Security is the Security auditor's job: flag it only
    when it is obvious.
 
 ## Severity
