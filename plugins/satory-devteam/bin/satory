@@ -4742,7 +4742,9 @@ def cmd_step(p: Project, a) -> None:
         changelog = p.root / "CHANGELOG.md"
         has_entry = ("CHANGELOG.md" in changed and changelog.exists()
                      and tid in changelog.read_text(encoding="utf-8"))
-        emit({"ok": has_entry, "changelog": has_entry, "changed": sorted(changed)})
+        doc, missing = deployment_undocumented(p)
+        emit({"ok": has_entry and not missing, "changelog": has_entry, "changed": sorted(changed),
+              "deployment_doc": doc, "undocumented": missing})
 
     elif a.step == "readonly":
         changed = changed_files(p, ck)
@@ -4763,6 +4765,38 @@ def cmd_step(p: Project, a) -> None:
 
     else:
         raise SatoryError(f"unknown step {a.step}")
+
+
+DEPLOY_ENV_GLOBS = ("deploy/**/*.env", "deploy/**/.env.example", "deploy/**/*.env.example", ".env.example")
+DEPLOY_COMPOSE_GLOBS = ("deploy/**/*compose*.yml", "deploy/**/*compose*.yaml", "docker-compose*.yml", "compose*.yml")
+COMPOSE_SECRET = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*\n    (?:file|environment|external):", re.M)
+ENV_KEY = re.compile(r"^\s*([A-Z][A-Z0-9_]*)=", re.M)
+
+
+def deployment_undocumented(p: Project) -> tuple[str | None, list[str]]:
+    """The deployment document (`deployment_doc`, by default docs/DEPLOYMENT.md when it exists) and the settings and
+    secrets of the deploy files it does not mention: every KEY= of the env files and every secret of the compose
+    files. A new parameter that only lives in a compose file is found by nobody on the server (the document is what
+    the person who installs and updates the machine reads)."""
+    rel = p.config.get("deployment_doc", "docs/DEPLOYMENT.md")
+    if not rel:
+        return None, []
+    doc = p.root / str(rel)
+    if not doc.exists():
+        return None, []
+    text = doc.read_text(encoding="utf-8", errors="replace")
+    names: set[str] = set()
+    for g in DEPLOY_ENV_GLOBS:
+        for f in p.root.glob(g):
+            if "node_modules" not in f.parts:
+                names |= set(ENV_KEY.findall(f.read_text(encoding="utf-8", errors="replace")))
+    for g in DEPLOY_COMPOSE_GLOBS:
+        for f in p.root.glob(g):
+            body = f.read_text(encoding="utf-8", errors="replace")
+            top = re.search(r"^secrets:\s*\n((?:[ \t].*\n|\n)*)", body, re.M)
+            if top:
+                names |= set(COMPOSE_SECRET.findall(top.group(1) if top.group(1).endswith("\n") else top.group(1) + "\n"))
+    return str(rel), sorted(n for n in names if n not in text)
 
 
 def main_unchanged(p: Project, st: dict, tid: str) -> None:

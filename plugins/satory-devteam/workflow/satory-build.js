@@ -1531,7 +1531,10 @@ ${SUITE_HINT}${(full.stuck || []).length ? `\n\n${stuckHint(full.stuck)}` : ''}`
         { phase: 'Docs', label: `docs ${t.id}${attempt > 1 ? ' attempt 2' : ''}`, model: MODELS.docs, schema: DOCS_SCHEMA })
       docsCheck = must(await sh(`step docs-check ${t.id} --round ${round}`, { phase: 'Docs', label: `check docs ${t.id}` }), `docs-check ${t.id}`)
       if (docsCheck.ok) break
-      docsNote = `The previous attempt did not add an entry for ${t.id} to CHANGELOG.md under [Unreleased]. This is mandatory - add it.`
+      docsNote = [
+        docsCheck.changelog === false ? `The previous attempt did not add an entry for ${t.id} to CHANGELOG.md under [Unreleased]. This is mandatory - add it.` : '',
+        (docsCheck.undocumented || []).length ? `${docsCheck.deployment_doc} does not mention these settings and secrets of the deploy files: ${docsCheck.undocumented.join(', ')}. Describe each one there (what it is for, its value or how to create it, which service uses it, how to change it).` : '',
+      ].filter(Boolean).join('\n')
     }
     try {  // the non-blocking findings still open go to the polish task (before the merge: nothing is lost if it stops)
       await sh(`finding polish ${t.id} --round ${round}`, { phase: 'Docs', label: `polish ${t.id}` })
@@ -1539,7 +1542,7 @@ ${SUITE_HINT}${(full.stuck || []).length ? `\n\n${stuckHint(full.stuck)}` : ''}`
     const docsSummary = docs ? `${docs.summary}\n\n${bullets(docs.files)}` : 'The technical writer returned no result.'
     const fin = must(await sh(`task finish ${t.id}`,
       { phase: 'Docs', label: `merge+push ${t.id}`, long: true,
-        note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ CHANGELOG.md was not updated even after a retry.` }),
+        note: docsCheck.ok ? docsSummary : `${docsSummary}\n\n⚠ ${docsCheck.changelog === false ? 'CHANGELOG.md was not updated' : `${docsCheck.deployment_doc} still does not describe: ${(docsCheck.undocumented || []).join(', ')}`} even after a retry.` }),
     `finish ${t.id}`)
     log(`✓ ${t.id} done in ${round} round(s)${fin.pushed ? ', pushed' : ''}${fin.preview && fin.preview.url ? `, preview: ${fin.preview.url}` : ''}${fin.staging && fin.staging.url ? `, staging: ${fin.staging.url}` : ''}`)
     return { id: t.id, title: t.title, status: 'done', rounds: round, commit: fin.commit, pushed: fin.pushed,

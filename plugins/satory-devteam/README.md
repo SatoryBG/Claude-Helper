@@ -487,6 +487,15 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.23** - The deployment document keeps up with the code. When the project has one (`deployment_doc`, by
+  default `docs/DEPLOYMENT.md` once it exists), the check after Docs also requires it to mention every setting of
+  the deploy env files (`KEY=` in `deploy/**/*.env`, `.env.example`) and every secret of the compose files, as it
+  requires the CHANGELOG entry: the technical writer is told which names are missing and gets one more attempt. The
+  writer's rules say to describe each new setting, secret, service, port, volume or server step there (what it is
+  for, its value or how to create it, which service uses it, how to change it, what to check). The person who
+  installs and updates the server reads only that document, so a parameter that lives only in a compose file is
+  found by nobody (asked for in AGC-Documents-Signing with its continuous deployment to the organisation's
+  server). Opt-out: `"deployment_doc": false`.
 - **1.9.22** - The speed task of 1.9.21 is planned on relative signals, not on a fixed number of minutes (30
   minutes are too much for one project and too little for another), and slow tests are caught before they pile up.
   - **When a unit test command counts as slow**, any of: the time of one test (the run's time over the number of

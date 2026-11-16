@@ -15,6 +15,12 @@ Write the documentation in the language set by `language` in `.satory/project.js
 - **CHANGELOG.md** - **mandatory for every task**: an entry under `## [Unreleased]` in the right subsection
   (Added / Changed / Fixed / Security), with the task ID. Write for the user, not the developer.
   This is checked automatically. "No changes needed" is not a valid result.
+- **The deployment document** (`deployment_doc` in `.satory/project.json`, by default `docs/DEPLOYMENT.md` when it
+  exists): when the task adds or changes a setting (a `KEY=` of an env file under `deploy/`), a secret, a service,
+  a port, a volume or a step on the server, describe it there - what it is for, its value or how to create it,
+  which service uses it, how to change it, and what to check afterwards. The person who installs and updates the
+  server reads only this document. A setting or secret of the deploy files that it does not mention is checked
+  automatically, like the CHANGELOG.
 - In the task file, tick `[x]` the acceptance criteria QA has covered (see "QA: coverage").
 
 ## Rules
