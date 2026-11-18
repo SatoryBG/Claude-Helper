@@ -487,6 +487,16 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.27** - Docker disk space is cleaned after every finished task. In AGC-Documents-Signing 1,164 old images
+  and about 52 GB of anonymous volumes had piled up. After the deploy of a finished task the CLI removes the
+  project's own images that no container uses (the images of the environments, their previous images and their
+  `-worker`/`-dss` variants are kept), dangling images, build cache older than 3 days and anonymous volumes no
+  container uses, and reports it in a `🧹` line with the space freed. From 10 GB freed (`disk_hint_gb`) in WSL the
+  line says that the virtual disk does not shrink by itself. New `satory disk`: what takes space (Docker, the npm,
+  pip, NuGet, Playwright and apt caches) and the steps for the user - cleaning the caches, `fstrim`, and compacting
+  the VHDX with diskpart at the path found in the Windows registry for this distribution (or Docker Desktop's
+  disk), or `wsl --manage <distribution> --set-sparse true` once; `satory disk --clean` runs the Docker cleanup now.
+  Opt-out: `"docker_cleanup": false`.
 - **1.9.26** - Fix: the cases of a parameterised test whose data QA adapted in an earlier round of the task
   (the file listed in "QA: adapted tests") are no longer counted as deleted tests in a later round that does not
   change the file again. In AGC-Documents-Signing QA adapted a theory in round 2 to the new behaviour of the task;

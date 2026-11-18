@@ -2941,6 +2941,156 @@ def cmd_qa_check(p: Project, a) -> None:
           "(see your rules). Then run this check again."})
 
 
+# ------------------------------------------------------------ docker disk ---
+# Every task builds new images (main and the tests' copies) and the test runs leave anonymous volumes and
+# build cache behind; nothing removed them. In AGC-Documents-Signing 1,164 images and ~52 GB of anonymous
+# volumes piled up in a few weeks. After each finished task the project's own images that no container uses
+# (except those of the environments and their previous images), dangling images, build cache older than 3 days
+# and anonymous volumes no container uses are removed. Opt-out: "docker_cleanup": false.
+
+DISK_HINT_GB = 10  # freed space from which the user is told that the WSL disk does not shrink by itself
+
+
+def _docker(args: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+
+
+def _used_bytes(path: str) -> int | None:
+    for c in (path, "/"):
+        with contextlib.suppress(OSError):
+            u = shutil.disk_usage(c)
+            return u.total - u.free
+    return None
+
+
+def docker_cleanup(p: Project) -> dict:
+    """Removes what earlier builds and test runs left behind; never raises. {"images", "volumes", "freed_gb"}."""
+    if p.config.get("docker_cleanup", True) is False or not shutil.which("docker"):
+        return {"skipped": True}
+    d = p.config.get("deploy") or {}
+    repo = str(d.get("image") or "").strip()
+    try:
+        before = _used_bytes("/var/lib/docker")
+        keep = set()
+        for v in (p.state.get("deploy") or {}).values():
+            if isinstance(v, dict):
+                keep |= {v.get("image"), v.get("previous")}
+            elif isinstance(v, str):
+                keep.add(v)
+        keep = {k for k in keep if k}
+        in_use = set(_docker(["ps", "-a", "--format", "{{.Image}}"]).stdout.split())
+        removed_images = []
+        if repo:
+            tags = [x for x in _docker(["images", repo, "--format", "{{.Repository}}:{{.Tag}}"]).stdout.split()
+                    if not x.endswith(":<none>")]
+            # an image of an environment comes with its variants (repo:sha-worker, repo:sha-dss)
+            drop = [t for t in tags if t not in in_use and not any(t == k or t.startswith(k + "-") for k in keep)]
+            for i in range(0, len(drop), 50):
+                r = _docker(["rmi", *drop[i:i + 50]])
+                removed_images += [t for t in drop[i:i + 50] if f"Untagged: {t}" in r.stdout]
+        _docker(["image", "prune", "-f"])                                   # dangling layers only
+        _docker(["builder", "prune", "-f", "--filter", "until=72h"])
+        anon = [v for v in _docker(["volume", "ls", "-q", "-f", "dangling=true"]).stdout.split()
+                if re.fullmatch(r"[0-9a-f]{64}", v)]                       # anonymous, used by no container
+        removed_volumes = 0
+        for i in range(0, len(anon), 100):
+            r = _docker(["volume", "rm", *anon[i:i + 100]])
+            removed_volumes += len([x for x in r.stdout.split() if x in anon])
+        after = _used_bytes("/var/lib/docker")
+        freed = round(max(0, (before or 0) - (after or 0)) / 1e9, 1) if before is not None and after is not None else None
+        res = {"images": len(removed_images), "volumes": removed_volumes, "freed_gb": freed}
+        if removed_images or removed_volumes or (freed or 0) >= 1:
+            line = f"🧹 Docker cleaned: {len(removed_images)} old image(s), {removed_volumes} unused volume(s)"
+            line += f", {freed} GB freed" if freed is not None else ""
+            hint = int(p.config.get("disk_hint_gb", DISK_HINT_GB) or 0)
+            if hint and freed is not None and freed >= hint and is_wsl():
+                line += " - the WSL disk file does not shrink by itself: `satory disk` shows how to compact it"
+            progress(p, line)
+        return res
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"error": str(e)}
+
+
+def is_wsl() -> bool:
+    with contextlib.suppress(OSError):
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    return False
+
+
+def _dir_gb(path: Path) -> float | None:
+    if not path.is_dir():
+        return None
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            with contextlib.suppress(OSError):
+                total += os.lstat(os.path.join(root, f)).st_size
+    return round(total / 1e9, 2)
+
+
+def wsl_vhdx() -> dict:
+    """The VHDX file that holds Docker's data in this WSL setup (from the Windows registry through interop), or the
+    reason why not: the distribution's ext4.vhdx when Docker runs in it, the Docker Desktop disk when Docker Desktop
+    runs the engine. The distribution is WSL_DISTRO_NAME, else the default one (a session started from Windows may
+    not pass the variable)."""
+    ps = shutil.which("powershell.exe") or next((x for x in ("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",)
+                                                if os.path.exists(x)), None)
+    if not ps:
+        return {"path": None, "reason": "no Windows interop (powershell.exe)"}
+    cmd = ("$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss'; $d=(Get-ItemProperty $k).DefaultDistribution; "
+           "Get-ChildItem $k | ForEach-Object { $i=Get-ItemProperty $_.PSPath; "
+           "'{0}|{1}|{2}' -f $i.DistributionName, $i.BasePath, ($_.PSChildName -eq $d) }")
+    rows = []
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        r = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=60)
+        rows = [x.strip().split("|") for x in r.stdout.splitlines() if x.count("|") == 2]
+    if not rows:
+        return {"path": None, "reason": "no WSL distribution found in the registry"}
+    name = os.environ.get("WSL_DISTRO_NAME", "")
+    row = next((x for x in rows if x[0] == name), None) or next((x for x in rows if x[2] == "True"), None)
+    if not row:
+        return {"path": None, "reason": "this distribution was not found in the registry"}
+    base = re.sub(r"^\\\\\?\\", "", row[1]).rstrip("\\")
+    out = {"distro": row[0], "path": base + "\\ext4.vhdx"}
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        if "docker desktop" in _docker(["info", "--format", "{{.OperatingSystem}}"], timeout=30).stdout.lower():
+            dd = next((x for x in rows if x[0] == "docker-desktop"), None)
+            out["docker_desktop"] = True
+            out["path"] = (re.sub(r"^\\\\\?\\", "", dd[1]).rsplit("\\", 1)[0] + "\\disk\\docker_data.vhdx") if dd else None
+    return out
+
+
+def cmd_disk(p: Project, a) -> None:
+    """What takes disk space, and the steps the user may run (the CLI runs none of them except --clean)."""
+    out: dict = {"ok": True}
+    if a.clean:
+        out["cleanup"] = docker_cleanup(p)
+    if shutil.which("docker"):
+        out["docker"] = _docker(["system", "df"]).stdout.strip().splitlines()
+    home = Path.home()
+    out["caches_gb"] = {k: v for k, v in {"npm": _dir_gb(home / ".npm" / "_cacache"), "pip": _dir_gb(home / ".cache" / "pip"),
+                                         "nuget": _dir_gb(home / ".nuget" / "packages"),
+                                         "playwright": _dir_gb(home / ".cache" / "ms-playwright"),
+                                         "apt": _dir_gb(Path("/var/cache/apt/archives"))}.items() if v is not None}
+    steps = ["satory disk --clean  (old images of the project, dangling images, build cache older than 3 days, unused anonymous volumes)",
+             "npm cache clean --force; pip cache purge; sudo apt-get clean  (caches; they fill again when needed, the next install is slower)",
+             "sudo fstrim -av  (marks the freed space as unused in the virtual disk)"]
+    if is_wsl():
+        v = wsl_vhdx()
+        out["wsl"] = v
+        path = v.get("path") or "<the ext4.vhdx of the distribution>"
+        if v.get("docker_desktop"):
+            steps.insert(0, "Docker runs in Docker Desktop: quit Docker Desktop before compacting its disk")
+        steps += ["In Windows (PowerShell as administrator), with Docker and every WSL window closed:",
+                  "wsl --shutdown",
+                  "diskpart",
+                  f'  select vdisk file="{path}"',
+                  "  attach vdisk readonly", "  compact vdisk", "  detach vdisk", "  exit",
+                  f"Or once, so that it shrinks by itself from now on (WSL 2.0+): wsl --manage {v.get('distro') or '<distribution>'} --set-sparse true"]
+    out["steps"] = steps
+    emit(out)
+
+
 def cmd_stall(p: Project, a) -> None:
     """Is the build stalled? An agent cut off by a usage limit or an API error can leave its workflow waiting
     for a result that never comes. Activity is any of: a progress event, a step of the runner, a changed
@@ -4917,8 +5067,9 @@ def cmd_task_finish(p: Project, a) -> None:
     updated += ", staging updated" if staging.get("ok") and not staging.get("skipped") else ""
     progress(p, f"✓ {tid} done in {st['rounds']} round(s) ({commit[:7]}){', pushed' if pushed else ''}{updated}"
                 f" - {done_count(p, plan)}")
+    cleanup = docker_cleanup(p)  # after the deploy: the new images are the environments' now
     emit({"ok": True, "commit": commit, "violations": violations, "pushed": pushed,
-          "push_error": push_error, "staging": staging, "preview": preview})
+          "push_error": push_error, "staging": staging, "preview": preview, "docker_cleanup": cleanup})
 
 
 def cmd_task_block(p: Project, a) -> None:
@@ -5711,6 +5862,8 @@ def main() -> None:
     s = sub.add_parser("qa-check", help="what the check after QA would restore (QA runs it before it returns)")
     s.add_argument("task")
 
+    s = sub.add_parser("disk", help="what takes disk space and how to free it (and compact the WSL disk); --clean runs the Docker cleanup now")
+    s.add_argument("--clean", action="store_true")
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
@@ -5741,7 +5894,7 @@ def main() -> None:
             global EMIT_EXTRA
             EMIT_EXTRA = lambda: usage_pause(p)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "usage": cmd_usage, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "disk": cmd_disk, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "usage": cmd_usage, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":

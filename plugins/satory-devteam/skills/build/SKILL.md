@@ -49,6 +49,11 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
    - On each event, write the user one short line in their language (what happened, in plain words; no
      tool calls needed). Several events that arrive together are one line or a few short bullets.
    - When the monitor expires and the workflow is still running, start it again the same way.
+   - **Disk space** (a `🧹 Docker cleaned` line after a finished task: the project's old images, unused anonymous
+     volumes and old build cache were removed): say how much was freed. When the line says the WSL disk does not
+     shrink by itself, run `$SATORY disk` and give the user its `steps` as a short numbered list (the cleaning of the
+     caches, `fstrim`, and compacting the VHDX with the path it found, or `wsl --manage <distribution> --set-sparse true`
+     once). The CLI runs none of these itself; `$SATORY disk --clean` runs the Docker cleanup at once.
    - **The usage pause** (a `⏸ usage [D: …; W: …]` line: a limit of the Claude account reached `usage_pause_at`,
      95% by default): the build waits at the boundary of a stage for the user's decision. Ask them at once with
      AskUserQuestion - "Stop" (the build ends here; `/satory-devteam:build` goes on from this point later),
