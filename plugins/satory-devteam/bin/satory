@@ -3086,7 +3086,11 @@ def cmd_disk(p: Project, a) -> None:
                   "diskpart",
                   f'  select vdisk file="{path}"',
                   "  attach vdisk readonly", "  compact vdisk", "  detach vdisk", "  exit",
-                  f"Or once, so that it shrinks by itself from now on (WSL 2.0+): wsl --manage {v.get('distro') or '<distribution>'} --set-sparse true"]
+                  "Or, with the Hyper-V module: Optimize-VHD -Path <the same file> -Mode Full",
+                  "Not recommended: a sparse VHD that shrinks by itself. It is experimental - `.wslconfig` "
+                  "[experimental] sparseVhd=true makes only NEW disks sparse, and converting an existing one "
+                  "(`wsl --manage <distribution> --set-sparse true`) is refused since WSL 2.5 for possible data "
+                  "corruption unless --allow-unsafe is added"]
     out["steps"] = steps
     emit(out)
 
