@@ -91,8 +91,11 @@ Follow the "Replanning" and "Plan" rules of `${CLAUDE_PLUGIN_ROOT}/skills/archit
     "updates": [], "depends": [], "resolved": []}
    SATORY_EOF
    ```
-   It commits the documents on the branch, removes the worktree and checks the plan change against the
-   current plan. On a clean main (no task running) it is merged and applied at once; otherwise it waits
+   `resolved` lists the register items done without a task (a change made only in the documents or the
+   settings): `[{"id": "Q-0XX", "reason": "what was done"}]`. Run `queue add` from the project, not from the
+   worktree (the CLI finds the project from a queue worktree too). It first checks the plan change against the
+   current plan and the changes already waiting, and only then commits the documents on the branch and removes
+   the worktree; on an error nothing is committed and the worktree stays, to fix and add again. On a clean main (no task running) it is merged and applied at once; otherwise it waits
    in `.satory/run/queue/` and the build applies it after the current task, before the planner.
 4. Tell the user in a few lines what changed in the SPEC, which tasks were added or extended and where,
    and when the work starts (now, after the current task, or with milestone X). If no build is running,

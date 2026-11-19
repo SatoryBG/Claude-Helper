@@ -1457,6 +1457,7 @@ def answering_active(p: Project) -> bool:
 
 
 def cmd_question(p: Project, a) -> None:
+    p = queue_worktree_main(p)  # the register is the main checkout's, also when run from a queue worktree
     reg = questions_load(p)
     if a.action == "add":
         try:
@@ -3337,10 +3338,22 @@ def plan_patch(p: Project, plan: dict, reg: dict, data: dict) -> list[dict]:
             q = question_find(reg, qid)
             if q["status"] in ("open", "deferred", "answered"):
                 q["status"], q["task"] = "planned", t["id"]
-    for r in data.get("resolved", []):
-        q = question_find(reg, r.get("id", ""))
-        q["status"], q["resolution"] = "resolved", str(r.get("reason", "")).strip()
+    for r in resolved_items(data):
+        q = question_find(reg, r["id"])
+        q["status"], q["resolution"] = "resolved", r["reason"]
     return added
+
+
+def resolved_items(data: dict) -> list[dict]:
+    """The `resolved` of a plan change as [{id, reason}]: a bare id is accepted, and `note` for `reason`."""
+    out = []
+    for r in data.get("resolved") or []:
+        if isinstance(r, str):
+            r = {"id": r}
+        if not isinstance(r, dict) or not str(r.get("id") or "").strip():
+            raise SatoryError(f'resolved expects [{{"id": "Q-…", "reason": "…"}}], got {json.dumps(r, ensure_ascii=False)}')
+        out.append({"id": str(r["id"]).strip(), "reason": str(r.get("reason") or r.get("note") or "").strip()})
+    return out
 
 
 def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dict:
@@ -3359,7 +3372,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     lines += [f"- {ln['task']} comes from {', '.join(ln.get('questions', []))}" for ln in data.get("links", [])]
     lines += [f"- {m['task']} merged with {', '.join(m['merged'])}" for m in data.get("_merged", [])]
     lines += [f"- new milestone {m['id']}: {m.get('title', '')}" for m in data.get("milestones", [])]
-    lines += [f"- {r.get('id')}: no task - {r.get('reason', '')}" for r in data.get("resolved", [])]
+    lines += [f"- {r['id']}: no task - {r['reason']}" for r in resolved_items(data)]
     lines += [f"- {x}: already started or done - no new dependency" for x in data.get("_skipped_depends", [])]
     linked = ux_link_tasks(p, added)
     if linked:
@@ -3376,7 +3389,7 @@ def plan_add(p: Project, plan: dict, data: dict, source: str = "planner") -> dic
     push_error = push_quiet(p, "origin", p.main)
     return {"ok": True, "added": [t["id"] for t in added], "updated": [up["task"] for up in data.get("updates", [])],
             "merged": data.get("_merged", []),
-            "resolved": [r.get("id") for r in data.get("resolved", [])], "push_error": push_error,
+            "resolved": [r["id"] for r in resolved_items(data)], "push_error": push_error,
             "skipped_depends": data.get("_skipped_depends", [])}
 
 
@@ -3492,9 +3505,31 @@ def cmd_design(p: Project, a) -> None:
           "directions": directions, "mockups": mockups})
 
 
+def queue_worktree_main(p: Project) -> Project:
+    """Run from inside a worktree of `queue begin` (cwd there, or --project <its dir>), the queue and the
+    register are still the main checkout's: its own copy of .satory has neither the waiting changes nor the
+    answers not yet written to main. Returns the project of the main checkout, else `p` itself."""
+    git = p.root / ".git"
+    if not git.is_file():
+        return p
+    try:
+        gitdir = Path(git.read_text(encoding="utf-8").split("gitdir:", 1)[1].strip())
+        if not gitdir.is_absolute():
+            gitdir = (p.root / gitdir).resolve()
+        if not (gitdir / "HEAD").read_text(encoding="utf-8").strip().startswith("ref: refs/heads/satory/queue-"):
+            return p
+        common = Path((gitdir / "commondir").read_text(encoding="utf-8").strip())
+        common = common if common.is_absolute() else (gitdir / common).resolve()
+        main = common.parent
+    except (OSError, IndexError):
+        return p
+    return Project(main) if (main / ".satory" / "project.json").exists() else p
+
+
 def cmd_queue(p: Project, a) -> None:
     """Changes to main while a task runs (documents on their own branch + a plan change) wait here and are
     applied between two tasks, in order. With no task running, on a clean main, they are applied at once."""
+    p = queue_worktree_main(p)
     qd = queue_dir(p)
     files = sorted(qd.glob("*.json")) if qd.exists() else []
     free = p.current_branch() == p.main and not p.dirty()
@@ -3515,18 +3550,23 @@ def cmd_queue(p: Project, a) -> None:
         except json.JSONDecodeError as e:
             raise SatoryError(f"queue add expects JSON on stdin: {e}")
         message = a.message or f"docs: {a.source or 'change'}"
+        import copy
+        # check it now, on the plan as it will be after the changes already waiting in the queue - before the
+        # worktree is committed and removed, so a mistake leaves it as it was, to fix and add again
+        sim_plan, sim_reg = copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p))
+        for x in files:
+            plan_patch(p, sim_plan, sim_reg, load_json(x).get("data") or {})
+        try:
+            plan_patch(p, sim_plan, sim_reg, copy.deepcopy(data))  # the check must not change what is queued
+        except SatoryError as e:
+            keep = f" (nothing committed; the worktree {a.dir} is kept)" if a.dir else ""
+            raise SatoryError(f"{e}{keep}")
         if a.dir:  # commit the documents edited in the worktree and remove it; the branch stays
             d = Path(a.dir)
             subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
             if subprocess.run(["git", "-C", str(d), "diff", "--cached", "--quiet"]).returncode != 0:
                 subprocess.run(["git", "-C", str(d), "commit", "-q", "-m", f"{message}\n\n{TRAILER}"], check=True)
             p.git("worktree", "remove", "--force", str(d))
-        import copy
-        # check it now, on the plan as it will be after the changes already waiting in the queue
-        sim_plan, sim_reg = copy.deepcopy(p.plan()), copy.deepcopy(questions_load(p))
-        for x in files:
-            plan_patch(p, sim_plan, sim_reg, load_json(x).get("data") or {})
-        plan_patch(p, sim_plan, sim_reg, copy.deepcopy(data))  # the check must not change what is queued
         item = {"source": a.source or "request", "branch": a.branch, "message": message, "data": data}
         if free and not files:
             return emit({"ok": True, "applied": queue_apply_one(p, item, "now")})

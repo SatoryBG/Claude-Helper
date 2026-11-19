@@ -487,6 +487,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.29** - `satory queue add` checks the plan change (against the plan and the changes already waiting) before it
+  commits the documents and removes the worktree: on an error nothing is committed and the worktree stays, to fix and
+  add again (before, a wrong `resolved` id cost the worktree). Run from inside a queue worktree (cwd or `--project`),
+  `queue` and `question` use the main checkout's queue and register, not the worktree's copy of `.satory`, which has
+  neither the waiting changes nor the answers not yet written to main. `resolved` accepts `{"id", "reason"}`, `note`
+  for `reason` and a bare id; any other shape is a clear error. The request skill documents the format.
 - **1.9.28** - `satory disk` no longer offers `wsl --manage <distribution> --set-sparse true`: since WSL 2.5 it is
   refused for possible data corruption unless `--allow-unsafe` is added, and `.wslconfig` `[experimental]
   sparseVhd=true` makes only new disks sparse. The steps are compacting with diskpart or `Optimize-VHD`; the sparse
