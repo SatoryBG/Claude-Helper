@@ -487,6 +487,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.32** - The usage pause keeps the user's "continue": the account reports the same reset of a limit with a
+  different fraction of a second (09:59:59.77, then 10:00:00.29), and the exact comparison took it for a new window
+  and asked again at every step. Reset times within 10 minutes are the same window now.
 - **1.9.31** - `satory status` reports `stages`: how many stages of the tasks have run - Dev, DevOps, the review, QA,
   UI, Security, e2e, Docs - each with how many passed and how many were sent back or failed, and the total. A small
   register `.satory/run/stages.json` counts every stage as it ends; without it the count starts from what

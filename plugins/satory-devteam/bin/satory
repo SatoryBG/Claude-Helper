@@ -5578,6 +5578,20 @@ USAGE_ASK = "usage-ask.json"
 USAGE_DECISION = "usage-decision.json"
 
 
+def same_window(a, b, slack: float = 600) -> bool:
+    """Two "resets_at" times of a limit are the same window when they are within `slack` seconds: the account
+    reports the same reset with a different fraction of a second (09:59:59.77 and 10:00:00.29), and an exact
+    comparison asked the user again at every step."""
+    if a == b:
+        return True
+    try:
+        ta = dt.datetime.fromisoformat(str(a).replace("Z", "+00:00"))
+        tb = dt.datetime.fromisoformat(str(b).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return abs((ta - tb).total_seconds()) <= slack
+
+
 def usage_threshold(p: Project) -> int | None:
     v = p.config.get("usage_pause_at", USAGE_PAUSE_AT)
     return None if v in (False, None, 0) else int(v)
@@ -5604,7 +5618,7 @@ def usage_pause(p: Project) -> dict | None:
     if dec.get("action") == "continue":
         allowed = dec.get("levels") or {}
         windows = dec.get("windows") or {}
-        if all(k in allowed and windows.get(k) == v.get("resets") and v["pct"] < allowed[k] + USAGE_ASK_AGAIN
+        if all(k in allowed and same_window(windows.get(k), v.get("resets")) and v["pct"] < allowed[k] + USAGE_ASK_AGAIN
                for k, v in over.items()):
             return None
     ask = load_json(ask_f, {}) if ask_f.exists() else {}
