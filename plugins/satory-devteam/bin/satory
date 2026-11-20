@@ -1608,9 +1608,66 @@ def first_line(text: str, limit: int = 140) -> str:
     return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
+STAGES_FILE = "stages.json"   # .satory/run/: how many stages of the tasks have run, by stage (status, 1.9.31)
+STAGE_OK = {"ok", "approve", "approved", "pass", "passed", "done"}
+STAGE_FAIL = {"fail", "failed", "changes_requested", "error", "gate-fail"}
+STAGE_LINE = re.compile(r"^\d\d:\d\d (?:✓|✗) (T-\d+) r\d+ ([a-z0-9-]+): ([a-z_-]+)")
+
+
+def stages_load(p: Project) -> dict:
+    """The register of the stages run so far: {since, partial, stages: {stage: {runs, ok, fail}}}. Without the file it
+    starts from what progress.log still holds (it keeps only its last lines, so the start is partial) and counts every
+    stage exactly from then on."""
+    path = p.run / STAGES_FILE
+    reg = load_json(path, {}) if path.exists() else {}
+    if isinstance(reg, dict) and isinstance(reg.get("stages"), dict):
+        return reg
+    reg = {"since": now("%Y-%m-%d %H:%M"), "partial": False, "stages": {}}
+    try:
+        lines = p.progress_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        m = STAGE_LINE.match(line)
+        if m:
+            stage_count(reg, m.group(2), m.group(3))
+            reg["partial"] = True
+    return reg
+
+
+def stage_count(reg: dict, stage: str, verdict: str) -> None:
+    e = reg["stages"].setdefault(stage, {"runs": 0, "ok": 0, "fail": 0})
+    e["runs"] += 1
+    if verdict in STAGE_OK:
+        e["ok"] += 1
+    elif verdict in STAGE_FAIL:
+        e["fail"] += 1
+
+
+def stages_record(p: Project, tid: str, stage: str, rnd: int | None, verdict: str) -> None:
+    """One stage of a task round has ended (Dev, the review, QA, UI, Security, e2e, Docs): it is counted."""
+    if not re.fullmatch(r"T-\d+", tid or "") or verdict in ("blocked", "unblocked"):
+        return
+    try:
+        reg = stages_load(p)
+        stage_count(reg, stage, verdict)
+        p.run.mkdir(parents=True, exist_ok=True)
+        write_json(p.run / STAGES_FILE, reg)
+    except OSError:
+        pass
+
+
+def stages_summary(p: Project) -> dict:
+    reg = stages_load(p)
+    st = reg["stages"]
+    return {"total": sum(e["runs"] for e in st.values()), "by_stage": st, "since": reg.get("since"),
+            "partial": bool(reg.get("partial"))}
+
+
 def journal_pending(p: Project, tid: str, stage: str, rnd: int | None, verdict: str, note: str) -> None:
     """Entries go to a gitignored file while a task runs and are flushed into
     docs/JOURNAL.md on main, so they survive even when a task branch is abandoned."""
+    stages_record(p, tid, stage, rnd, verdict)
     mark = VERDICT_MARK.get(verdict, "•")
     where = f" · round {rnd}" if rnd else ""
     entry = f"\n### {now()} · {tid}{where} · {stage} · {mark} {verdict}\n\n{note.strip() or '-'}\n"
@@ -5261,6 +5318,7 @@ def cmd_status(p: Project, a) -> None:
           "urls": {n: e["url"] for n in ("preview", "staging", "prod") if (e := env_cfg(p, n)) and e.get("url")},
           "your_env": your_env(p),
           "e2e_progress": e2e_progress(p) or None,
+          "stages": stages_summary(p),
           "remote": p.git("remote", "get-url", "origin") if p.git_ok("remote", "get-url", "origin") else None})
 
 

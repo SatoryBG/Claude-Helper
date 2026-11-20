@@ -17,6 +17,10 @@ Talk to the user in the language they write in.
    task; no agent and no test uses it (they work in temporary copies, made from scratch and removed after
    use); if `deployed` is false, say that it is created when the next task finishes. Then show briefly:
    - how many tasks are done, in progress, blocked and to do, and which one is next;
+   - how many stages have run (`stages` in the status): the total and per stage - Dev (and DevOps), the review,
+     QA, UI, Security, e2e, Docs - each with how many passed and how many were sent back or failed, in one short
+     line under the tasks (e.g. "Изпълнени етапи: 1244 - Dev 313, ревю 307 (66 върнати), QA 250 (108 паднали), ...");
+     `partial` means the count before `since` was taken from what progress.log still held;
    - what runs now: `running` in the status (the agents of the build and how many minutes each has run;
      `runner` marks a CLI step such as a check) and `e2e_progress` when an e2e check runs;
    - what happened last: `tail -n 10 .satory/run/progress.log` (one line per event of the build);

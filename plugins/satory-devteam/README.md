@@ -487,6 +487,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.31** - `satory status` reports `stages`: how many stages of the tasks have run - Dev, DevOps, the review, QA,
+  UI, Security, e2e, Docs - each with how many passed and how many were sent back or failed, and the total. A small
+  register `.satory/run/stages.json` counts every stage as it ends; without it the count starts from what
+  progress.log still holds (`partial`). `/satory-devteam:status` shows it under the tasks.
 - **1.9.30** - The automatic task that makes a slow unit test command faster needs both signals now: real growth
   (the time of one test 2x the fastest of the last 20 runs, or 3x the reference after the last speed task) AND idle
   cores (under 30% of them, when measured). Idle cores alone no longer plan it: a suite bound by start-up and JIT shows
