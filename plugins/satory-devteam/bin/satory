@@ -513,21 +513,23 @@ SPEED_WINDOW = 20          # the runs whose fastest time per test is the referen
 SPEED_SUDDEN = 2.0         # time per test this many times the window's fastest: a sudden slowdown
 SPEED_CREEP = 3.0          # ... this many times the reference set after the last speed task: a slow creep
 SPEED_IDLE = 0.30          # the test processes used less than this share of the cores: they mostly wait
-SPEED_REACHABLE = 0.60     # the share of the cores a fixed suite is assumed to reach (to estimate the saving)
 SPEED_RUNS_PER_TASK = 2.0  # whole runs of a test command per task still to do (the rounds that change its code)
 SPEED_TASK_HOURS = 4.0     # what a speed task costs; it is planned only when it pays back before the plan ends
 
 
 def speed_task(p: Project, tid: str, rnd: int, cmd: str, secs: float, e: dict, stat: dict) -> None:
     """A unit test command that got slow plans one task that makes it faster - only when the saving pays the task
-    back before the plan ends. Slow means any of: the time of one test is 2x the fastest of the last 20 runs (a
-    sudden slowdown), or 3x the reference set after the last speed task (a slow creep the window would absorb), or
-    the test processes keep most cores idle (they wait: sleeps, timeouts, one class after another - a defect
-    however slowly it grew). No fixed minutes: they are wrong for most projects (`test_speed_task_minutes` sets one
-    anyway). After the task is done the references start again from its first runs, so a task that did not help
-    is not planned again and again. In AGC-Documents-Signing the .NET tests went from 137 to 80 tests a minute in
-    three days with 2.6 of 14 cores busy; one task (5 hours) brought them from 50-57 to 15 minutes and paid back
-    after about 4 tasks. "test_speed_task": false turns it off."""
+    back before the plan ends. Slow needs BOTH: real growth - the time of one test is 2x the fastest of the last 20
+    runs (a sudden slowdown) or 3x the reference set after the last speed task (a slow creep the window would
+    absorb) - AND idle cores - the test processes used under 30% of them (they wait: sleeps, timeouts, one class
+    after another), when the share is measured. Idle cores alone are not enough: a suite bound by start-up and JIT
+    shows the same low share without anything to gain, and two automatic tasks (5-6 hours each) brought
+    AGC-Documents-Signing 0-2.5 minutes of 14-22. The saving is what the growth lost (back to the fastest time per
+    test), never an estimate from the idle cores. No fixed minutes: they are wrong for most projects
+    (`test_speed_task_minutes` sets one anyway). After the task is done the references start again from its first
+    runs, so a task that did not help is not planned again and again. In AGC-Documents-Signing the .NET tests went
+    from 137 to 80 tests a minute in three days with 2.6 of 14 cores busy; one task (5 hours) brought them from
+    50-57 to 15 minutes and paid back after about 4 tasks. "test_speed_task": false turns it off."""
     if p.config.get("test_speed_task", True) is False or cmd not in [c[:300] for c in p.commands("test")]:
         return
     tests = int(stat.get("tests") or 0)
@@ -557,13 +559,17 @@ def speed_task(p: Project, tid: str, rnd: int, cmd: str, secs: float, e: dict, s
         return
     why, target = None, None
     fixed = p.config.get("test_speed_task_minutes")
+    # growth first; idle cores only confirm it (they are not a reason on their own)
     if per >= best * float(p.config.get("test_speed_task_growth") or SPEED_SUDDEN):
         why, target = f"one test takes {per / best:.1f}x its fastest of the last runs", best * (tests or 1)
     elif e.get("ref") and per >= e["ref"] * SPEED_CREEP:
         why, target = f"one test takes {per / e['ref']:.1f}x what it took after the last speed task", e["ref"] * (tests or 1)
-    elif util is not None and util < SPEED_IDLE:
-        why, target = f"its processes used {util * 100:.0f}% of the {cores} cores - the tests mostly wait", secs * util / SPEED_REACHABLE
-    elif fixed and secs >= float(fixed) * 60:
+    if why and util is not None:
+        if util >= SPEED_IDLE:
+            why = None  # it grew, but the cores are busy: the tests do more work, not more waiting
+        else:
+            why += f", and its processes used {util * 100:.0f}% of the {cores} cores - the tests mostly wait"
+    if not why and fixed and secs >= float(fixed) * 60:
         why, target = f"it took more than {fixed} minutes", float(fixed) * 60
     if not why:
         return

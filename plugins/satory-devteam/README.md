@@ -487,6 +487,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.9.30** - The automatic task that makes a slow unit test command faster needs both signals now: real growth
+  (the time of one test 2x the fastest of the last 20 runs, or 3x the reference after the last speed task) AND idle
+  cores (under 30% of them, when measured). Idle cores alone no longer plan it: a suite bound by start-up and JIT shows
+  the same low share with nothing to gain - two such tasks cost 5-6 hours each for 0-2.5 minutes. The saving that
+  must pay the task back is what the growth lost (back to the fastest time per test), no longer an estimate from the
+  idle cores. Growth without a CPU measurement still plans it; `test_speed_task_minutes` works as before.
 - **1.9.29** - `satory queue add` checks the plan change (against the plan and the changes already waiting) before it
   commits the documents and removes the worktree: on an error nothing is committed and the worktree stays, to fix and
   add again (before, a wrong `resolved` id cost the worktree). Run from inside a queue worktree (cwd or `--project`),
