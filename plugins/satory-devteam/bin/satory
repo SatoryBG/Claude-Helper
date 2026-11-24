@@ -3026,6 +3026,7 @@ def cmd_workflow(p: Project, a) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
     shutil.rmtree(p.run / "sh", ignore_errors=True)  # captured steps of the previous run
+    (p.run / STOP_REQUEST).unlink(missing_ok=True)  # a stop asked for the previous run
     emit({"ok": True, "script": str(dst), "root": str(p.root)})
 
 
@@ -3915,9 +3916,12 @@ def cmd_task_start(p: Project, a) -> None:
         st.pop("resume_at", None)
     again = f" (resumed, {st['rounds']} round(s) used)" if resumed else ""
     if resume_at:
-        where_ = {"review": "the review", "qa": "QA", "e2e": "the whole e2e suite"}[resume_at["stage"]]
+        where_ = {"review": "the review", "qa": "QA", "security": "Security", "e2e": "the whole e2e suite",
+                  "docs": "the documentation"}[resume_at["stage"]]
         passed = {"review": "Dev's work", "qa": "Dev's work and the review",
-                  "e2e": "Dev's work, the review, QA, the UI review and Security"}[resume_at["stage"]]
+                  "security": "Dev's work, the review, QA and the UI review",
+                  "e2e": "Dev's work, the review, QA, the UI review and Security",
+                  "docs": "Dev's work, the review, QA, the UI review, Security and the whole e2e suite"}[resume_at["stage"]]
         again = f" (resumed at {where_} of round {resume_at['round']}: {passed} passed before the interruption)"
     progress(p, f"▶ {tid}{again} - {t['title']}")
     emit({"ok": True, "task": tid, "branch": branch, "base": st["base"], "checkpoint": st["checkpoint"],
@@ -4998,7 +5002,7 @@ def cmd_step(p: Project, a) -> None:
     # where a round goes on when the build is interrupted: after Dev's checks passed, at the review; after the
     # review approved, at QA; after QA, the UI review and Security passed, at the whole e2e suite. A check that
     # sends the round back to Dev ends it (a resume then starts the next round)
-    keep = (a.step in ("after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check") or
+    keep = (a.step in ("after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "gate", "resume") or
             (a.step == "readonly" and (a.verdict or "ok") in ("approve", "pass", "ok")))
     if not keep:
         st.pop("resume_at", None)
@@ -5288,6 +5292,23 @@ def cmd_step(p: Project, a) -> None:
         stuck = stuck_tests(st, rnd, {"e2e": g})
         p.save_state()
         emit({"ok": g["ok"], "gates": {"e2e": g}, **stuck, "context_error": refresh_context(p, tid)})
+
+    elif a.step == "gate":
+        # a boundary of the round with nothing to check: its output carries the pause or the stop the user asked for
+        emit({"ok": True})
+
+    elif a.step == "resume":
+        # a point the round goes on from after an interruption: QA and the UI review passed ("security"), the whole
+        # e2e suite passed ("docs"); the checkpoint holds the round's files
+        if a.stage not in ("security", "docs"):
+            raise SatoryError("step resume --stage security|docs")
+        r = st.get("resume_at") if (st.get("resume_at") or {}).get("round") == rnd else None
+        if not r:
+            r = {"round": rnd, "dev": dev_result(p, tid, rnd)}
+        r["stage"] = a.stage
+        st["resume_at"] = r
+        p.save_state()
+        emit({"ok": True, "resume_at": {"round": rnd, "stage": a.stage}})
 
     elif a.step == "docs-check":
         changed = changed_files(p, ck)
@@ -5833,6 +5854,7 @@ USAGE_PAUSE_AT = 95
 USAGE_ASK_AGAIN = 3
 USAGE_ASK = "usage-ask.json"
 USAGE_DECISION = "usage-decision.json"
+STOP_REQUEST = "stop-request.json"  # satory stop: the build stops at its next boundary between two steps
 
 
 def same_window(a, b, slack: float = 600) -> bool:
@@ -5863,6 +5885,10 @@ def usage_over(p: Project, data: dict | None = None) -> dict:
 def usage_pause(p: Project) -> dict | None:
     """The pause the build has to make now ({"text", "limits", "asked_at"}), or None. Writes the question for the
     user (.satory/run/usage-ask.json and a ⏸ line in the progress) the first time."""
+    req = p.run / STOP_REQUEST
+    if req.exists():  # satory stop: the next boundary stops the build (usage wait answers "stop")
+        return {"text": "the user asked to stop after the current step", "limits": {},
+                "asked_at": load_json(req, {}).get("at") or now(), "stop": True}
     if usage_threshold(p) is None:
         return None
     data = usage_data(p)
@@ -5907,6 +5933,11 @@ def cmd_usage(p: Project, a) -> None:
         deadline = time.monotonic() + a.timeout
         ask = load_json(p.run / USAGE_ASK, {}) if (p.run / USAGE_ASK).exists() else {}
         while True:
+            req = p.run / STOP_REQUEST
+            if req.exists():
+                req.unlink(missing_ok=True)
+                progress(p, "⏹ the build stops here, as the user asked; /satory-devteam:build goes on from the next step")
+                return emit({"ok": True, "decision": "stop"})
             dec = load_json(p.run / USAGE_DECISION, {}) if (p.run / USAGE_DECISION).exists() else {}
             fresh = dec and (not ask or dec.get("at", "") >= ask.get("asked_at", ""))
             if fresh and dec.get("action") in ("stop", "continue"):
@@ -5924,6 +5955,22 @@ def cmd_usage(p: Project, a) -> None:
     emit({"ok": True, "usage": data, "text": usage_text(p, data), "pause_at": usage_threshold(p),
           "asked": load_json(p.run / USAGE_ASK, None) if (p.run / USAGE_ASK).exists() else None,
           "decision": load_json(p.run / USAGE_DECISION, None) if (p.run / USAGE_DECISION).exists() else None})
+
+
+def cmd_stop(p: Project, a) -> None:
+    """satory stop [--cancel]: the running build stops at its next boundary between two steps, once the step that
+    runs now has ended and its result is recorded; /satory-devteam:build goes on from the next step (the resume
+    points: the review, QA, Security, the whole e2e suite, the documentation; a round sent back starts with Dev)."""
+    req = p.run / STOP_REQUEST
+    if a.cancel:
+        had = req.exists()
+        req.unlink(missing_ok=True)
+        if had:
+            progress(p, "⏹ the stop asked for was cancelled - the build goes on")
+        return emit({"ok": True, "cancelled": had})
+    write_json(req, {"at": now()})
+    progress(p, "⏹ the user asked to stop: the build stops after the step that runs now")
+    emit({"ok": True, "requested": True})
 
 
 def cmd_statusline(a) -> None:
@@ -6159,7 +6206,8 @@ def main() -> None:
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("step")
-    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "readonly"])
+    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "readonly",
+                                    "gate", "resume"])
     s.add_argument("task")
     s.add_argument("--round", type=int, required=True)
     s.add_argument("--owner", choices=OWNERS, default="dev")
@@ -6249,6 +6297,9 @@ def main() -> None:
     s = sub.add_parser("stall", help="is the running build stalled (no activity of any kind for --minutes)?")
     s.add_argument("--minutes", type=float, default=45)
 
+    s = sub.add_parser("stop", help="the running build stops after the step that runs now and goes on from the next one later")
+    s.add_argument("--cancel", action="store_true", help="the build goes on after all")
+
     s = sub.add_parser("usage", help="the account's usage; the user's decision at the pause (stop|continue|wait)")
     s.add_argument("action", nargs="?", default="status", choices=["status", "decide", "wait"])
     s.add_argument("choice", nargs="?")
@@ -6276,7 +6327,7 @@ def main() -> None:
             global EMIT_EXTRA
             EMIT_EXTRA = lambda: usage_pause(p)
         handlers = {"where": cmd_where, "workflow": cmd_workflow, "status": cmd_status, "plan": cmd_plan, "step": cmd_step,
-                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "disk": cmd_disk, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "usage": cmd_usage, "question": cmd_question,
+                    "deploy": cmd_deploy, "release": cmd_release, "wait": cmd_wait, "milestone-e2e": cmd_milestone_e2e, "stall": cmd_stall, "disk": cmd_disk, "qa-check": cmd_qa_check, "parallel": cmd_parallel, "env": cmd_env, "watch": cmd_watch, "usage": cmd_usage, "stop": cmd_stop, "question": cmd_question,
                     "queue": cmd_queue, "polish": cmd_polish, "design": cmd_design, "spec": cmd_spec,
                     "finding": cmd_finding, "coverage": cmd_coverage, "ux": cmd_ux}
         if a.cmd == "task":

@@ -1367,9 +1367,12 @@ async function runTask(t) {
     } catch (e) { log(`Could not read the open findings of ${t.id}: ${e.message}`) }
   }
 
+  const firstRound = round + 1
   while (round < MAX_ROUNDS) {
     round++
     const tag = `${t.id} r${round}`
+    // a round sent back starts with Dev: a stop the user asked for (satory stop) takes effect here, before it
+    if (round > firstRound) await usageGate(must(await sh(`step gate ${t.id} --round ${round}`, { phase: 'Dev', label: `gate ${tag}` }), `gate ${tag}`), 'Dev')
 
     // ---- Dev ----------------------------------------------------------
     let known = await registerNote()
@@ -1379,7 +1382,10 @@ async function runTask(t) {
       dev = resumeAt.dev
       ad = { ok: true, violations: [], checkpoint: start.checkpoint }
       if (skip !== 'review') reviewedAt = start.checkpoint
-      log(`↻ ${tag}: Dev's work${skip === 'review' ? '' : skip === 'qa' ? ' and the review' : ', the review, QA, the UI review and Security'} passed before the interruption - going on with ${skip === 'review' ? 'the review' : skip === 'qa' ? 'QA' : 'the whole e2e suite'}`)
+      const passedBefore = { review: '', qa: ' and the review', security: ', the review, QA and the UI review',
+        e2e: ', the review, QA, the UI review and Security', docs: ', the review, QA, the UI review, Security and the whole e2e suite' }
+      const goingOn = { review: 'the review', qa: 'QA', security: 'Security', e2e: 'the whole e2e suite', docs: 'the documentation' }
+      log(`↻ ${tag}: Dev's work${passedBefore[skip] || ''} passed before the interruption - going on with ${goingOn[skip] || skip}`)
     } else {
       dev = await stage(role, devPrompt(ctx, round, feedback) + known,
         { phase: 'Dev', label: `${role} ${tag}`, model: MODELS[role], schema: DEV_SCHEMA })
@@ -1439,14 +1445,17 @@ async function runTask(t) {
 
     // ---- QA, UI, Security (a round resumed at the whole suite passed them before the interruption: its
     // copy of staging comes up again and the whole suite goes on) --------------------------------------
-    if (skip === 'e2e') {
+    if (skip === 'e2e' || skip === 'security') {
       const again = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'Full tests', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
       if (!again.ok) {
         lastStage = appUpLabel()
         feedback = `### The app does not start ${appWhereShort()}\nStage: ${again.stage}. Log: ${again.log}`
         continue
       }
-    } else {
+    }
+    if (skip !== 'e2e' && skip !== 'docs') {
+      let qaCheckpoint = start.checkpoint
+      if (skip !== 'security') {
       // ---- QA -----------------------------------------------------------
       const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
       if (!staging.ok) {
@@ -1529,6 +1538,10 @@ async function runTask(t) {
         ].filter(Boolean).join('\n\n')
         continue
       }
+      qaCheckpoint = aq.checkpoint
+      // a resume point: QA and the UI review passed - a build stopped here (satory stop) goes on with Security
+      await usageGate(must(await sh(`step resume ${t.id} --round ${round} --stage security`, { phase: 'QA', label: `resume point ${tag}` }), `resume ${tag}`), 'QA')
+      }
 
       // ---- Security -----------------------------------------------------
       const scan = must(await sh(`step security-scan ${t.id} --round ${round}`, { phase: 'Security', label: `scanners ${tag}`, long: true }), `scan ${tag}`)
@@ -1537,7 +1550,7 @@ async function runTask(t) {
       const sec = await stage('security', secText,
         { phase: 'Security', label: `security ${tag}`, model: MODELS.security, schema: SEC_SCHEMA })
       if (!sec) return block(t, round, `The Security auditor returned no result in round ${round}.`)
-      secReviewedAt = aq.checkpoint
+      secReviewedAt = qaCheckpoint
       const secRes = await record('security', sec.findings.map(f => ({ severity: f.severity, title: f.title, where: `${f.category} ${where(f)}`,
         detail: f.issue + (f.attack ? ` Attack: ${f.attack}` : ''), fix: f.fix })), sec.verified, 'Security', secText)
       contextLog(must(await sh(`step readonly ${t.id} --round ${round} --stage security --verdict ${secRes.blocking.length ? 'fail' : 'pass'}`,
@@ -1552,7 +1565,7 @@ async function runTask(t) {
     // ---- Full e2e (when QA ran only this task's e2e tests and the smoke tests) ----
     // called every round: the CLI knows whether the whole suite is due (a runner may relay the after-qa
     // output incompletely)
-    {
+    if (skip !== 'docs') {
       const full = must(await sh(`step full-e2e ${t.id} --round ${round}`,
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
       flakyLog(full.gates, tag)
@@ -1569,6 +1582,8 @@ ${bullets(gateLines(full.gates))}${suiteFailed.length ? `\nFailed:\n${bullets(su
 ${SUITE_HINT}${(full.stuck || []).length ? `\n\n${stuckHint(full.stuck)}` : ''}`
         continue
       }
+      // a resume point: the whole suite passed - a build stopped here goes on with the documentation
+      await usageGate(must(await sh(`step resume ${t.id} --round ${round} --stage docs`, { phase: 'Full tests', label: `resume point ${tag}` }), `resume ${tag}`), 'Full tests')
     }
 
     // ---- Docs + finish -------------------------------------------------

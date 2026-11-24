@@ -67,6 +67,12 @@ It is on by default (it runs for projects with a staging environment); `"ui": { 
 
 ## Following the progress
 
+**Stopping and going on later.** `satory stop` (the build skill runs it when you ask to stop) ends the running
+build at its next boundary between two steps: the step that runs now ends and its result is recorded, then the build
+stops (`⏹`). `/satory-devteam:build` goes on from the next step: the review, QA, Security (after QA and the UI
+review), the whole e2e suite or the documentation (after the whole suite) of the same round, or Dev of the next round
+when the round was sent back. `satory stop --cancel` takes it back; a new build clears a stop left from an earlier one.
+
 The CLI writes one line per event to `.satory/run/progress.log` (gitignored): a task starts, a stage of
 a round ends with its verdict, a task is done or blocked, new questions, plan and queue changes.
 - `/satory-devteam:build` follows the build with a monitor (`satory watch`: the lines of that file, and a
@@ -509,6 +515,12 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.10.2** - `satory stop`: the build stops after the step that runs now, with its result recorded, and goes on
+  from the next step later (it was stopped with TaskStop, which cut the running step and redid it). Two new resume
+  points: after QA and the UI review passed (goes on with Security) and after the whole e2e suite passed (goes on
+  with the documentation); a round sent back stops before its Dev starts. The build skill uses it when the user asks
+  to stop.
 
 - **1.10.1** - A task that changes only pages of the web app (feature folders, texts used only there; no server,
   shared component, style, asset or route table, and no importer outside the changed features but the route table)

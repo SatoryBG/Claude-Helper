@@ -71,6 +71,11 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
      plugin does not: there, never launch it again in the turn of a message that asks to stop or pause it
      ("stop it now") - Dev took it as its own order and blocked its task. Wait for the user's go-ahead or
      ask them to run `/satory-devteam:build`.
+   - **The user asks to stop** ("stop after the current step", "stop, I am leaving"): run `$SATORY stop`. The
+     build ends at its next boundary between two steps, after the step that runs now has ended and its result is
+     recorded (a `⏹` line), and `/satory-devteam:build` later goes on from the next step. `$SATORY stop --cancel`
+     takes it back. Do not stop the workflow with TaskStop for this: that cuts the running step, whose work is then
+     redone. TaskStop only when the user asks to stop at once.
    - When the workflow finishes, stop the monitor (TaskStop) and give the summary below.
 4. Tell the user briefly that the process runs in the background, that you will report each step here,
    the details are visible with `/workflows`, the history is written to `docs/JOURNAL.md`, and they can
@@ -101,6 +106,7 @@ If everything is done and the project has a deploy, suggest `/satory-devteam:rel
 ## Continuing
 After an interruption (closed session, error) just run `/satory-devteam:build` again. The task in progress
 continues from its branch, and the round counter is kept. A round interrupted after Dev's checks passed goes on
-with the review of that round, one interrupted after the review approved goes on with QA, and one interrupted
-after Security passed goes on with the whole e2e suite (its last failed tests first); otherwise the next round
-starts with Dev.
+with the review of that round, one interrupted after the review approved goes on with QA, one interrupted after QA
+and the UI review passed goes on with Security, one interrupted after Security passed goes on with the whole e2e
+suite (its last failed tests first), and one interrupted after the whole suite passed goes on with the
+documentation; otherwise the next round starts with Dev. `$SATORY stop` ends the build exactly at such a point.
