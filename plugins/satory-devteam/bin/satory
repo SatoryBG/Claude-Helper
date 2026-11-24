@@ -906,6 +906,42 @@ def e2e_spec_files(p: Project) -> list[str] | None:
     return sorted(str(x.relative_to(d)) for x in d.rglob("*") if E2E_SPEC.search(x.name) and "node_modules" not in x.parts)
 
 
+# paths outside the running app besides the documents and the tests: the CI configuration
+E2E_NO_RUNTIME = (".github/",)
+
+
+def e2e_no_runtime_change(p: Project, ref: str) -> tuple[bool, list[str]]:
+    """(whether nothing the task changed since `ref` reaches the running app, the e2e spec files it changed -
+    relative to the e2e folder). Only documents (docs/, .satory/, Markdown), the CI configuration (.github/ and
+    "e2e_no_runtime_paths"), unit tests (the test globs outside the e2e folder) and e2e spec files: then the whole
+    e2e suite would run the same app as on main. T-124, T-125, T-126 and T-121 changed only unit tests or CI and
+    waited 43-47 minutes each for a whole suite of 2800 tests. False for an e2e command that is not one plain
+    Playwright run with a `cd <folder>` (a spec cannot be told from a unit test there)."""
+    e2e = p.commands("e2e")
+    if len(e2e) != 1 or not pw_tail(e2e[0]):
+        return False, []
+    m = re.match(r"\s*cd\s+(\S+)\s*&&", e2e[0])
+    folder = (m.group(1).strip("./") + "/") if m and m.group(1).strip("./") else ""
+    if not folder:
+        return False, []
+    extra = tuple(as_list(p.config.get("e2e_no_runtime_paths"))) + E2E_NO_RUNTIME
+    specs = []
+    for path, status in changed_files(p, ref).items():
+        if path.startswith(DOC_PATHS) or path.startswith(extra) or path.endswith(".md"):
+            continue
+        if path.startswith(folder):
+            # a spec file of the suite (not its helpers, fixtures or configuration, which every spec uses)
+            if E2E_SPEC.search(path) and "node_modules" not in path.split("/"):
+                if status != "D":
+                    specs.append(path[len(folder):])
+                continue
+            return False, []
+        if matches(path, p.test_globs):
+            continue
+        return False, []
+    return True, sorted(specs)
+
+
 def e2e_affected_specs(p: Project, ref: str, head: str = "HEAD") -> tuple[str, list[str], int]:
     """(the e2e directory, the spec files the changes since `ref` likely affect, all spec files) - only for one
     plain Playwright e2e command. A spec is affected when it opens the route of a changed feature (a directory
@@ -1519,7 +1555,9 @@ def cmd_question(p: Project, a) -> None:
                                                            and q["status"] == "answered" else ())}
                      for q in items]
         open_items = [q for q in reg["items"] if q["status"] == "open" and not flaky_watching(q)]
-        return emit({"ok": True, "items": items, "open": len(open_items),
+        if getattr(a, "count", False):  # the counts only (the build's gate on critical questions: 59 KB of items)
+            items = None
+        return emit({"ok": True, **({"items": items} if items is not None else {}), "open": len(open_items),
                      "watching": sum(q["status"] in ("open", "deferred") and flaky_watching(q) for q in reg["items"]),
                      "critical_open": sum(q["severity"] == "critical" for q in open_items),
                      "deferred": sum(q["status"] == "deferred" for q in reg["items"]),
@@ -3653,6 +3691,22 @@ def cmd_queue(p: Project, a) -> None:
         return emit({"ok": not errors, "applied": applied, "errors": errors, "waiting": len(files) - len(applied)})
 
 
+def plan_task_json(p: Project, t: dict, by_id: dict, brief: bool, reviewed: set | None = None) -> dict:
+    """A task in `plan json`. --brief (the build workflow, whose runner relays the whole output: 37 KB at 124
+    tasks, 4.6 million output tokens over a project): no task's source, and a done task of a milestone whose
+    reviews are all done (`reviewed`) only as id, milestone, ui and status - the reviews of a milestone list
+    the titles of its tasks."""
+    status = merged_status(p, t)
+    if brief and status == "done" and t.get("milestone") in (reviewed or set()):
+        return {"id": t["id"], "milestone": t.get("milestone"), "ui": t.get("ui"), "status": status,
+                "depends_on": []}
+    out = {"id": t["id"], "title": t["title"], "owner": t["owner"], "milestone": t.get("milestone"),
+           "depends_on": t.get("depends_on", []), "ui": t.get("ui"), "status": status}
+    if not brief:
+        out["source"] = task_source(t, by_id)
+    return out
+
+
 def cmd_plan(p: Project, a) -> None:
     plan = p.plan()
     if a.action == "add":
@@ -3669,7 +3723,11 @@ def cmd_plan(p: Project, a) -> None:
         emit({"ok": True, "path": "docs/PLAN.md"})
     else:
         errors = validate_plan(plan)
-        by_id = {q["id"]: q for q in questions_load(p)["items"]}
+        reg = questions_load(p)
+        by_id = {q["id"]: q for q in reg["items"]}
+        # the milestones whose reviews (data rules, UX) are done: their done tasks need no title in --brief
+        reviewed = set(reg["milestones_reviewed"]) & set(reg["ux_reviewed"] if p.config.get("ux_review", True) is not False
+                                                          and ui_review(p) else reg["milestones_reviewed"])
         emit({"ok": not errors, "errors": errors, "root": str(p.root), "name": p.config.get("name"),
               "max_rounds": p.config.get("max_rounds", 33),
               "has_deploy": bool(p.config.get("deploy", {}).get("environments", {}).get("staging")),
@@ -3693,9 +3751,7 @@ def cmd_plan(p: Project, a) -> None:
               "design_request": load_json(p.run / "design.request.json", {}) or None,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
               "milestones": plan.get("milestones", []),
-              "tasks": [{"id": t["id"], "title": t["title"], "owner": t["owner"],
-                         "milestone": t.get("milestone"), "depends_on": t.get("depends_on", []), "ui": t.get("ui"),
-                         "source": task_source(t, by_id), "status": merged_status(p, t)} for t in plan["tasks"]]})
+              "tasks": [plan_task_json(p, t, by_id, getattr(a, "brief", False), reviewed) for t in plan["tasks"]]})
 
 
 def cmd_task_start(p: Project, a) -> None:
@@ -4753,11 +4809,82 @@ def qa_rules(p: Project, tid: str, rnd: int, st: dict, task_file: str, apply: bo
 STUCK_HINT_ROUNDS, STUCK_BLOCK_ROUNDS = 2, 3
 
 
+RECHECK_E2E_MAX = 30  # more failed e2e tests than this: Dev's check does not run them again (QA's check does)
+
+
+def recheck_record(p: Project, st: dict, rnd: int, gates: dict) -> None:
+    """Remembers the tests that sent this round back to Dev (unit tests of the failing command, failed e2e
+    tests) for Dev's check of the next round: they run again before the review, so a failure that is still
+    there comes back in minutes instead of after the review, QA and its 30-minute checks. Nothing to remember
+    (every check passed, or the failures cannot be selected by name): the record goes."""
+    rc: dict = {"round": rnd}
+    tg = gates.get("test") or {}
+    if tg and not tg.get("ok") and not tg.get("skipped") and tg.get("log"):
+        f = p.root / tg["log"]
+        text = f.read_text(encoding="utf-8", errors="replace") if f.exists() else ""
+        names = sorted({m.strip() for m in UNIT_FAILED.findall(text)})[:20]
+        times = tg.get("times") or []
+        failing = times[-1][0] if times and times[-1][2] != 0 else None
+        if names and failing and unit_narrowed(failing, names):
+            rc["unit"] = {"cmd": failing, "names": names}
+    e2e = sorted({str(t) for k, g in gates.items() if k != "test" and g.get("scope") != "pinned"
+                  and not g.get("ok") and not g.get("skipped") for t in (g.get("failed_tests") or [])
+                  if not str(t).startswith(("[pinned]", "[shared]"))})
+    if e2e and len(e2e) <= RECHECK_E2E_MAX and p.e2e_failed_commands(e2e):
+        rc["e2e"] = e2e
+    if "unit" in rc or "e2e" in rc:
+        st["recheck"] = rc
+    else:
+        st.pop("recheck", None)
+
+
+def dev_recheck(p: Project, tid: str, rnd: int, st: dict) -> dict:
+    """Dev's check from the second round on: the tests that sent the last round back run again (gates
+    recheck_unit and recheck_e2e), the e2e ones in a fresh copy of staging with Dev's code. Each recorded failure
+    runs here once: a test that is wrong rather than the code (QA's to fix) costs one short Dev round, not a loop.
+    "dev_recheck": false turns it off."""
+    rc = st.get("recheck") or {}
+    if p.config.get("dev_recheck", True) is False or not rc or rc.get("round", rnd) >= rnd:
+        return {}
+    st.pop("recheck", None)
+    gates = {}
+    unit = rc.get("unit") or {}
+    cmd = unit_narrowed(unit.get("cmd") or "", unit.get("names") or []) if unit else None
+    if cmd:
+        log = p.logs / f"{tid}-r{rnd}-recheck-unit.log"
+        res = run_cmds(p, [cmd], log, p.env(tid, rnd))
+        out = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        ran = sum(int(x or y) for x, y in UNIT_RAN.findall(out))
+        still = sorted(set(unit["names"]) & {m.strip() for m in UNIT_FAILED.findall(out)})
+        # only the same tests failing again count: a filter that selected nothing or failed on its own decides nothing
+        ok = res["ok"] or not still
+        gates["recheck_unit"] = {"ok": ok, "exit": res.get("exit"), "log": res.get("log"), "scope": "recheck",
+                                 "count": len(unit["names"]), **({"failed_tests": still} if not ok else {}),
+                                 **({"skipped": True} if res["ok"] and not ran else {})}
+    e2e = rc.get("e2e") or []
+    cmds = p.e2e_failed_commands(e2e) if e2e and test_copy_cfg(p) else []
+    if cmds:
+        built = build_head_image(p, f"{tid}-r{rnd}-recheck")
+        env = test_env_up(p, built["image"], f"{tid}-r{rnd}-recheck") if built["ok"] else None
+        if built["ok"] and env and env.get("ok"):
+            g = e2e_run(p, tid, rnd, cmds, "e2e-recheck")
+            gates["recheck_e2e"] = {**g, "scope": "recheck", "count": len(e2e)}
+        elif not built["ok"]:  # the image of Dev's code does not build: QA's copy would not start either
+            gates["recheck_e2e"] = {"ok": False, "exit": 1, "log": built.get("log"), "scope": "recheck",
+                                    "note": " (the image of the app with your changes does not build)"}
+        # a copy that does not start is not Dev's failure: QA's check starts its own
+    if gates:
+        bad = [k for k, g in gates.items() if not g.get("ok")]
+        progress(p, f"↻ {tid} r{rnd}: the tests that failed in round {rc.get('round')} ran again in Dev's check - "
+                    + (f"still failing ({', '.join(bad)})" if bad else "they pass"))
+    return gates
+
+
 def stuck_tests(st: dict, rnd: int, gates: dict) -> dict:
     """Count, per failing test outside this task's own run, the rounds in a row it failed: {"stuck": [names
     failing STUCK_HINT_ROUNDS rounds or more], "stuck_block": [... STUCK_BLOCK_ROUNDS or more]}. A check whose
     earlier tests all passed clears the counts."""
-    others = [g for g in gates.values() if g.get("scope") not in ("task", "pinned") and not g.get("skipped")]
+    others = [g for g in gates.values() if g.get("scope") not in ("task", "quiet", "changed", "recheck", "pinned") and not g.get("skipped")]
     # the line of a test moves when tests are added above it: the same test without it
     failed = {re.sub(r":\d+:\d+(?= › )", "", str(t)) for g in others if not g.get("ok") for t in (g.get("failed_tests") or [])
               if not str(t).startswith(("[pinned]", "[shared]"))}
@@ -4813,6 +4940,9 @@ def cmd_step(p: Project, a) -> None:
         ok = all(g["ok"] for g in gates.values())
         st["rounds"] = rnd
         st["checkpoint"] = checkpoint(p, tid, f"{a.owner} r{rnd}")
+        if ok:  # after the checkpoint: the copy for the e2e tests is built from the commit with Dev's changes
+            gates.update(dev_recheck(p, tid, rnd, st))
+            ok = all(g["ok"] for g in gates.values())
         extra = [f"- Violation: {v}" for v in violations]
         if formatted:
             extra.append(f"- Formatted by satory (layout only): {', '.join(formatted[:20])}")
@@ -4887,7 +5017,13 @@ def cmd_step(p: Project, a) -> None:
         first = p.e2e_task_commands(tid) if not docs_round else []
         failed_before = (st.get("full_e2e_failed_tests") or []) if st.get("full_e2e_failed") else []
         again = p.e2e_failed_commands(failed_before)
-        _, affected, all_specs = e2e_affected_specs(p, base) if first and a.split_e2e else ("", [], 0)
+        # a task that changes nothing the running app uses (only unit tests, documents, CI): its own e2e tests, the
+        # smoke tests and the spec files it changed run, not the whole suite (the app is the one on main, which
+        # passed it). "e2e_skip_no_runtime": false runs the whole suite for them too.
+        quiet, changed_specs = (e2e_no_runtime_change(p, base)
+                                if (first and a.split_e2e and not st.get("full_e2e_failed")
+                                    and p.config.get("e2e_skip_no_runtime", True) is not False) else (False, []))
+        _, affected, all_specs = e2e_affected_specs(p, base) if first and a.split_e2e and not quiet else ("", [], 0)
         affected_cmds = p.e2e_affected_commands(affected, tid)
         broad = bool(affected_cmds) and len(affected) * 100 >= E2E_AFFECTED_WHOLE * all_specs
         if broad:
@@ -4912,6 +5048,14 @@ def cmd_step(p: Project, a) -> None:
                             "note": " (only documents changed since the whole suite passed on this code)"}
         elif task_first:
             gates["e2e"] = task_first
+        elif quiet:
+            progress(p, f"⚡ {tid} r{rnd}: the task changes nothing the running app uses (only tests, documents or CI) - "
+                        f"its own e2e tests, the smoke tests{' and the ' + str(len(changed_specs)) + ' spec file(s) it changed' if changed_specs else ''} "
+                        "run, not the whole suite")
+            gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "quiet"}
+            if changed_specs:
+                gates["e2e_changed"] = {**e2e_run(p, tid, rnd, [pw_files(p.e2e_suite_commands()[0], changed_specs)],
+                                                  "e2e-changed"), "scope": "changed", "count": len(changed_specs)}
         elif first and a.split_e2e and not broad and (not st.get("full_e2e_failed") or again):
             gates["e2e"] = {**e2e_run(p, tid, rnd, first, "e2e-task"), "scope": "task"}
             if affected_cmds:
@@ -4937,8 +5081,12 @@ def cmd_step(p: Project, a) -> None:
             st["full_e2e_due"] = rnd
         else:
             st.pop("full_e2e_due", None)
+        if gates["e2e"].get("scope") == "quiet":
+            st["e2e_quiet_round"] = rnd
+        else:
+            st.pop("e2e_quiet_round", None)
         gates_ok = all(g["ok"] for g in gates.values())
-        if gates["e2e"].get("scope") != "task" and gates["e2e"].get("ok") and not gates["e2e"].get("skipped") and now_tree:
+        if gates["e2e"].get("scope") not in ("task", "quiet") and gates["e2e"].get("ok") and not gates["e2e"].get("skipped") and now_tree:
             st["e2e_green_tree"] = now_tree  # the whole suite passed on this code
         # what this check ran on this code: the whole suite after Security leaves it out (Security and the UI
         # review change no file). T-054 ran 1592 affected tests here and the same 1592 again in the whole suite.
@@ -4954,7 +5102,10 @@ def cmd_step(p: Project, a) -> None:
         extra += [f"- Tests: {len(names) if listed else '?'} (list {'available' if listed else 'could not be produced'})"]
         scope_note = {"task": " (only this task and smoke tests; the whole suite runs after Security)",
                       "affected": " (the e2e specs of earlier features this task likely affects)",
-                      "failed": " (the tests that failed in the whole suite before)"}
+                      "failed": " (the tests that failed in the whole suite before)",
+                      "quiet": " (only this task and smoke tests; the task changes nothing the running app uses, "
+                               "so the whole suite does not run)",
+                      "changed": " (the e2e spec files this task changed)"}
         extra += [f"- Check {k}: {'✓' if g['ok'] else '✗'}{' (skipped)' if g.get('skipped') else ''}"
                   f"{g.get('note') or scope_note.get(g.get('scope'), '')}" for k, g in gates.items()]
         extra += [f"- Flaky (passed on the retry): {t}" for g in gates.values() for t in g.get("flaky", [])]
@@ -4962,6 +5113,7 @@ def cmd_step(p: Project, a) -> None:
         verdict = "fail" if (not gates_ok or a.verdict == "fail") else "pass"
         if verdict == "fail":
             st.pop("resume_at", None)
+        recheck_record(p, st, rnd, gates)  # the failed tests run again in Dev's check of the next round
         journal_pending(p, tid, "qa", rnd, verdict, join_note(note, extra))
         head = (note or "").split("\n\n")[0].strip()[:800]
         save_review(p, st, "qa checks", rnd, verdict,
@@ -4992,8 +5144,13 @@ def cmd_step(p: Project, a) -> None:
         # the whole e2e suite, once Review, QA, UI and Security have passed - when QA's check ran only this
         # task's tests; the workflow calls this step every round and the CLI decides
         if st.get("full_e2e_due") is None:
+            if st.get("e2e_quiet_round") == rnd:
+                progress(p, f"⚡ {tid} r{rnd}: no whole e2e suite - the task changes nothing the running app uses")
             return emit({"ok": True, "skipped": True, "gates": {},
-                         "reason": "the whole e2e suite already ran in QA's check of this round"})
+                         "reason": ("the task changes nothing the running app uses (only tests, documents or CI): "
+                                    "its own e2e and the smoke tests ran in QA's check"
+                                    if st.get("e2e_quiet_round") == rnd else
+                                    "the whole e2e suite already ran in QA's check of this round")})
         first = p.e2e_failed_commands(st.get("full_e2e_failed_tests") or []) if st.pop("e2e_rerun_first", False) else []
         if first:  # resumed after a whole suite whose failures may not be the task's: those run again first
             progress(p, f"↻ {tid} r{rnd}: the {len(st['full_e2e_failed_tests'])} test(s) that failed in the last whole suite "
@@ -5019,6 +5176,8 @@ def cmd_step(p: Project, a) -> None:
             if green:
                 st["e2e_green_tree"] = green  # the whole suite passed on this code
         st["full_e2e_failed_tests"] = g.get("failed_tests", [])
+        if not g["ok"]:
+            recheck_record(p, st, rnd, {"e2e": g})  # they run again in Dev's check of the next round
         guard(p, ck, lambda path, status: "test run artifact")
         rerun = ("the next round runs the failed tests in QA's check and the whole suite again after Security"
                  if p.e2e_failed_commands(st["full_e2e_failed_tests"]) else "the next round runs it again in QA")
@@ -5893,6 +6052,8 @@ def main() -> None:
     s.add_argument("action", choices=["json", "validate", "render", "add"])
     s.add_argument("--note-stdin", action="store_true")
     s.add_argument("--source", help="add: who changes the plan (journal)")
+    s.add_argument("--brief", action="store_true",
+                   help="json: a done task only as id, milestone, ui and status, no source (what the build workflow reads)")
 
     s = sub.add_parser("task")
     s.add_argument("action", choices=["start", "finish", "block", "unblock", "context"])
@@ -5921,6 +6082,7 @@ def main() -> None:
     s.add_argument("--status", help="answer: the new status; list: only these (comma-separated)")
     s.add_argument("--brief", action="store_true", help="list: only id, kind, severity, status, title, task")
     s.add_argument("--full", action="store_true", help="list: every field of every item")
+    s.add_argument("--count", action="store_true", help="list: only the counts, no items")
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("spec")

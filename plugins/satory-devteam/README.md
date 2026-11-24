@@ -398,6 +398,21 @@ config has named projects (`[project] › file › title`); without them the who
 changes the tested behaviour on purpose, to dispute the test; QA gets them too and decides the disputes in
 the same round.
 
+**A task that changes nothing the running app uses** - only unit tests (the test globs outside the e2e folder),
+documents (`docs/`, `.satory/`, Markdown), the CI configuration (`.github/`, plus `e2e_no_runtime_paths` in
+`.satory/project.json`) and e2e spec files - runs its own e2e tests, the smoke tests and the spec files it
+changed in QA's check, and no whole suite after Security: the app is the one on main, which passed it (four
+such tasks in AGC-Documents-Signing waited 43-47 minutes each for 2,800 tests). A change of an e2e helper,
+fixture or config runs the whole suite as before, and so does a task whose whole suite failed earlier. It needs
+one plain Playwright e2e command with a `cd <folder>`. `"e2e_skip_no_runtime": false` turns it off.
+
+**From the second round on, Dev's check runs the tests that sent the last round back** before the review: the
+failed unit tests of the failing command (filtered as in a retry, below) and, with a tests' copy of staging, the
+failed e2e tests (at most 30) in a fresh copy with Dev's code. A failure that is still there comes back in a few
+minutes instead of after the review, QA and its half-hour check (`recheck_unit`, `recheck_e2e`). Each recorded
+failure runs there once, so a test that is wrong rather than the code costs one short Dev round, not a loop: Dev
+disputes it and QA decides in its stage. `"dev_recheck": false` turns it off.
+
 The task's e2e tests are selected by `commands.e2e_task` in `.satory/project.json` (`{task}` becomes the
 task id). For Playwright it is derived from `commands.e2e` by appending `--grep "{task}|@smoke"`: QA puts
 the task id in every e2e test title and the devops agent tags the smoke test `@smoke`. Set it when that
@@ -486,6 +501,20 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.10.0** - Shorter rounds and fewer tokens, from the times of 7,378 agents and checks in AGC-Documents-Signing
+  (the tests are half of a round's time: 11 minutes of unit tests, 20 of affected e2e specs, 30-40 of the rest of
+  the suite).
+  - **No whole e2e suite for a task that changes nothing the running app uses** (unit tests, documents, CI, e2e
+    spec files): its own e2e tests, the smoke tests and the changed spec files run in QA's check instead - about
+    45 minutes per such task. Opt-out: `"e2e_skip_no_runtime": false`; more such paths: `e2e_no_runtime_paths`.
+  - **Dev's check reruns the tests that sent the last round back** (unit tests by name, e2e tests in a fresh
+    copy), once per failure, before the review: of 8 rounds QA sent back in four days, at least 3 failed on tests
+    that a few-minute rerun would have caught before a 40-50 minute cycle. Opt-out: `"dev_recheck": false`.
+  - **The build's runner relays less**: `plan json --brief` (no source, and a done task of a fully reviewed
+    milestone only as id, milestone, ui and status: 37 KB -> 14 KB) and `question list --open --count` (the
+    counts only, for the gate on critical questions: 59 KB -> 130 bytes). Over the project these two calls had cost
+    7.4 million output tokens.
 
 - **1.9.32** - The usage pause keeps the user's "continue": the account reports the same reset of a limit with a
   different fraction of a second (09:59:59.77, then 10:00:00.29), and the exact comparison took it for a new window

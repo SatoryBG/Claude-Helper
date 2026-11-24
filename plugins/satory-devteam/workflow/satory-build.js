@@ -716,7 +716,10 @@ function gateLines(gates) {
   return Object.entries(gates || {})
     .filter(([, g]) => !g.ok)
     .map(([name, g]) => `Check \`${name}\` fails (exit ${g.exit}) - full log: ${g.log}` +
-      (g.scope === 'task' ? ' (only this task\'s tests and the smoke tests ran)' : '') +
+      (g.scope === 'task' || g.scope === 'quiet' ? ' (only this task\'s tests and the smoke tests ran)' : '') +
+      (g.scope === 'changed' ? ' (the e2e spec files this task changed)' : '') +
+      (g.scope === 'recheck' ? ' (the tests that failed in the last round, run again before the review: fix the code, ' +
+        'or - when the test itself is wrong - dispute it in "Test disputes" in the task file; they are not run here again next round)' : '') +
       (g.scope === 'failed' ? ' (the tests that failed in the whole e2e suite before)' : '') +
       (g.scope === 'affected' ? ' (the e2e specs of earlier features this task likely affects)' : ''))
 }
@@ -739,7 +742,7 @@ const stuckReason = (tests, round) => `Tests of earlier features have failed in 
 
 // the earlier tests that failed in the whole e2e suite (or in their rerun), for QA's next prompt
 function suiteFailures(gates) {
-  return Object.values(gates || {}).filter(g => !g.ok && g.scope !== 'task').flatMap(g => g.failed_tests || [])
+  return Object.values(gates || {}).filter(g => !g.ok && !['task', 'quiet', 'changed', 'recheck'].includes(g.scope)).flatMap(g => g.failed_tests || [])
 }
 
 function skippedLog(res) {
@@ -1221,7 +1224,7 @@ async function reviewMilestones(plan) {
         log(`⚠ The e2e run at every width after ${m} gave no result (${e2e.error || 'no failed tests, no log'}); no task planned - look at the step's log under .satory/run/sh/`)
       } else if (e2e && !e2e.skipped && !e2e.ok) {
         await widthsTask(m, e2e, plan)
-        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+        plan = must(await sh('plan json --brief', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       }
     } catch (e) { log(`The e2e run at every width after ${m} failed (${e.message}); the review goes on.`) }
     let coverage = null
@@ -1234,19 +1237,19 @@ async function reviewMilestones(plan) {
     if (plan.code_health_review !== false) {
       try {
         polished = await healthTask(m, tasks, plan)
-        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+        plan = must(await sh('plan json --brief', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The code health review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
     }
     if (plan.polish_task !== false && !polished) {
       try {
         await polishTask(m, plan)
-        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+        plan = must(await sh('plan json --brief', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The polish task of ${m} failed (${e.message}).`) }
     }
     if (UI_REVIEW && plan.has_deploy && plan.ux_review !== false) {
       try {
         await uxTask(m, tasks, plan)
-        plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+        plan = must(await sh('plan json --brief', { phase: 'Milestone review', label: 'plan' }), 'plan json')
       } catch (e) { log(`The UX review of ${m} failed (${e.message}); the milestone counts as reviewed.`) }
     }
     await sh(`question reviewed ${m}`, { phase: 'Milestone review', label: `reviewed ${m}` })
@@ -1286,7 +1289,7 @@ async function planAnswers(plan) {
       log(`🗂 Queued change applied${a.merged ? ` (documents from ${a.branch})` : ''}${tasks.length ? `: ${tasks.join(', ')}` : ''}`)
     }
     for (const e of q.errors || []) log(`⚠ A queued change could not be applied (${e}); it and the ones after it wait in .satory/run/queue/ - /satory-devteam:status`)
-    if ((q.applied || []).length) plan = must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
+    if ((q.applied || []).length) plan = must(await sh('plan json --brief', { phase: 'Planning', label: 'plan' }), 'plan json')
     const reg = must(await sh('question list --status answered', { phase: 'Planning', label: 'answered questions' }), 'question list')
     const answered = reg.items
     if (!answered.length) return plan
@@ -1299,7 +1302,7 @@ async function planAnswers(plan) {
     skippedLog(res)
     log(`🗂 ${res.added.length} new task(s) for the answered questions${res.added.length ? `: ${res.added.join(', ')}` : ''}` +
       (res.resolved.length ? `; ${res.resolved.length} answer(s) need no task` : ''))
-    return must(await sh('plan json', { phase: 'Planning', label: 'plan' }), 'plan json')
+    return must(await sh('plan json --brief', { phase: 'Planning', label: 'plan' }), 'plan json')
   } catch (e) {
     log(`Planning failed (${e.message}); it is tried again after the next task.`)
     return plan
@@ -1615,7 +1618,7 @@ function pickNext(plan, attempted, held = false) {
 async function criticalOpen(plan) {
   if (plan.critical_questions_gate === false) return 0
   try {
-    return must(await sh('question list --open', { phase: 'Prepare', label: 'critical questions' }), 'question list').critical_open || 0
+    return must(await sh('question list --open --count', { phase: 'Prepare', label: 'critical questions' }), 'question list').critical_open || 0
   } catch (e) {
     log(`Could not read the questions: ${e.message}`)
     return 0
@@ -1623,7 +1626,7 @@ async function criticalOpen(plan) {
 }
 
 phase('Prepare')
-let plan = await sh('plan json', { phase: 'Prepare', label: 'plan' })
+let plan = await sh('plan json --brief', { phase: 'Prepare', label: 'plan' })
 if (plan && typeof plan.api_stop_after === 'number') API_STOP_AFTER = plan.api_stop_after
 if (plan && plan.review_qa_route === false) QA_ROUTE = false
 if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
@@ -1812,7 +1815,7 @@ async function designNow() {
     log(`The design step failed (${e.message}); the build goes on, run it again with /satory-devteam:design.`)
     await designNote(`design step failed: ${e.message}`)
   }
-  plan = must(await sh('plan json', { phase: 'Design', label: 'plan' }), 'plan json')
+  plan = must(await sh('plan json --brief', { phase: 'Design', label: 'plan' }), 'plan json')
 }
 
 // One UX review of the whole app at the first boundary between tasks, without waiting for the end of the
@@ -1838,7 +1841,7 @@ async function uxNow() {
   const m = next ? next.milestone : (plan.milestones || []).slice(-1).map(x => x.id)[0]
   try {
     await uxTask(m, plan.tasks.filter(t => t.milestone === m && t.status === 'done'), plan)
-    plan = must(await sh('plan json', { phase: 'Milestone review', label: 'plan' }), 'plan json')
+    plan = must(await sh('plan json --brief', { phase: 'Milestone review', label: 'plan' }), 'plan json')
   } catch (e) { log(`The UX review failed (${e.message}).`) }
 }
 await designNow()
@@ -1886,7 +1889,7 @@ while (results.length < MAX_TASKS) {
     break
   }
   try {
-    plan = must(await sh('plan json', { phase: 'Docs', label: 'plan' }), 'plan json')
+    plan = must(await sh('plan json --brief', { phase: 'Docs', label: 'plan' }), 'plan json')
     await usageGate(plan, 'Docs')
     plan = await reviewMilestones(plan)
     plan = await planAnswers(plan)
