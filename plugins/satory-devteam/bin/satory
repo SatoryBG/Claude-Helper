@@ -998,6 +998,87 @@ def e2e_affected_specs(p: Project, ref: str, head: str = "HEAD") -> tuple[str, l
     return str(d), hit, len(specs)
 
 
+# the code of a page of the web app (a style file or an asset may act on every page: the whole suite runs)
+PAGE_CODE = re.compile(r"\.(?:[cm]?[jt]sx?|vue|svelte)$")
+# a file of the translations: a JSON file under locales/, locale/ or i18n/
+LOCALE_FILE = re.compile(r"(?:^|/)(?:locales?|i18n)/.+\.json$")
+# the files that only register the pages (the route table, the entry point): an importer of a page that does not
+# make the change reach other pages
+ROUTE_STEMS = {"app", "router", "routes", "main", "index"}
+
+
+def json_leaves(value, prefix: str = "") -> dict:
+    """A JSON object as {"a.b.c": leaf}."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for k, v in value.items():
+        key = f"{prefix}{k}"
+        out.update(json_leaves(v, key + ".") if isinstance(v, dict) else {key: v})
+    return out
+
+
+def e2e_pages_only(p: Project, ref: str) -> tuple[bool, str]:
+    """(whether the task changed only pages of the web app since `ref`, why not). Pages only: every file outside
+    documents, CI and tests is code of a feature folder of the web app (features/, pages/, … - not a style file,
+    not an asset), a translation file whose changed keys are used only in those features, nothing else (no
+    server, no shared component, no route table); and no file outside the changed features imports them except
+    the route table or the entry point. Then the e2e specs of those pages (the affected specs of QA's check)
+    test everything the change can reach, and the whole suite does not run after Security. A key built at run
+    time (`t(`status.${x}`)`) is not found and keeps the whole suite."""
+    folder = ""
+    m = re.match(r"\s*cd\s+(\S+)\s*&&", (p.commands("e2e") or [""])[0])
+    if m:
+        folder = m.group(1).strip("./") + "/"
+    extra = tuple(as_list(p.config.get("e2e_no_runtime_paths"))) + E2E_NO_RUNTIME
+    feats: dict[str, str] = {}  # feature folder -> a changed file in it
+    locales, pages = [], []
+    for path, status in changed_files(p, ref).items():
+        if (path.startswith(DOC_PATHS) or path.startswith(extra) or path.endswith(".md")
+                or (folder and path.startswith(folder)) or matches(path, p.test_globs)):
+            continue
+        if LOCALE_FILE.search(path):
+            locales.append((path, status))
+            continue
+        parts = path.split("/")
+        at = next((i for i, x in enumerate(parts[:-2]) if x.lower() in FEATURE_DIRS), None)
+        if at is None or not PAGE_CODE.search(path):
+            return False, f"{path} is not the code of a page"
+        feats["/".join(parts[:at + 2]) + "/"] = path
+        pages.append((path, status))
+    if not feats:
+        return False, "no page changed"
+    web = sorted({r.rsplit("/", 3)[0] + "/" for r in feats})  # the source root of the web app (e.g. web/src/)
+    # nothing outside the changed features imports a changed file, except the route table and the entry point
+    for path, status in pages:
+        stem = re.sub(r"\..*$", "", path.rsplit("/", 1)[-1])
+        name = path.rsplit("/", 2)[-2] if stem.lower() == "index" else stem  # "./teams" imports teams/index.ts
+        r = p.git("grep", "-l", "-E", f"['\"][^'\"]*/{re.escape(name)}(\\.[cm]?[jt]sx?)?['\"]", "--", *web, check=False)
+        for user in (r.stdout if r.returncode == 0 else "").split():
+            if user.startswith(tuple(feats)) or matches(user, p.test_globs):
+                continue
+            if re.sub(r"\..*$", "", user.rsplit("/", 1)[-1]).lower() in ROUTE_STEMS:
+                continue
+            return False, f"{path} is used by {user}"
+    # the changed translations are used only in the changed features
+    for path, status in locales:
+        if status == "D":
+            return False, f"{path} was removed"
+        try:
+            new = json_leaves(json.loads((p.root / path).read_text(encoding="utf-8")))
+            r = p.git("show", f"{ref}:{path}", check=False)
+            old = json_leaves(json.loads(r.stdout)) if r.returncode == 0 and r.stdout.strip() else {}
+        except (OSError, ValueError):
+            return False, f"{path} cannot be read"
+        for key in sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k) and k in new):
+            r = p.git("grep", "-l", "-F", key, "--", *web, check=False)
+            users = [u for u in (r.stdout if r.returncode == 0 else "").split()
+                     if not LOCALE_FILE.search(u) and not matches(u, p.test_globs)]
+            if not users or any(not u.startswith(tuple(feats)) for u in users):
+                return False, f"the text {key} is used {'outside the changed pages' if users else 'nowhere by its name'}"
+    return True, ""
+
+
 def e2e_failures(log: Path) -> tuple[int, int, list[str]]:
     """(failed, total, failed test names) from the summary of a Playwright run (line/list reporter)."""
     return e2e_failures_text(log.read_text(encoding="utf-8", errors="replace") if log.exists() else "")
@@ -5026,6 +5107,13 @@ def cmd_step(p: Project, a) -> None:
         _, affected, all_specs = e2e_affected_specs(p, base) if first and a.split_e2e and not quiet else ("", [], 0)
         affected_cmds = p.e2e_affected_commands(affected, tid)
         broad = bool(affected_cmds) and len(affected) * 100 >= E2E_AFFECTED_WHOLE * all_specs
+        # a task that changes only pages of the web app (no server, no shared component, texts used only there): the
+        # e2e specs of those pages run here and the whole suite does not run after Security.
+        # "e2e_skip_pages_only": false runs the whole suite for them too.
+        pages_only, pages_why = ((e2e_pages_only(p, base)) if (affected_cmds and not broad and not quiet
+                                                                 and not st.get("full_e2e_failed")
+                                                                 and p.config.get("e2e_skip_pages_only", True) is not False)
+                                 else (False, ""))
         if broad:
             progress(p, f"⚡ {tid} r{rnd}: {len(affected)} of {all_specs} e2e spec files are likely affected - "
                         "the whole suite runs after QA")
@@ -5077,14 +5165,20 @@ def cmd_step(p: Project, a) -> None:
             st["full_e2e_failed_tests"] = gates["e2e"].get("failed_tests", [])
         # the CLI, not the workflow, remembers that the whole suite is still due: the workflow learns it
         # from this output through the runner, which may relay it incompletely
-        if gates["e2e"].get("scope") == "task":
+        pages_round = pages_only and gates["e2e"].get("scope") == "task" and "e2e_affected" in gates
+        if pages_round:
+            progress(p, f"⚡ {tid} r{rnd}: the task changes only pages of the web app - the e2e specs of those pages "
+                        f"({len(affected)} spec file(s)) run here, not the whole suite after Security")
+        if gates["e2e"].get("scope") == "task" and not pages_round:
             st["full_e2e_due"] = rnd
         else:
             st.pop("full_e2e_due", None)
-        if gates["e2e"].get("scope") == "quiet":
+        if gates["e2e"].get("scope") == "quiet" or pages_round:
             st["e2e_quiet_round"] = rnd
+            st["e2e_quiet_why"] = "pages" if pages_round else "no-runtime"
         else:
             st.pop("e2e_quiet_round", None)
+            st.pop("e2e_quiet_why", None)
         gates_ok = all(g["ok"] for g in gates.values())
         if gates["e2e"].get("scope") not in ("task", "quiet") and gates["e2e"].get("ok") and not gates["e2e"].get("skipped") and now_tree:
             st["e2e_green_tree"] = now_tree  # the whole suite passed on this code
@@ -5144,13 +5238,17 @@ def cmd_step(p: Project, a) -> None:
         # the whole e2e suite, once Review, QA, UI and Security have passed - when QA's check ran only this
         # task's tests; the workflow calls this step every round and the CLI decides
         if st.get("full_e2e_due") is None:
+            pages = st.get("e2e_quiet_why") == "pages"
             if st.get("e2e_quiet_round") == rnd:
-                progress(p, f"⚡ {tid} r{rnd}: no whole e2e suite - the task changes nothing the running app uses")
+                progress(p, f"⚡ {tid} r{rnd}: no whole e2e suite - the task changes "
+                            + ("only pages of the web app" if pages else "nothing the running app uses"))
             return emit({"ok": True, "skipped": True, "gates": {},
-                         "reason": ("the task changes nothing the running app uses (only tests, documents or CI): "
-                                    "its own e2e and the smoke tests ran in QA's check"
-                                    if st.get("e2e_quiet_round") == rnd else
-                                    "the whole e2e suite already ran in QA's check of this round")})
+                         "reason": ("the task changes only pages of the web app: the e2e specs of those pages ran in "
+                                    "QA's check" if pages else
+                                    "the task changes nothing the running app uses (only tests, documents or CI): "
+                                    "its own e2e and the smoke tests ran in QA's check")
+                         if st.get("e2e_quiet_round") == rnd else
+                         "the whole e2e suite already ran in QA's check of this round"})
         first = p.e2e_failed_commands(st.get("full_e2e_failed_tests") or []) if st.pop("e2e_rerun_first", False) else []
         if first:  # resumed after a whole suite whose failures may not be the task's: those run again first
             progress(p, f"↻ {tid} r{rnd}: the {len(st['full_e2e_failed_tests'])} test(s) that failed in the last whole suite "

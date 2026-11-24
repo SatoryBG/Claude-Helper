@@ -406,6 +406,14 @@ such tasks in AGC-Documents-Signing waited 43-47 minutes each for 2,800 tests). 
 fixture or config runs the whole suite as before, and so does a task whose whole suite failed earlier. It needs
 one plain Playwright e2e command with a `cd <folder>`. `"e2e_skip_no_runtime": false` turns it off.
 
+**A task that changes only pages of the web app** - code in feature folders of the web app (`features/`,
+`pages/` …), translation keys used only there, and no server code, shared component, style file, asset or route
+table - runs the e2e specs of those pages in QA's check (the affected specs) and no whole suite after Security.
+Nothing outside the changed features may import a changed file, except the route table and the entry point
+(`App`, `router`, `routes`, `main`, `index`); a translation key not found by its name (built at run time) keeps
+the whole suite. In a project that builds every page from shared components this rarely applies; where pages
+have their own components it saves the 30-40 minutes of the suite. `"e2e_skip_pages_only": false` turns it off.
+
 **From the second round on, Dev's check runs the tests that sent the last round back** before the review: the
 failed unit tests of the failing command (filtered as in a retry, below) and, with a tests' copy of staging, the
 failed e2e tests (at most 30) in a fresh copy with Dev's code. A failure that is still there comes back in a few
@@ -501,6 +509,11 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.10.1** - A task that changes only pages of the web app (feature folders, texts used only there; no server,
+  shared component, style, asset or route table, and no importer outside the changed features but the route table)
+  runs the e2e specs of those pages in QA's check and no whole suite after Security. Opt-out:
+  `"e2e_skip_pages_only": false`.
 
 - **1.10.0** - Shorter rounds and fewer tokens, from the times of 7,378 agents and checks in AGC-Documents-Signing
   (the tests are half of a round's time: 11 minutes of unit tests, 20 of affected e2e specs, 30-40 of the rest of
