@@ -27,6 +27,7 @@ keeps the task branches local.
 | `/satory-devteam:analyst <name or GitHub repo> [idea]` | Interview → `docs/SPEC.md`. Clones a given repo, creates a new private repo or works locally only. |
 | `/satory-devteam:architect` | Stack (chosen together with you), architecture, ADRs, UI guide, `.satory/project.json`, task plan. |
 | `/satory-devteam:build [milestone=M2] [max=N] [rounds=33]` | Autonomous workflow over the tasks in the plan. Run it again to continue. |
+| `/satory-devteam:stop [cancel]` | The running build stops after the step that runs now (its result recorded); `/satory-devteam:build` goes on from the next step. `cancel` takes it back. |
 | `/satory-devteam:status` | How far the project has got and what is left; then, if you want, your answers to the questions and the blocked tasks (`view` for the report only). |
 | `/satory-devteam:request [what you found or want]` | A new input at any time - a defect, a change, an idea: the analyst puts it into the SPEC, the architect into the architecture and the plan. No restart of a running build. |
 | `/satory-devteam:design [brief \| show \| use <direction>]` | A new design of the app as a UX consultant makes it - audit, directions as mockups, every page designed, the tasks that build it; the build runs it at the next boundary. `show` shows the result. |
@@ -67,7 +68,7 @@ It is on by default (it runs for projects with a staging environment); `"ui": { 
 
 ## Following the progress
 
-**Stopping and going on later.** `satory stop` (the build skill runs it when you ask to stop) ends the running
+**Stopping and going on later.** `/satory-devteam:stop` (or `satory stop`; the build skill runs it when you ask to stop) ends the running
 build at its next boundary between two steps: the step that runs now ends and its result is recorded, then the build
 stops (`⏹`). `/satory-devteam:build` goes on from the next step: the review, QA, Security (after QA and the UI
 review), the whole e2e suite or the documentation (after the whole suite) of the same round, or Dev of the next round
@@ -515,6 +516,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 ```
 
 ## Changelog
+
+- **1.10.3** - `/satory-devteam:stop [cancel]`: the command for `satory stop` - the running build stops after the step
+  that runs now and goes on from the next step with `/satory-devteam:build`; `cancel` takes it back.
 
 - **1.10.2** - `satory stop`: the build stops after the step that runs now, with its result recorded, and goes on
   from the next step later (it was stopped with TaskStop, which cut the running step and redid it). Two new resume

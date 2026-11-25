@@ -71,7 +71,7 @@ Workflow. CLI: `SATORY="python3 ${CLAUDE_PLUGIN_ROOT}/bin/satory"`.
      plugin does not: there, never launch it again in the turn of a message that asks to stop or pause it
      ("stop it now") - Dev took it as its own order and blocked its task. Wait for the user's go-ahead or
      ask them to run `/satory-devteam:build`.
-   - **The user asks to stop** ("stop after the current step", "stop, I am leaving"): run `$SATORY stop`. The
+   - **The user asks to stop** ("stop after the current step", "stop, I am leaving", or `/satory-devteam:stop`): run `$SATORY stop`. The
      build ends at its next boundary between two steps, after the step that runs now has ended and its result is
      recorded (a `⏹` line), and `/satory-devteam:build` later goes on from the next step. `$SATORY stop --cancel`
      takes it back. Do not stop the workflow with TaskStop for this: that cuts the running step, whose work is then
