@@ -1488,8 +1488,9 @@ Check each adaptation (\`git diff ${res.before || aqBefore}..HEAD\` on the test 
         ? `\n\nNote: these changes of yours were reverted automatically:\n${bullets(ad.violations)}` : ''
     }
 
-    // ---- Review -------------------------------------------------------
-    if (skip !== 'qa' && skip !== 'e2e') {
+    // ---- Review (a round resumed after it - at QA, Security, the whole suite or the documentation - does not
+    // review the same code again) ------------------------------------------------------------------------
+    if (!['qa', 'security', 'e2e', 'docs'].includes(skip)) {
       const revPrompt = reviewPrompt(ctx, round, start.base, reviewedAt, open.reviewer, dev) + known
       const rev = await stage('reviewer', revPrompt,
         { phase: 'Review', label: `review ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })

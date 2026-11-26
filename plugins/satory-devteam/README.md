@@ -545,6 +545,8 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.6** - a round resumed at Security or at the documentation (the resume points of 1.10.2) no longer runs the
+  code review again on the code it already approved.
 - **1.10.5** - tests of earlier features the task changes on purpose are adapted in the same round: when QA's check
   or the whole e2e suite fails only on them, QA gets a short pass, adapts those that pin behaviour the task changes
   on purpose (a regression stays for Dev), `step qa-adapt` reruns the failed tests, and the Reviewer checks the
