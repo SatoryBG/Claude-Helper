@@ -768,20 +768,23 @@ def unit_scope(p: Project, cmd: str, changed: list[str], areas: dict, ls: list[s
     read = lambda f: (p.root / f).read_text(encoding="utf-8", errors="replace") if (p.root / f).is_file() else ""
     if any(not TEST_DECL.search(read(f)) for f in tests if (p.root / f).is_file()):
         return "whole", cmd  # a helper or fixture: every test may use it
-    docs = [f for f in changed if is_document(f) and not f.startswith(".satory/")]
+    # a document outside the folder of a `cd X` command is read by none of its tests (test_needed); 1.10.7: a mockup
+    # script under docs/design/.../pages/ ran all the Java tests, whose JSON has a "pages" key
+    docs = [f for f in changed if is_document(f) and not f.startswith(".satory/") and (not cd or f.startswith(cd[0]))]
     hits = {f for f in tests if (p.root / f).is_file()}
     if docs:
-        needles = set()
+        names, folders = set(), []
         for d in docs:
             parts = d.split("/")
-            needles.add(parts[-1])
-            if len(parts) >= 3:  # a test that reads the folder of the document: "adr", "machine"
-                needles.add(f'"{parts[-2]}"')
+            names.add(parts[-1])
+            if len(parts) >= 3:  # a test that reads the folder of the document: every part of the path, quoted
+                folders.append([f'"{x}"' for x in parts[:-1]])  # ("deploy", "machine") for deploy/machine/x
         for f in ls:
             if f in hits or not mine(f) or not matches(f, p.test_globs):
                 continue
             text = read(f)
-            if TEST_DECL.search(text) and any(n in text for n in needles):
+            if TEST_DECL.search(text) and (any(n in text for n in names)
+                                           or any(all(x in text for x in fs) for fs in folders)):
                 hits.add(f)
     if not hits:
         return "skip", None

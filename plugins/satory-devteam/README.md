@@ -425,7 +425,8 @@ its part changed since it last passed in the task, or since main before its firs
 `cd X && …` looks at X/ and the shared files, one without `cd` at every file outside the `cd` folders; a
 document - `docs/`, `.satory/`, Markdown, `*.example` - outside X/ never runs a `cd X` command). When only
 documents and test files changed for a command, only the test files that name a changed document (its file
-name, or the quoted name of its folder: `"adr"`) and the changed test files run: `dotnet test` (Microsoft
+name, or every part of its folder quoted: `"deploy"` and `"machine"`; for a `cd X` command only documents under X)
+and the changed test files run: `dotnet test` (Microsoft
 Testing Platform) with `--filter-class` per class, Vitest with the files; another runner, or a changed test
 helper or fixture (a file without tests), runs the whole command, and none found runs nothing. On AGC-Documents-
 Signing a guide changed in a task ran 25 minutes of all the .NET tests, the Java tests and the web tests for the
@@ -545,6 +546,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.7** - the unit tests of documents are narrower: a `cd X` test command looks only at documents under X, and
+  a test reads the folder of a document only when it names every part of its path (a mockup script under
+  `docs/design/.../pages/` ran all the Java tests, whose JSON has a "pages" key).
 - **1.10.6** - a round resumed at Security or at the documentation (the resume points of 1.10.2) no longer runs the
   code review again on the code it already approved.
 - **1.10.5** - tests of earlier features the task changes on purpose are adapted in the same round: when QA's check
