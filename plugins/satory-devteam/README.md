@@ -385,7 +385,11 @@ command only when it changed what most of its tests stand on (the domain rules, 
 setup, the startup, the build files). A two-minute fix took 45 minutes when Dev waited for the whole .NET
 suite in every round, which then ran again after QA. `"dev_targeted_tests": false` makes Dev run every `test`
 command whole. QA runs only the unit and e2e tests it added or changed and the ones of the code the
-task touches. The check after QA runs the whole unit suite (`test`), this task's e2e tests plus
+task touches. The check after QA runs the unit suite (`test`) - each command only when its part of the code
+changed since it last passed in the task or, before that, since main (which passed all of them): a task that
+does not touch the DSS service does not run its tests, one that changes only the web app no .NET tests; and
+when only documents and tests changed, only the tests that read a changed document (its file name, or the
+quoted name of its folder, in the test file) and the changed test files (see below) -, this task's e2e tests plus
 the smoke tests, and the spec files of earlier features the task likely affects (for one plain Playwright
 command): the specs that open the page of a changed feature (a directory under `features/`, `pages/`,
 `Features/` …, also through a shared file its files import) or name a changed file. When 60 % of the specs
@@ -405,8 +409,21 @@ config has named projects (`[project] › file › title`); without them the who
 changes the tested behaviour on purpose, to dispute the test; QA gets them too and decides the disputes in
 the same round.
 
+**Unit tests of a part the task did not change, and of documents** - a test command runs in QA's check only when
+its part changed since it last passed in the task, or since main before its first pass there (a command
+`cd X && …` looks at X/ and the shared files, one without `cd` at every file outside the `cd` folders; a
+document - `docs/`, `.satory/`, Markdown, `*.example` - outside X/ never runs a `cd X` command). When only
+documents and test files changed for a command, only the test files that name a changed document (its file
+name, or the quoted name of its folder: `"adr"`) and the changed test files run: `dotnet test` (Microsoft
+Testing Platform) with `--filter-class` per class, Vitest with the files; another runner, or a changed test
+helper or fixture (a file without tests), runs the whole command, and none found runs nothing. On AGC-Documents-
+Signing a guide changed in a task ran 25 minutes of all the .NET tests, the Java tests and the web tests for the
+one repository test that reads it; the DSS service's tests ran in 190 of 222 checks without a change of it
+(about 9.5 hours). `"test_skip_since_main": false` waits for a first pass in the task; `"test_narrow_documents":
+false` runs a command whole when documents or tests changed; `"test_skip_unchanged": false` turns both off.
+
 **A task that changes nothing the running app uses** - only unit tests (the test globs outside the e2e folder),
-documents (`docs/`, `.satory/`, Markdown), the CI configuration (`.github/`, plus `e2e_no_runtime_paths` in
+documents (`docs/`, `.satory/`, Markdown, `*.example`), the CI configuration (`.github/`, plus `e2e_no_runtime_paths` in
 `.satory/project.json`) and e2e spec files - runs its own e2e tests, the smoke tests and the spec files it
 changed in QA's check, and no whole suite after Security: the app is the one on main, which passed it (four
 such tasks in AGC-Documents-Signing waited 43-47 minutes each for 2,800 tests). A change of an e2e helper,
@@ -517,6 +534,13 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.4** - unit tests of a part the task did not change and of documents: in QA's check a test command runs
+  only when its part changed since it last passed in the task or, before that, since main; a Markdown or
+  `*.example` file outside a `cd X` command's folder does not run it; when only documents and tests changed,
+  only the tests that read a changed document and the changed tests run (`--filter-class` for `dotnet test`,
+  the files for Vitest). A `*.example` template counts as a document for the e2e rule too (a task that changed
+  a guide and `.env.example` waited for the whole e2e suite). `"test_skip_since_main": false` and
+  `"test_narrow_documents": false` turn the parts off.
 - **1.10.3** - `/satory-devteam:stop [cancel]`: the command for `satory stop` - the running build stops after the step
   that runs now and goes on from the next step with `/satory-devteam:build`; `cancel` takes it back.
 

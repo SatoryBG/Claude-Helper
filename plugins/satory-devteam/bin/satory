@@ -726,7 +726,9 @@ def test_needed(cmd: str, changed: list[str], areas: dict) -> bool:
     for f in changed:
         if f.startswith(("docs/", ".satory/")):
             continue
-        if cd:  # its folder, or a shared file
+        if cd:  # its folder, or a shared file (a document outside its folder is read by none of its tests)
+            if f.endswith(DOC_SUFFIXES) and not f.startswith(cd[0]):
+                continue
             if f.startswith(cd[0]) or not (f.startswith(others) or f.startswith(("src/", "tests/"))):
                 return True
         elif not f.startswith(others):  # anything outside the folders of the cd-commands
@@ -735,6 +737,79 @@ def test_needed(cmd: str, changed: list[str], areas: dict) -> bool:
 
 
 DOC_PATHS = ("docs/", ".satory/")
+# text for people and templates: a test may read them (a repository test checks a guide), the app does not run them
+DOC_SUFFIXES = (".md", ".example")
+
+
+def is_document(path: str) -> bool:
+    return path.startswith(DOC_PATHS) or path.endswith(DOC_SUFFIXES)
+
+
+# a file with tests in it (not a helper or fixture every test may use): xUnit, NUnit, MSTest, JUnit, Vitest/Jest
+TEST_DECL = re.compile(r"\[(?:Fact|Theory|Test|TestMethod|TestCase)\b|@Test\b|^\s*(?:it|test|describe)(?:\.\w+)*\s*\(", re.M)
+CS_NAMESPACE = re.compile(r"^\s*namespace\s+([\w.]+)", re.M)
+CS_CLASS = re.compile(r"^\s*(?:(?:public|internal|private|sealed|static|partial|abstract|file)\s+)*class\s+(\w+)", re.M)
+
+
+def unit_scope(p: Project, cmd: str, changed: list[str], areas: dict, ls: list[str]) -> tuple[str, str | None]:
+    """How a test command runs after the files `changed` since it last passed (or since main): ("whole", cmd),
+    ("skip", None) or ("narrow", narrowed command). Only documents and tests of its own part changed: the code is
+    the same, so only the tests that read a changed document (its file name in the test file) and the changed test
+    files run - a guide changed in a task broke the one repository test that checks it, and 25 minutes of all the
+    .NET tests ran for it. A changed helper or fixture of the tests, or a runner whose tests cannot be selected,
+    runs the whole command. `ls` - the tracked and new files of the work tree."""
+    cd = areas.get(cmd, ())
+    others = areas[""]
+    mine = (lambda f: f.startswith(cd[0])) if cd else (lambda f: not f.startswith(others))
+    code = [f for f in changed if not is_document(f) and test_needed(cmd, [f], areas)]
+    tests = [f for f in code if mine(f) and matches(f, p.test_globs)]
+    if len(tests) < len(code):
+        return "whole", cmd
+    read = lambda f: (p.root / f).read_text(encoding="utf-8", errors="replace") if (p.root / f).is_file() else ""
+    if any(not TEST_DECL.search(read(f)) for f in tests if (p.root / f).is_file()):
+        return "whole", cmd  # a helper or fixture: every test may use it
+    docs = [f for f in changed if is_document(f) and not f.startswith(".satory/")]
+    hits = {f for f in tests if (p.root / f).is_file()}
+    if docs:
+        needles = set()
+        for d in docs:
+            parts = d.split("/")
+            needles.add(parts[-1])
+            if len(parts) >= 3:  # a test that reads the folder of the document: "adr", "machine"
+                needles.add(f'"{parts[-2]}"')
+        for f in ls:
+            if f in hits or not mine(f) or not matches(f, p.test_globs):
+                continue
+            text = read(f)
+            if TEST_DECL.search(text) and any(n in text for n in needles):
+                hits.add(f)
+    if not hits:
+        return "skip", None
+    narrowed = unit_files_command(p, cmd, sorted(hits), cd[0] if cd else "")
+    return ("narrow", narrowed) if narrowed else ("whole", cmd)
+
+
+def unit_files_command(p: Project, cmd: str, files: list[str], folder: str) -> str | None:
+    """The command that runs only the tests in `files`: `dotnet test` (Microsoft.Testing.Platform) with
+    --filter-class per class, Vitest with the files; None for another runner."""
+    if re.search(r"[|;>]|\s--\s|--filter", cmd):
+        return None
+    if DOTNET_TEST.search(cmd):
+        classes = []
+        for f in files:
+            if not f.endswith(".cs"):
+                return None
+            text = (p.root / f).read_text(encoding="utf-8", errors="replace")
+            ns = CS_NAMESPACE.search(text)
+            classes += [f"{ns.group(1)}.{c}" if ns else c for c in CS_CLASS.findall(text)]
+        if not classes:
+            return None
+        return cmd + "".join(f" --filter-class {shlex.quote(c)}" for c in sorted(set(classes))) + " --ignore-exit-code 8"
+    if VITEST_RUN.search(cmd):
+        if not all(f.startswith(folder) and re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", f) for f in files):
+            return None
+        return cmd + " " + " ".join(shlex.quote(f[len(folder):]) for f in files)
+    return None
 
 
 def docs_only_since(p: Project, was: str | None, tree: str | None) -> bool:
@@ -809,29 +884,56 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
     log = p.logs / f"{tid}-r{rnd}-{name}.log"
     cmds, unchanged, tree = p.commands(name), [], None
     st = p.state["tasks"].get(tid) if name == "test" else None
+    narrowed, green_cmds = [], cmds
     if st is not None and p.config.get("test_skip_unchanged", True) is not False and cmds:
-        # a test command runs again only when its part of the code changed since it last passed in this task:
-        # a round that changes only the web app does not wait for the .NET tests
+        # a test command runs again only when its part of the code changed since it last passed in this task -
+        # or, before it passed in the task, since main, which passed all of them (1.10.4): a round that changes
+        # only the web app does not wait for the .NET tests, nor a task without a change of the DSS service for
+        # its tests. Only documents and tests changed: only the tests that read the documents and the changed tests.
         tree = worktree_tree(p)
         green = st.get("tests_green") or {}
         areas = test_areas(p)
-        keep = []
+        since_main = p.config.get("test_skip_since_main", True) is not False and st.get("base")
+        narrow = p.config.get("test_narrow_documents", True) is not False
+        ls = None
+        keep, green_cmds = [], []
         for c in cmds:
-            was = green.get(c)
-            if tree and was:
-                r = p.git("diff", "--name-only", was, tree, check=False)
-                if r.returncode == 0 and not test_needed(c, r.stdout.split(), areas):
+            was = green.get(c) or (since_main if since_main and since_main != "HEAD" else None)
+            r = p.git("diff", "--name-only", was, tree, check=False) if tree and was else None
+            if r is not None and r.returncode == 0:
+                changed = r.stdout.split()
+                if narrow:
+                    if ls is None:
+                        out = p.git("ls-files", "--cached", "--others", "--exclude-standard", check=False)
+                        ls = out.stdout.split() if out.returncode == 0 else []
+                    how, run = unit_scope(p, c, changed, areas, ls)
+                else:
+                    how, run = ("whole", c) if test_needed(c, changed, areas) else ("skip", None)
+                if how == "skip":
                     unchanged.append(c)
                     continue
+                if how == "narrow":
+                    narrowed.append(run)
+                    keep.append(run)
+                    green_cmds.append(c)
+                    continue
             keep.append(c)
+            green_cmds.append(c)
         cmds = keep
     if unchanged and not cmds:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("".join(f"[satory] not run - no change in its part of the code since it last passed: {c}\n"
                                for c in unchanged), encoding="utf-8")
         return {"ok": True, "exit": 0, "log": p.rel(log), "unchanged": unchanged}
+    if narrowed:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        progress(p, f"⚡ {tid} r{rnd} test: only documents and tests changed - only the tests they concern run "
+                    f"({len(narrowed)} command(s))")
     res = run_cmds(p, cmds, log, p.env(tid, rnd))
-    check_trend(p, tid, rnd, res.get("times"), res.get("stats"))
+    if not narrowed:
+        check_trend(p, tid, rnd, res.get("times"), res.get("stats"))
+    if narrowed:
+        res["narrowed"] = narrowed
     if unchanged:
         with open(log, "a", encoding="utf-8") as f:
             f.writelines(f"[satory] not run - no change in its part of the code since it last passed: {c}\n" for c in unchanged)
@@ -839,11 +941,11 @@ def gate(p: Project, tid: str, rnd: int, name: str) -> dict:
 
     def passed(r: dict) -> dict:
         if r.get("ok") and tree and st is not None:
-            st.setdefault("tests_green", {}).update({c: tree for c in cmds})
+            st.setdefault("tests_green", {}).update({c: tree for c in green_cmds})
         return r
 
     if res["ok"] or res.get("skipped"):
-        if name == "test" and res["ok"] and not unchanged and not res.get("skipped"):
+        if name == "test" and res["ok"] and not unchanged and not narrowed and not res.get("skipped"):
             flaky_clean(p, unit=True)  # every unit test ran and passed on the first run
         return passed(res)
     text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
@@ -927,7 +1029,7 @@ def e2e_no_runtime_change(p: Project, ref: str) -> tuple[bool, list[str]]:
     extra = tuple(as_list(p.config.get("e2e_no_runtime_paths"))) + E2E_NO_RUNTIME
     specs = []
     for path, status in changed_files(p, ref).items():
-        if path.startswith(DOC_PATHS) or path.startswith(extra) or path.endswith(".md"):
+        if path.startswith(DOC_PATHS) or path.startswith(extra) or path.endswith(DOC_SUFFIXES):
             continue
         if path.startswith(folder):
             # a spec file of the suite (not its helpers, fixtures or configuration, which every spec uses)
