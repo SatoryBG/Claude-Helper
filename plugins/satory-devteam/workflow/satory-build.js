@@ -143,6 +143,15 @@ const REVIEW_SCHEMA = {
   },
   required: ['verdict', 'summary', 'findings', 'verified'],
 }
+// QA's short pass over the failing tests of earlier features (1.10.5)
+const ADAPT_SCHEMA = {
+  type: 'object',
+  properties: {
+    adapted: { type: 'array', items: { type: 'object', properties: { test: { type: 'string' }, reason: { type: 'string', description: `The requirement, AC or clarification that changes the behaviour the test pinned, ${IN_LANG}` } }, required: ['test', 'reason'] } },
+    regressions: { type: 'array', items: { type: 'object', properties: { test: { type: 'string' }, reason: { type: 'string', description: IN_LANG } }, required: ['test', 'reason'] } },
+  },
+  required: ['adapted', 'regressions'],
+}
 const QA_SCHEMA = {
   type: 'object',
   properties: {
@@ -740,6 +749,16 @@ const stuckReason = (tests, round) => `Tests of earlier features have failed in 
   `and the task cannot finish:\n${bullets(tests.slice(0, 20))}\nDecide: fix the app (guidance for Dev), change the ` +
   `requirement the test checks, or let QA adapt the test.`
 
+// what QA's short pass over the failing tests of earlier features left for Dev (1.10.5)
+function adaptFeedback(ad) {
+  const parts = []
+  if (ad.res && ad.res.qa_violation) parts.push(`QA's adaptation broke its rules and was restored:\n${bullets(ad.res.violations || [])}`)
+  if (ad.rejected) parts.push(`The Reviewer did not accept the tests QA adapted (${ad.rejected}); QA reworks them in the next round.`)
+  if ((ad.regressions || []).length) parts.push(`QA judged these failing tests of earlier features to be regressions - fix the code:\n` +
+    bullets(ad.regressions.map(x => `${x.test}: ${x.reason}`)))
+  return parts.length ? `\n\n### Tests of earlier features (QA's short pass)\n${parts.join('\n\n')}` : ''
+}
+
 // the earlier tests that failed in the whole e2e suite (or in their rerun), for QA's next prompt
 function suiteFailures(gates) {
   return Object.values(gates || {}).filter(g => !g.ok && !['task', 'quiet', 'changed', 'recheck'].includes(g.scope)).flatMap(g => g.failed_tests || [])
@@ -829,6 +848,8 @@ same Bash command as every e2e test, curl or script, e.g. \`eval "$(${BIN} env v
 let RESUMED = false  // the task in progress was resumed after an interrupted build
 const REV_BLOCKING = ['blocker', 'major']  // the Reviewer's severities that send a task back
 let QA_ROUTE = true  // review_qa_route in .satory/project.json
+let QA_ADAPT = true  // qa_adapt_earlier in .satory/project.json (1.10.5)
+const ADAPT_MAX = 30  // more failing tests of earlier features than this: a regression, the round goes to Dev
 const forQa = f => QA_ROUTE && f.owner === 'qa'  // a finding whose fix is in a test: QA fixes it, it does not send the task back to Dev
 const fline = f => `${f.id} [${f.severity}]${forQa(f) ? ' [for QA]' : ''} ${f.title}${f.where ? ` (${f.where})` : ''}${f.unverified ? ' - NOT VERIFIED by you last time' : ''}` +
   (f.status === 'disputed' ? ` - DISPUTED by Dev${f.dispute ? `: ${f.dispute}` : ', see its record'}` : '')
@@ -1360,6 +1381,58 @@ async function runTask(t) {
     open[stage] = (res.open || []).map(f => ({ ...f, unverified: unverified.includes(f.id) }))
     return { ...res, unverified }
   }
+  // 1.10.5: only tests of earlier features failed (QA's check or the whole suite) and this task's own passed. Most
+  // of them pin behaviour the task changes on purpose (59 of 78 such rounds in AGC-Documents-Signing): QA adapts
+  // those now instead of a round later, they run again, and the Reviewer checks the adaptations. A regression (or
+  // a test QA keeps) still sends the round to Dev. Null: not such a case, or QA adapted nothing.
+  const adaptEarlier = async (gates, source, round, tag, staging) => {
+    if (!QA_ADAPT) return null
+    const gs = Object.values(gates || {})
+    const unit = (gates || {}).test
+    if (unit && !unit.ok && !unit.skipped) return null
+    if (gs.some(g => !g.ok && !g.skipped && ['task', 'quiet', 'changed', 'pinned'].includes(g.scope))) return null
+    if (gs.some(g => g !== unit && !g.ok && !g.skipped && !(g.failed_tests || []).length)) return null  // unnamed failures
+    const failed = suiteFailures(gates).map(String)
+    if (!failed.length || failed.length > ADAPT_MAX || failed.some(x => x.includes(t.id) || x.startsWith('['  + 'pinned]'))) return null
+    const env = staging && !staging.skipped
+      ? `The app is running at ${staging.url}. ${staging.export ? 'Run `' + staging.export + '` in the same Bash command as every test you run.' : ''} Never open or change the user's staging or a preview.`
+      : ''
+    const text = `${ctx}
+Round: ${round}.
+${env}
+
+## ONLY THE FAILING TESTS OF EARLIER FEATURES - a short pass
+This task's own tests pass. Only these tests of earlier features failed in ${source}:
+${bullets(failed)}
+
+Decide each one by the SPEC, this task's requirements and the clarifications from the user:
+- this task changes the behaviour the test pins on purpose (a requirement, an AC, a clarification - cite it): adapt the test under your rules - change only what the new behaviour requires and keep its other checks, list the file with the reason in "QA: adapted tests" in the task file - and return it in \`adapted\`;
+- the test rightly expects behaviour this task broke, or you are not sure: leave it as it is and return it in \`regressions\` - Dev fixes the code.
+Change only test files and your section of the task file; never delete or skip a test. Run the tests you adapted. Before you return, run \`${BIN} --project ${q(PROJECT)} qa-check ${t.id}\` until it reports \`"ok": true\`.`
+    const r = await stage('qa', text, { phase: 'QA', label: `qa adapt ${tag}`, model: MODELS.qa, schema: ADAPT_SCHEMA })
+    if (!r || !(r.adapted || []).length) {
+      log(`↩ ${tag}: QA adapted none of the ${failed.length} failing test(s) of earlier features - the round goes to Dev`)
+      return r ? { ok: false, regressions: r.regressions || [] } : null
+    }
+    const res = must(await sh(`step qa-adapt ${t.id} --round ${round}`, { phase: 'QA', label: `rerun adapted ${tag}`,
+      note: JSON.stringify({ tests: failed, adapted: r.adapted }), long: true }), `qa-adapt ${tag}`)
+    if (!res.ok) return { ok: false, res, regressions: r.regressions || [] }
+    const rvText = `${lastRevPrompt || ctx}
+
+## ONLY THE TESTS QA ADAPTED - a short pass
+Tests of earlier features failed after this task's changes, and QA adapted these as behaviour the task changes on purpose:
+${bullets(r.adapted.map(x => `${x.test}: ${x.reason}`))}
+Check each adaptation (\`git diff ${res.before || aqBefore}..HEAD\` on the test files): the requirement it cites really changes that behaviour, and the test still checks everything else it checked. Return a finding (owner qa) for each one that only makes a real regression pass or weakens the test; return no other findings and change no file.`
+    const rv = await stage('reviewer', rvText, { phase: 'Review', label: `review adapted tests ${tag}`, model: MODELS.reviewer, schema: REVIEW_SCHEMA })
+    if (!rv) return { ok: false, res, rejected: 'the Reviewer returned no result' }
+    const rres = await record('reviewer', rv.findings.map(f => ({ severity: f.severity, title: f.title, where: where(f), detail: f.issue, fix: f.fix,
+      owner: 'qa' })), rv.verified || [], 'Review', rvText, false)
+    if (rres.blocking.length) return { ok: false, res, rejected: rv.summary, rres }
+    return { ok: true, res, adapted: r.adapted }
+  }
+  let aqBefore = 'HEAD~1'  // QA's checkpoint before its short pass
+  let roundStaging = null  // the app of the round's checks, for QA's short pass after the whole suite
+
   if (RESUMED) {  // the checks verify their open findings from the register in the first round after a resume
     try {
       const l = must(await sh(`finding list ${t.id} --open`, { phase: 'Dev', label: `open findings ${t.id}` }), 'finding list')
@@ -1447,6 +1520,7 @@ async function runTask(t) {
     // copy of staging comes up again and the whole suite goes on) --------------------------------------
     if (skip === 'e2e' || skip === 'security') {
       const again = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'Full tests', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
+      roundStaging = again
       if (!again.ok) {
         lastStage = appUpLabel()
         feedback = `### The app does not start ${appWhereShort()}\nStage: ${again.stage}. Log: ${again.log}`
@@ -1458,6 +1532,7 @@ async function runTask(t) {
       if (skip !== 'security') {
       // ---- QA -----------------------------------------------------------
       const staging = must(await sh(`step pre-qa ${t.id} --round ${round}`, { phase: 'QA', label: `${appUpLabel()} ${tag}`, long: true }), `${appUpLabel()} ${tag}`)
+      roundStaging = staging
       if (!staging.ok) {
         lastStage = appUpLabel()
         feedback = `### The app does not start ${appWhereShort()}\nStage: ${staging.stage}. Log: ${staging.log}` +
@@ -1493,6 +1568,22 @@ async function runTask(t) {
         qa.verified, 'QA', qaText)
       suiteFailed = suiteFailures(aq.gates)
       if ((aq.stuck_block || []).length) { await settleUi(); return block(t, round, stuckReason(aq.stuck_block, round)) }
+      let adaptNote = ''
+      if (!aq.ok && qa.verdict === 'pass' && qa.mini_spec_complete && qaRes.blocking.length === 0) {
+        aqBefore = aq.checkpoint || aqBefore
+        const ad = await adaptEarlier(aq.gates, 'the check after you', round, tag, staging)
+        if (ad && ad.ok) {
+          log(`✓ ${tag}: QA adapted ${ad.adapted.length} test(s) of earlier features the task changes on purpose - they pass, the round goes on`)
+          aq = { ...aq, ok: true, checkpoint: ad.res.checkpoint || aq.checkpoint }
+          suiteFailed = []
+        } else if (ad) {
+          if (ad.res && ad.res.gates) {
+            aq = { ...aq, gates: { ...aq.gates, ...ad.res.gates }, checkpoint: ad.res.checkpoint || aq.checkpoint }
+            suiteFailed = suiteFailures(ad.res.gates)
+          }
+          adaptNote = adaptFeedback(ad)
+        }
+      }
       // the Reviewer verifies its blocking findings that QA was to fix (a short pass; it changes no file)
       let qaLeft = []
       const handedNow = (open.reviewer || []).filter(f => forQa(f) && REV_BLOCKING.includes(f.severity))
@@ -1533,7 +1624,7 @@ async function runTask(t) {
       }
       if (qaFailed || uiFeedback || qaLeft.length) {
         lastStage = [qaFailed || qaLeft.length ? 'qa' : '', uiFeedback ? 'ui' : ''].filter(Boolean).join(' and ')
-        feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) : '', uiFeedback,
+        feedback = [qaFailed ? qaFeedback(qa, aq, qaRes) + adaptNote : '', uiFeedback,
           qaLeft.length ? `### Review: QA's fixes not accepted yet\nNothing to change for you here unless another check says so: QA reworks them in its stage of the next round.${qaOwnedNote(qaLeft)}` : '',
         ].filter(Boolean).join('\n\n')
         continue
@@ -1570,11 +1661,17 @@ async function runTask(t) {
         { phase: 'Full tests', label: `full e2e ${tag}`, long: true }), `full-e2e ${tag}`)
       flakyLog(full.gates, tag)
       contextLog(full)
-      if (!full.ok) {
+      let fullAdapt = null
+      if (!full.ok && !(full.stuck_block || []).length) {
+        aqBefore = full.checkpoint || 'HEAD'
+        fullAdapt = await adaptEarlier(full.gates, 'the whole e2e suite', round, tag, roundStaging)
+        if (fullAdapt && fullAdapt.ok) log(`✓ ${tag}: QA adapted ${fullAdapt.adapted.length} test(s) of earlier features the task changes on purpose - the whole suite passes`)
+      }
+      if (!full.ok && !(fullAdapt && fullAdapt.ok)) {
         lastStage = 'full e2e'
-        suiteFailed = suiteFailures(full.gates)
+        suiteFailed = fullAdapt && fullAdapt.res && fullAdapt.res.gates ? suiteFailures(fullAdapt.res.gates) : suiteFailures(full.gates)
         if ((full.stuck_block || []).length) return block(t, round, stuckReason(full.stuck_block, round))
-        feedback = `### The whole e2e suite fails
+        feedback = (fullAdapt ? adaptFeedback(fullAdapt) + '\n\n' : '') + `### The whole e2e suite fails
 This task's own tests pass, but tests of earlier features fail - ` +
           `most likely a regression caused by this task.
 ${bullets(gateLines(full.gates))}${suiteFailed.length ? `\nFailed:\n${bullets(suiteFailed.slice(0, 30))}` : ''}
@@ -1644,6 +1741,7 @@ phase('Prepare')
 let plan = await sh('plan json --brief', { phase: 'Prepare', label: 'plan' })
 if (plan && typeof plan.api_stop_after === 'number') API_STOP_AFTER = plan.api_stop_after
 if (plan && plan.review_qa_route === false) QA_ROUTE = false
+if (plan && plan.qa_adapt_earlier === false) QA_ADAPT = false
 if (plan.error) throw new Error(`Not a satory project: ${plan.error}`)
 if (plan.errors && plan.errors.length) throw new Error(`The plan is invalid:\n${bullets(plan.errors)}`)
 PROJECT = plan.root

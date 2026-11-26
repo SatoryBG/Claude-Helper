@@ -409,6 +409,17 @@ config has named projects (`[project] › file › title`); without them the who
 changes the tested behaviour on purpose, to dispute the test; QA gets them too and decides the disputes in
 the same round.
 
+**Tests of earlier features the task changes on purpose** - when QA's check or the whole e2e suite fails only on
+tests of earlier features (this task's own tests and the unit tests pass, at most 30 failures, each named), the
+round does not go back to Dev at once: QA gets a short pass with the failing tests and decides each by the SPEC and
+the task - it adapts a test that pins behaviour the task changes on purpose (under its rules, listed in "QA:
+adapted tests" with the reason) and leaves a regression for Dev. `satory step qa-adapt` checks QA's rules and runs
+the failed tests again in the round's copy of the app; when they pass, the Reviewer checks the adaptations (a
+finding for one that only makes a regression pass or weakens the test sends the round back, for QA), and the round
+goes on. Otherwise the round goes to Dev as before, with QA's judgement, and Dev's check of the next round reruns
+only the tests that still fail. In AGC-Documents-Signing 59 of 78 rounds that failed on earlier tests went back to
+Dev, who may not change a test, only for QA to adapt it a round later. `"qa_adapt_earlier": false` turns it off.
+
 **Unit tests of a part the task did not change, and of documents** - a test command runs in QA's check only when
 its part changed since it last passed in the task, or since main before its first pass there (a command
 `cd X && …` looks at X/ and the shared files, one without `cd` at every file outside the `cd` folders; a
@@ -534,6 +545,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.5** - tests of earlier features the task changes on purpose are adapted in the same round: when QA's check
+  or the whole e2e suite fails only on them, QA gets a short pass, adapts those that pin behaviour the task changes
+  on purpose (a regression stays for Dev), `step qa-adapt` reruns the failed tests, and the Reviewer checks the
+  adaptations; the round goes on when they pass. `"qa_adapt_earlier": false` turns it off.
 - **1.10.4** - unit tests of a part the task did not change and of documents: in QA's check a test command runs
   only when its part changed since it last passed in the task or, before that, since main; a Markdown or
   `*.example` file outside a `cd X` command's folder does not run it; when only documents and tests changed,

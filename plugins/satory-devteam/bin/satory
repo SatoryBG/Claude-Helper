@@ -3934,6 +3934,7 @@ def cmd_plan(p: Project, a) -> None:
               "has_design": (p.root / "docs" / "design" / "DESIGN.md").exists(),
               "design_request": load_json(p.run / "design.request.json", {}) or None,
               "critical_questions_gate": p.config.get("critical_questions_gate", True) is not False,
+              "qa_adapt_earlier": p.config.get("qa_adapt_earlier", True) is not False,
               "milestones": plan.get("milestones", []),
               "tasks": [plan_task_json(p, t, by_id, getattr(a, "brief", False), reviewed) for t in plan["tasks"]]})
 
@@ -5104,7 +5105,8 @@ def cmd_step(p: Project, a) -> None:
     # where a round goes on when the build is interrupted: after Dev's checks passed, at the review; after the
     # review approved, at QA; after QA, the UI review and Security passed, at the whole e2e suite. A check that
     # sends the round back to Dev ends it (a resume then starts the next round)
-    keep = (a.step in ("after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "gate", "resume") or
+    keep = (a.step in ("after-dev", "pre-qa", "after-qa", "qa-adapt", "security-scan", "full-e2e", "docs-check", "gate",
+                       "resume") or
             (a.step == "readonly" and (a.verdict or "ok") in ("approve", "pass", "ok")))
     if not keep:
         st.pop("resume_at", None)
@@ -5326,6 +5328,63 @@ def cmd_step(p: Project, a) -> None:
         emit({"ok": gates_ok, "qa_violation": False, "violations": violations, "adapted": adapted_used, **stuck,
               "tests": {"listed": listed, "count": len(names), "missing": []},
               "gates": gates, "checkpoint": st["checkpoint"], "context_error": refresh_context(p, tid)})
+
+    elif a.step == "qa-adapt":
+        # 1.10.5: only tests of earlier features failed (in QA's check or the whole suite), the task's own passed.
+        # QA adapted those that pin behaviour this task changes on purpose; the failed tests run again here, in the
+        # copy of the app the check used (QA changed only tests). 59 of 78 such rounds in AGC-Documents-Signing went
+        # back to Dev, who may not change a test, only for QA to adapt it a round later.
+        task_file = f"docs/tasks/{tid}.md"
+
+        def allowed(path, status):
+            if path == task_file or (matches(path, tests) and not matches(path, PROTECTED)):
+                return None
+            return "QA may change only tests and its own section of the task file"
+        try:
+            data = json.loads(note) if note.strip().startswith("{") else {}
+        except ValueError:
+            data = {}
+        violations = guard(p, ck, allowed)
+        rules, adapted_used, _listed, _names, _missing = qa_rules(p, tid, rnd, st, task_file, apply=True)
+        lines = [f"- Adapted: {x.get('test')} - {x.get('reason')}" for x in data.get("adapted") or [] if isinstance(x, dict)]
+        if rules or violations:
+            journal_pending(p, tid, "qa", rnd, "fail", join_note("QA adapted tests of earlier features",
+                            lines + [f"- Violation: {v}" for v in violations + rules]))
+            p.save_state()
+            emit({"ok": False, "qa_violation": True, "violations": violations + rules})
+            return
+        failed = [str(x) for x in data.get("tests") or []]
+        cmds = p.e2e_failed_commands(failed) if failed else []
+        if not cmds:
+            emit({"ok": False, "qa_violation": False, "note": "the failed tests cannot be selected by name"})
+            return
+        auto_format(p, tid, rnd, base, "qa")
+        g = {**e2e_run(p, tid, rnd, cmds, "e2e-adapted"), "scope": "adapted", "count": len(failed)}
+        still = [str(x) for x in g.get("failed_tests") or []] if not g["ok"] else []
+        if st.get("full_e2e_failed"):
+            st["full_e2e_failed"] = not g["ok"]
+            st["full_e2e_failed_tests"] = still
+        rc = st.get("recheck") or {}
+        if still and len(still) <= RECHECK_E2E_MAX:  # Dev's check of the next round reruns only what still fails
+            rc = {**rc, "round": rnd, "e2e": still}
+        else:
+            rc.pop("e2e", None)
+        if rc.get("unit") or rc.get("e2e"):
+            st["recheck"] = rc
+        else:
+            st.pop("recheck", None)
+        st["checkpoint"] = checkpoint(p, tid, f"qa adapt r{rnd}")
+        verdict = "pass" if g["ok"] else "fail"
+        journal_pending(p, tid, "qa", rnd, verdict, join_note("QA adapted tests of earlier features this task changes "
+                        "on purpose; the failed tests ran again", lines + [f"- Adapted test file: {x}" for x in adapted_used]
+                        + [f"- Still failing: {x}" for x in still[:30]]))
+        save_review(p, st, "qa adapt", rnd, verdict, "\n".join(lines + [f"- Still failing: {x}" for x in still[:30]]
+                                                                  + ([f"- Log: {g.get('log')}"] if not g["ok"] else [])))
+        p.save_state()
+        progress(p, f"↻ {tid} r{rnd}: QA adapted {len(lines) or len(adapted_used)} test(s) of earlier features the task changes "
+                    f"on purpose - the failed tests " + ("pass" if g["ok"] else f"still fail ({len(still)})"))
+        emit({"ok": g["ok"], "qa_violation": False, "adapted": adapted_used, "gates": {"e2e_adapted": g}, "before": ck,
+              "checkpoint": st["checkpoint"], "context_error": refresh_context(p, tid)})
 
     elif a.step == "security-scan":
         scans = []
@@ -6308,7 +6367,7 @@ def main() -> None:
     s.add_argument("--note-stdin", action="store_true")
 
     s = sub.add_parser("step")
-    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "security-scan", "full-e2e", "docs-check", "readonly",
+    s.add_argument("step", choices=["after-dev", "pre-qa", "after-qa", "qa-adapt", "security-scan", "full-e2e", "docs-check", "readonly",
                                     "gate", "resume"])
     s.add_argument("task")
     s.add_argument("--round", type=int, required=True)
