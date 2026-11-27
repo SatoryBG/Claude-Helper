@@ -546,6 +546,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.9** - the work-tree snapshot that decides which test commands run starts from HEAD's entries: into an empty
+  index, `git add` with `core.fileMode=false` recorded every file as 100644, so each executable file (`mvnw`, the
+  scripts) differed from main and the 1.10.4 rule ran the DSS service's tests in tasks that did not touch it.
 - **1.10.8** - the build no longer stops on a passed check whose output its runner could not copy: with
   `SATORY_RELAY=1`, which the workflow sets for every step, the CLI leaves the timings out of its output and puts no
   `"` or `\` inside strings (QA's notes and test titles broke the escapes of an 8 KB output in every copy, and the

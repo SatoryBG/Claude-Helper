@@ -721,6 +721,9 @@ def worktree_tree(p: Project) -> str | None:
     env = {**os.environ, "GIT_INDEX_FILE": str(idx)}
     try:
         idx.unlink(missing_ok=True)
+        # from HEAD's entries (1.10.9): into an empty index, `git add` with core.fileMode=false records every file as
+        # 100644, so each executable file (mvnw, the scripts) differed from main and ran every test command
+        subprocess.run(["git", "read-tree", "HEAD"], cwd=p.root, env=env, check=True, capture_output=True)
         subprocess.run(["git", "add", "-A"], cwd=p.root, env=env, check=True, capture_output=True)
         return subprocess.run(["git", "write-tree"], cwd=p.root, env=env, check=True, capture_output=True,
                               text=True).stdout.strip() or None
