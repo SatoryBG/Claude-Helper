@@ -49,6 +49,27 @@ class SatoryError(Exception):
 EMIT_EXTRA = None  # set by main for the steps of the build: adds usage_pause to their output
 
 
+# 1.10.8: the build reads every step's output through an agent that copies it; a long output with quotes inside
+# strings (QA's adapted tests, test titles) came back with broken escapes every time and the build stopped after
+# a passed check. With SATORY_RELAY=1 (set by the workflow) strings carry no " or \ and the timings are left out.
+RELAY_DROP = ("times", "stats")
+
+
+def relay_safe(v):
+    if isinstance(v, dict):
+        return {k: relay_safe(x) for k, x in v.items() if k not in RELAY_DROP}
+    if isinstance(v, list):
+        return [relay_safe(x) for x in v]
+    if isinstance(v, str):
+        return v.replace("\\", "/").replace('"', "”")
+    return v
+
+
+def relay_norm(text: str) -> str:
+    """A test title as relay_safe gives it back, to find the exact one the CLI recorded."""
+    return re.sub(r"[”“„]", '"', str(text)).replace("\\", "/")
+
+
 def emit(obj: dict) -> None:
     if EMIT_EXTRA is not None and isinstance(obj, dict):
         try:
@@ -57,6 +78,8 @@ def emit(obj: dict) -> None:
                 obj = {**obj, "usage_pause": extra}
         except Exception:  # noqa: BLE001 - the usage check never breaks a step
             pass
+    if os.environ.get("SATORY_RELAY") == "1":
+        obj = relay_safe(obj)
     print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -5356,7 +5379,9 @@ def cmd_step(p: Project, a) -> None:
             p.save_state()
             emit({"ok": False, "qa_violation": True, "violations": violations + rules})
             return
-        failed = [str(x) for x in data.get("tests") or []]
+        # the titles came through the relay without their quotes: the exact ones are in the state
+        known = {relay_norm(x): str(x) for x in (st.get("full_e2e_failed_tests") or []) + ((st.get("recheck") or {}).get("e2e") or [])}
+        failed = [known.get(relay_norm(x), str(x)) for x in data.get("tests") or []]
         cmds = p.e2e_failed_commands(failed) if failed else []
         if not cmds:
             emit({"ok": False, "qa_violation": False, "note": "the failed tests cannot be selected by name"})

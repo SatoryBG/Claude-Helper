@@ -556,7 +556,7 @@ function captured(full, id) {
 // Waits for a captured step with `satory wait`, in calls short enough to never leave the foreground.
 // Returns the step's own JSON, or {wait: 'not_started' | 'died', error} from the CLI.
 async function collect(id, label, phase) {
-  const prompt = runPrompt(`${BIN} --project ${q(PROJECT)} wait ${id} --timeout ${WAIT_SECONDS}`)
+  const prompt = runPrompt(`SATORY_RELAY=1 ${BIN} --project ${q(PROJECT)} wait ${id} --timeout ${WAIT_SECONDS}`)
   for (let i = 1; i <= WAIT_CALLS; i++) {
     const w = await spawn('runner', prompt, { phase, label: `satory wait ${label} (${i})`, model: MODELS.runner, schema: RUN_SCHEMA })
     const res = w ? parseOut(w.stdout) : undefined
@@ -667,7 +667,7 @@ function notePrompt(note) {
 }
 
 async function sh(cmd, { phase, label, note, long = false } = {}) {
-  const base = `${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
+  const base = `SATORY_RELAY=1 ${BIN}${PROJECT ? ` --project ${q(PROJECT)}` : ''} ${cmd}`
   const id = PROJECT ? `${++SH_SEQ}-${cmd.split(' ').slice(0, 3).join('-').replace(/[^\w.-]/g, '')}` : null
   const opts = { phase, label: `satory ${label || cmd}`, model: long ? MODELS.runnerLong : MODELS.runner, schema: RUN_SCHEMA }
   // the copied way: the note on the same line (not a here-document: the runner may get the command indented, and

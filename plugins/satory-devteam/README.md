@@ -546,6 +546,10 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.8** - the build no longer stops on a passed check whose output its runner could not copy: with
+  `SATORY_RELAY=1`, which the workflow sets for every step, the CLI leaves the timings out of its output and puts no
+  `"` or `\` inside strings (QA's notes and test titles broke the escapes of an 8 KB output in every copy, and the
+  build stopped after "no result" although the check had passed); `step qa-adapt` finds the exact titles in its state.
 - **1.10.7** - the unit tests of documents are narrower: a `cd X` test command looks only at documents under X, and
   a test reads the folder of a document only when it names every part of its path (a mockup script under
   `docs/design/.../pages/` ran all the Java tests, whose JSON has a "pages" key).
