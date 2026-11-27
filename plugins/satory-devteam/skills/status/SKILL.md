@@ -116,7 +116,8 @@ Talk to the user in the language they write in.
    Open `critical` items keep the next milestone from starting (the started ones are finished): say so
    when there are any.
 6. **The remaining tasks** - always last in the report, as one table (headers in the user's language),
-   from `$SATORY plan json`: every task that is not done, in plan order:
+   from `$SATORY plan json`: every task that is not done - first the one in progress and those to do, in plan order, then the
+   blocked ones (they do not run in the coming rounds), in plan order:
 
    | # | Task | What it covers | Status | Waits for | Source |
    |---|---|---|---|---|---|
