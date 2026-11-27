@@ -1417,7 +1417,16 @@ def e2e_run_cmds(p: Project, tid: str, rnd: int, cmds: list[str], name: str, who
     failed, total, names = e2e_failures(log)
     if failed and len(names) == failed:
         res["failed_tests"] = names
-    retry = p.e2e_failed_commands(names) if sharded else p.e2e_retry_commands(cmds)
+    # 1.10.11: the failed tests by their names first (files, --grep of the titles, the projects); --last-failed
+    # only when they cannot be named. A milestone's every-width run found no .last-run.json and its "rerun of the
+    # 8 failed tests" ran all 9328 tests one after another (about 3 hours). commands.e2e_retry still decides.
+    named = p.e2e_failed_commands(names) if names and len(names) == failed else []
+    if sharded:
+        retry = named
+    elif p.config.get("commands", {}).get("e2e_retry") is not None:
+        retry = p.e2e_retry_commands(cmds)
+    else:
+        retry = named or p.e2e_retry_commands(cmds)
     if not retry:
         record(0)
         return res

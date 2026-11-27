@@ -546,6 +546,9 @@ docs/QUESTIONS.md       questions for the user (generated from .satory/questions
 
 ## Changelog
 
+- **1.10.11** - an e2e retry runs the failed tests by their names (files, `--grep` of the titles, their projects)
+  and `--last-failed` only when they cannot be named: a milestone's every-width run found no `.last-run.json`, and
+  its rerun of 8 failed tests ran all 9328 tests one after another (about 3 hours). `commands.e2e_retry` still decides.
 - **1.10.10** - `/satory-devteam:status` lists the blocked tasks last in its table of the remaining tasks (after the
   one in progress and those to do): they do not run in the coming rounds.
 - **1.10.9** - the work-tree snapshot that decides which test commands run starts from HEAD's entries: into an empty
